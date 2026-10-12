@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/khuebt/herdr-runner-kit/compare/v0.1.0...v0.1.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* release notes heading and closing runners in use ([#10](https://github.com/khuebt/herdr-runner-kit/issues/10)) ([dc456f7](https://github.com/khuebt/herdr-runner-kit/commit/dc456f715b227087b8fd6551ca068e948ceb4f8f))
+
 ## 0.1.0 (2026-10-12)
 
 
