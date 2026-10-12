@@ -1,0 +1,137 @@
+// Package harness keeps every agent CLI detail in one place: launch flags,
+// skill syntax, turn-end hooks, trust preparation and known startup dialogs.
+// The launch rules follow a live probe of herdr 0.9.1, Claude Code 2.1.296
+// and codex-cli 0.162.1:
+//
+//   - The agent starts with no prompt. A prompt passed as a launch argument
+//     makes `herdr agent start` wait for the whole first turn.
+//   - The first prompt goes through `herdr agent prompt`. herdr uses bracketed
+//     paste, so `/ak:plan` and `$ak-plan` both submit without a settle delay.
+//   - A turn-end hook calls `herdr-runner-kit __turn-end`. A turn-end is only
+//     a hint, because agents end turns while background work continues.
+package harness
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/khuebt/herdr-runner-kit/internal/task"
+)
+
+// LaunchOptions are the per-task inputs to an adapter's launch argv.
+type LaunchOptions struct {
+	Spec task.AgentSpec
+	// Bin is the absolute path of the herdr-runner-kit binary, called by the
+	// turn-end hook.
+	Bin string
+	// SettingsPath is the per-task Claude settings file holding the Stop hook.
+	SettingsPath string
+	// Contract is the report contract. Claude receives it as an appended
+	// system prompt, which survives compaction. Codex receives it in the
+	// first prompt.
+	Contract string
+}
+
+// DialogAction says how the launcher handles a startup dialog.
+type DialogAction int
+
+// Dialog actions.
+const (
+	// NeedsHuman leaves the dialog for the user and marks the task
+	// needs-human. Trust dialogs are never answered by keys: Enter declines
+	// on Claude, and Esc or Ctrl+C can accept on Codex.
+	NeedsHuman DialogAction = iota
+	// SendKeys answers the dialog with Keys and records a warning.
+	SendKeys
+)
+
+// Dialog is a startup screen the launcher recognises by its text.
+type Dialog struct {
+	Name   string
+	Match  string // substring of the visible screen
+	Action DialogAction
+	Keys   []string // herdr logical keys, for SendKeys
+}
+
+// Adapter describes one agent CLI.
+type Adapter interface {
+	Harness() task.Harness
+	// HerdrKind is the value for `herdr agent start --kind`.
+	HerdrKind() string
+	// LaunchArgs returns the agent argv that follows `--`. It never contains
+	// the prompt.
+	LaunchArgs(LaunchOptions) []string
+	// RenderSkill turns "ak:plan" into this harness's invocation syntax.
+	RenderSkill(skill string) string
+	// FirstPrompt composes the text sent with `herdr agent prompt`.
+	FirstPrompt(skill, prompt, contract string) string
+	// Dialogs lists the known startup dialogs.
+	Dialogs() []Dialog
+}
+
+// For returns the adapter for harness h.
+func For(h task.Harness) (Adapter, error) {
+	switch h {
+	case task.Claude:
+		return claude{}, nil
+	case task.Codex:
+		return codex{}, nil
+	}
+	return nil, fmt.Errorf("unsupported harness %q", h)
+}
+
+// DetectDialog returns the first known dialog whose text is on screen.
+func DetectDialog(a Adapter, screen string) (Dialog, bool) {
+	for _, d := range a.Dialogs() {
+		if strings.Contains(screen, d.Match) {
+			return d, true
+		}
+	}
+	return Dialog{}, false
+}
+
+// skillName strips an invocation prefix, so "/ak:plan", "$ak-plan" and
+// "ak:plan" are all accepted.
+func skillName(skill string) string {
+	return strings.TrimLeft(strings.TrimSpace(skill), "/$")
+}
+
+// joinPrompt puts the rendered skill, the prompt and the contract together.
+func joinPrompt(rendered, prompt, contract string) string {
+	var parts []string
+	head := strings.TrimSpace(strings.TrimSpace(rendered) + " " + strings.TrimSpace(prompt))
+	if head != "" {
+		parts = append(parts, head)
+	}
+	if c := strings.TrimSpace(contract); c != "" {
+		parts = append(parts, c)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// writeFileAtomic replaces path with data, keeping the existing file mode.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".hrk-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
