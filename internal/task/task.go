@@ -1,0 +1,91 @@
+// Package task defines the task model shared by the CLI, the store and the
+// launcher. A task is one runner working on one prompt.
+package task
+
+import "time"
+
+// Status is the lifecycle state of a task.
+type Status string
+
+// Task statuses. Done, Failed and Stopped are terminal: once a task reaches one
+// of them, no later transition may change it.
+const (
+	Queued     Status = "queued"      // waiting for its --after tasks
+	Held       Status = "held"        // human gate before start
+	Starting   Status = "starting"    // launcher is opening the runner
+	Running    Status = "running"     // runner is working
+	NeedsHuman Status = "needs-human" // runner is waiting for a decision
+	Done       Status = "done"
+	Failed     Status = "failed"
+	Stopped    Status = "stopped"
+)
+
+var allStatuses = []Status{Queued, Held, Starting, Running, NeedsHuman, Done, Failed, Stopped}
+
+// Terminal reports whether s is a final status.
+func (s Status) Terminal() bool {
+	return s == Done || s == Failed || s == Stopped
+}
+
+// Valid reports whether s is a known status.
+func (s Status) Valid() bool {
+	for _, known := range allStatuses {
+		if s == known {
+			return true
+		}
+	}
+	return false
+}
+
+// Gate controls whether a task starts on its own.
+type Gate string
+
+// Gates. Auto starts as soon as the task's dependencies are done. Human holds
+// the task until the user releases it.
+const (
+	GateAuto  Gate = "auto"
+	GateHuman Gate = "human"
+)
+
+// Valid reports whether g is a known gate.
+func (g Gate) Valid() bool {
+	return g == GateAuto || g == GateHuman
+}
+
+// Worktree describes the git worktree a task runs in.
+type Worktree struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	Base   string `json:"base,omitempty"`
+}
+
+// Herdr holds the herdr handles of the runner. They are filled in by the
+// launcher as soon as herdr returns them, so stop can always clean up.
+type Herdr struct {
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	TabID       string `json:"tabId,omitempty"`
+	PaneID      string `json:"paneId,omitempty"`
+	AgentName   string `json:"agentName,omitempty"`
+}
+
+// Task is the durable record stored in tasks/<id>/task.json.
+type Task struct {
+	SchemaVersion  int       `json:"schemaVersion"`
+	ID             string    `json:"id"`
+	Kind           string    `json:"kind"`
+	Agent          string    `json:"agent"`
+	Prompt         string    `json:"prompt"`
+	Skill          string    `json:"skill,omitempty"`
+	Title          string    `json:"title,omitempty"`
+	Cwd            string    `json:"cwd"`
+	Owner          string    `json:"owner"`
+	Worktree       *Worktree `json:"worktree,omitempty"`
+	After          []string  `json:"after,omitempty"`
+	Gate           Gate      `json:"gate"`
+	Herdr          Herdr     `json:"herdr"`
+	Status         Status    `json:"status"`
+	LauncherPID    int       `json:"launcherPid,omitempty"`
+	LaunchDeadline time.Time `json:"launchDeadline,omitzero"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
