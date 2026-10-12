@@ -36,11 +36,12 @@ type Creds struct {
 func Resolve(cfg config.Telegram, getenv func(string) string) (Creds, error) {
 	var c Creds
 	if cfg.EnvFile != "" {
-		vars, err := readDotenv(expandHome(cfg.EnvFile, getenv))
+		path := expandHome(cfg.EnvFile, getenv)
+		vars, err := readDotenv(path)
 		if err != nil {
 			return Creds{}, err
 		}
-		c = Creds{Token: vars["TELEGRAM_BOT_TOKEN"], ChatIDs: splitIDs(vars["TELEGRAM_CHAT_ID"]), Source: cfg.EnvFile}
+		c = Creds{Token: vars["TELEGRAM_BOT_TOKEN"], ChatIDs: splitIDs(vars["TELEGRAM_CHAT_ID"]), Source: path}
 	} else {
 		dir := pluginDir(cfg, getenv)
 		envPath := filepath.Join(dir, ".env")

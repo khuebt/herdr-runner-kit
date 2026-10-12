@@ -19,7 +19,9 @@ import (
 )
 
 // maxPromptBytes bounds --stdin text; a longer prompt is an error, never cut.
-const maxPromptBytes = 1 << 20
+// The prompt reaches the agent as one argument of herdr agent prompt, and
+// Linux caps one argument at 128 KiB, which must also fit the kit's wrapper.
+const maxPromptBytes = 100 << 10
 
 // promptText is the text a command sends: args joined, or stdin with --stdin,
 // so user text passes through a quoted heredoc instead of a shell string.
@@ -35,7 +37,7 @@ func promptText(cmd *cobra.Command, args []string, stdin bool) (string, error) {
 		return "", err
 	}
 	if len(data) > maxPromptBytes {
-		return "", fmt.Errorf("the text on stdin is over %d MiB; put it in a file and name the file instead", maxPromptBytes>>20)
+		return "", fmt.Errorf("the text on stdin is over %d KiB; put it in a file and name the file instead", maxPromptBytes>>10)
 	}
 	return strings.TrimSpace(string(data)), nil
 }

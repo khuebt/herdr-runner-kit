@@ -26,7 +26,7 @@ Each installed file carries a marker line with the version that wrote it and a h
 The skill tells the main agent to keep `herdr-runner-kit wait` running in the background. Models forget, so `setup` also installs a Claude Code `Stop` hook with `asyncRewake`. After every main-agent turn it runs `wait` in the background. When news arrives, it wakes the agent with the news lines. When nothing is running, or another `wait` is already watching, it exits without a word.
 
 - It runs only in the session started by `main --exec`, which sets `HRK_MAIN` to that session's process id. Other Claude sessions, and runners (which have `HRK_TASK` set), skip it, so none of them can take news meant for the main agent. The command `main` prints sets `HRK_MAIN=1`. The hook then runs too, but cannot tell when that session ends.
-- It stops when the main session's process is gone, so a leftover hook never holds the news cursor.
+- It stops when the main session's process is gone, or when Claude stops the hook's shell, so a leftover hook does not keep holding the news cursor. A `claude` started from inside the main session inherits `HRK_MAIN`, so its own hook also runs; avoid long nested sessions there.
 - It names the binary by absolute path, and does nothing when that binary is gone. Run `setup` again after moving the binary.
 - Claude wakes the agent when a hook exits with 2, which is also how a crashed Go program exits. So `__autoarm` exits with 3 on news, and the hook turns only that into 2. A crash never wakes the agent.
 - Every other key and hook in `settings.json` stays in place. `--no-hook` removes the kit's hook. Setup does not lock `settings.json`, so avoid running it while another tool edits that file.

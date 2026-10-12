@@ -136,7 +136,8 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			return Result{}, err
 		}
 		if idle := idleLine(tasks); idle != "" {
-			if d := statusSettle - sinceLastChange(tasks); d > 0 {
+			// min guards against a clock that stepped back past UpdatedAt.
+			if d := min(statusSettle-sinceLastChange(tasks), statusSettle); d > 0 {
 				if !sleep(ctx, d) {
 					return Result{}, ctx.Err()
 				}

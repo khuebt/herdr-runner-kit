@@ -138,11 +138,13 @@ func newAutoarmCommand() *cobra.Command {
 // aliveEvery is how often whileAlive looks for its process.
 var aliveEvery = 5 * time.Second
 
-// whileAlive cancels ctx once process pid is gone. A hook that outlived its
-// Claude session would otherwise hold the cursor lock, and swallow the news it
-// can no longer deliver, until its timeout hours later.
+// whileAlive cancels ctx once process pid is gone, or once the hook's own
+// shell is, which happens when Claude kills only the shell on its timeout. A
+// hook that outlived either would otherwise hold the cursor lock, and swallow
+// the news it can no longer deliver.
 func whileAlive(ctx context.Context, pid int) context.Context {
 	ctx, cancel := context.WithCancel(ctx)
+	parent := os.Getppid()
 	go func() {
 		tick := time.NewTicker(aliveEvery)
 		defer tick.Stop()
@@ -151,7 +153,7 @@ func whileAlive(ctx context.Context, pid int) context.Context {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+				if os.Getppid() != parent || errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
 					cancel()
 					return
 				}

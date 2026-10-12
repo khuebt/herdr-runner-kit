@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -107,4 +108,34 @@ func TestWithEnvReplaces(t *testing.T) {
 	if strings.Join(got, " ") != "A=1 B=2 TOKEN=new" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+func TestWhileAliveEndsWithItsParent(t *testing.T) {
+	if os.Getenv("HRK_TEST_ORPHAN") == "1" {
+		// Child: watch a live PID (init) and report when the watch ends.
+		aliveEvery = 10 * time.Millisecond
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		<-whileAlive(ctx, 1).Done()
+		if ctx.Err() != nil {
+			return
+		}
+		_ = os.WriteFile(os.Getenv("HRK_TEST_OUT"), []byte("ended"), 0o600)
+		return
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	// sh starts the test binary in the background and exits, orphaning it.
+	sh := exec.Command("sh", "-c", `"$0" -test.run '^TestWhileAliveEndsWithItsParent$' & sleep 0.3`, os.Args[0])
+	sh.Env = append(os.Environ(), "HRK_TEST_ORPHAN=1", "HRK_TEST_OUT="+out)
+	if err := sh.Run(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, _ := os.ReadFile(out); string(data) == "ended" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the orphaned watch did not end")
 }

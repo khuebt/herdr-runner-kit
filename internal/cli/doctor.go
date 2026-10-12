@@ -322,7 +322,7 @@ func checkTelegramPlugin(dir string, s claudeSettings, tokenSource string) check
 	}
 	if env := filepath.Join(stateDir, ".env"); hasToken(env) {
 		fix := "delete " + env + "; herdr-runner-kit main --exec passes the token to the main session only"
-		if filepath.Clean(tokenSource) == filepath.Clean(env) {
+		if abs, err := filepath.Abs(tokenSource); err == nil && abs == env {
 			// The kit reads its token from this file, so deleting it alone would turn Telegram off.
 			fix = "move the token into a file named by telegram.envFile in the kit's config, then " + fix
 		}

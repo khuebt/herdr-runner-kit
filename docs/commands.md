@@ -14,7 +14,7 @@ See [setup.md](setup.md).
 
 ## Main session
 
-Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so the main agent passes your words through a quoted heredoc instead of a shell string.
+Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so the main agent passes your words through a quoted heredoc instead of a shell string. The text may be up to 100 KiB, since the agent receives it as one command-line argument.
 
 | Command | What it does |
 |---|---|
