@@ -10,7 +10,7 @@ import (
 )
 
 func newVersionCommand() *cobra.Command {
-	var asJSON bool
+	var asJSON, check bool
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print the version, build and contract information",
@@ -23,11 +23,23 @@ func newVersionCommand() *cobra.Command {
 				enc.SetIndent("", "  ")
 				return enc.Encode(info)
 			}
-			_, err := fmt.Fprintf(out, "herdr-runner-kit %s (commit %s, built %s, schema v%d, contract v%d)\n",
-				info.Version, info.Commit, info.Date, info.SchemaVersion, info.ContractVersion)
+			if _, err := fmt.Fprintf(out, "herdr-runner-kit %s (commit %s, built %s, schema v%d, contract v%d)\n",
+				info.Version, info.Commit, info.Date, info.SchemaVersion, info.ContractVersion); err != nil || !check {
+				return err
+			}
+			latest, newer, err := updateNote(cmd.Context(), 0)
+			switch {
+			case err != nil:
+				return fmt.Errorf("check for a newer release: %w", err)
+			case newer:
+				_, err = fmt.Fprintf(out, "%s is available; run herdr-runner-kit upgrade\n", latest)
+			default:
+				_, err = fmt.Fprintf(out, "up to date (latest release %s)\n", latest)
+			}
 			return err
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print as JSON")
+	cmd.Flags().BoolVar(&check, "check", false, "also ask GitHub whether a newer release exists")
 	return cmd
 }

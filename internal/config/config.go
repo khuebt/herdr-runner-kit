@@ -43,6 +43,7 @@ type Config struct {
 	DefaultKind          string
 	WorktreeBranchPrefix string
 	Telegram             Telegram
+	UpdateCheck          bool // doctor's daily look for a newer release
 }
 
 // NotifyEvents lists the event types the telegram.notify key accepts.
@@ -55,6 +56,7 @@ type fileConfig struct {
 	DefaultKind          *string             `yaml:"defaultKind"`
 	WorktreeBranchPrefix *string             `yaml:"worktreeBranchPrefix"`
 	Telegram             *fileTelegram       `yaml:"telegram"`
+	UpdateCheck          *bool               `yaml:"updateCheck"`
 }
 
 type fileKind struct {
@@ -128,6 +130,9 @@ func Parse(data []byte) (Config, error) {
 	}
 	if file.WorktreeBranchPrefix != nil {
 		cfg.WorktreeBranchPrefix = *file.WorktreeBranchPrefix
+	}
+	if file.UpdateCheck != nil {
+		cfg.UpdateCheck = *file.UpdateCheck
 	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {

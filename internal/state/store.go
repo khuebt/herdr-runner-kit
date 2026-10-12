@@ -53,6 +53,7 @@ func DefaultDir() (string, error) {
 
 // Open prepares the state directory and brings it to the current schema.
 func Open(dir string) (*Store, error) {
+	dir = filepath.Clean(dir) // a trailing slash would put the migration backup inside dir
 	if err := os.MkdirAll(filepath.Join(dir, "tasks"), dirPerm); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}

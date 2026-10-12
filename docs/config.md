@@ -39,6 +39,7 @@ telegram:
 | `telegram.stateDir` | the plugin's directory | Directory holding the Telegram channel plugin's `.env` and `access.json`. By default it is `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. |
 | `telegram.chatId` | the plugin's `allowFrom` | Chat to notify, when it should differ from the plugin's allow list. |
 | `telegram.notify` | every accepted value | Events that send a Telegram message. `done` is sent only for a task that no other task waits on. Accepted values: `needs-human`, `failed`, `stalled`, `held`, `done`, `turn-ended-unreported`. |
+| `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.
 

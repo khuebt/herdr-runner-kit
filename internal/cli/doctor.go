@@ -17,6 +17,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
 	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/telegram"
+	"github.com/khuebt/herdr-runner-kit/internal/upgrade"
 )
 
 // telegramPlugin is the plugin id under enabledPlugins in settings.json.
@@ -67,6 +68,7 @@ func newDoctorCommand() *cobra.Command {
 			}
 			ctx := cmd.Context()
 			show("kit", checkKit())
+			show("updates", checkUpdates(ctx))
 			show("herdr", checkHerdr(ctx))
 			integrations := herdrIntegrations(ctx)
 			for _, name := range []string{"claude", "codex"} {
@@ -200,6 +202,25 @@ func checkHelp(ctx context.Context, name string, flags ...string) checkResult {
 }
 
 // checkTelegramCreds also returns the file the kit reads the token from.
+// checkUpdates notes a newer release, looking on GitHub at most once a day.
+func checkUpdates(ctx context.Context) checkResult {
+	cfg, err := loadConfig()
+	switch {
+	case err == nil && !cfg.UpdateCheck:
+		return ok("not checked (updateCheck: false)")
+	case upgrade.Major(buildinfo.Version) < 0:
+		return ok("not checked: %s build", buildinfo.Version)
+	}
+	latest, newer, err := updateNote(ctx, 24*time.Hour)
+	switch {
+	case err != nil:
+		return ok("could not check for a newer release: %v", err)
+	case newer:
+		return warn(latest+" is available (this is "+buildinfo.Version+")", "herdr-runner-kit upgrade --check, then herdr-runner-kit upgrade")
+	}
+	return ok("%s is the latest release", buildinfo.Version)
+}
+
 func checkTelegramCreds() (checkResult, string) {
 	cfg, err := loadConfig()
 	if err != nil {

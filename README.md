@@ -16,7 +16,13 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 
 ## Install
 
-Release binaries for Linux and macOS will be published on [GitHub Releases](https://github.com/khuebt/herdr-runner-kit/releases). A one-line installer and `herdr-runner-kit upgrade` arrive with the first release.
+On Linux or macOS (amd64 or arm64):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/khuebt/herdr-runner-kit/main/install.sh | sh
+```
+
+It verifies the download, installs to `~/.local/bin` and runs `setup`. `herdr-runner-kit upgrade` installs newer releases. See [installation](docs/installation.md) and [upgrading](docs/upgrading.md).
 
 To build from source:
 
@@ -36,6 +42,8 @@ herdr-runner-kit main --exec
 
 ## Documentation
 
+- [Installation](docs/installation.md)
+- [Upgrading](docs/upgrading.md)
 - [Setup, doctor and uninstall](docs/setup.md)
 - [Commands](docs/commands.md)
 - [Report contract](docs/report-contract.md)
