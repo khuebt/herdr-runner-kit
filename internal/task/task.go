@@ -100,6 +100,20 @@ type Task struct {
 	// Error is the reason a task failed or needs a human, when the kit itself
 	// set that status.
 	Error string `json:"error,omitempty"`
+	// Summary, Outputs and Question come from the runner's last report.
+	Summary  string   `json:"summary,omitempty"`
+	Outputs  []string `json:"outputs,omitempty"`
+	Question string   `json:"question,omitempty"`
+	// Inputs are the results of the --after tasks, added to the first prompt.
+	Inputs string `json:"inputs,omitempty"`
+	// Unreported counts turns that ended without a report since the last
+	// prompt from the main session: the first is nudged, the second is news.
+	Unreported int `json:"unreported,omitempty"`
+	// CodexThread is the thread of the runner's first Codex turn. Notify
+	// calls from other threads, such as title generation, are ignored.
+	CodexThread string `json:"codexThread,omitempty"`
+	// Stalled is set while herdr reports the agent blocked on a prompt.
+	Stalled bool `json:"stalled,omitempty"`
 	// FinishedAt is set when the task reaches a terminal status.
 	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 	Status         Status    `json:"status"`

@@ -39,6 +39,8 @@ type Runner struct {
 	// StartLauncher starts the detached launcher for a task and returns its
 	// pid.
 	StartLauncher func(id string) (int, error)
+	// StartAfter starts the detached follow-up of a report.
+	StartAfter func(id string) error
 	// Sleep pauses between polls; tests replace it.
 	Sleep func(time.Duration)
 }
@@ -46,7 +48,11 @@ type Runner struct {
 // New returns a Runner for the real environment.
 func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	r := &Runner{Store: store, Config: cfg, Herdr: herdr.New(), Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep}
-	r.StartLauncher = r.startDetachedLauncher
+	r.StartLauncher = func(id string) (int, error) { return r.startDetached(id, "__launch", "launch.log") }
+	r.StartAfter = func(id string) error {
+		_, err := r.startDetached(id, "__after", "after.log")
+		return err
+	}
 	return r
 }
 
@@ -81,6 +87,20 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 	if err != nil {
 		return nil, err
 	}
+	base := o.Base
+	if len(t.After) > 0 && len(pending) == 0 {
+		var parentBase string
+		if t.Inputs, parentBase, err = r.parentInputs(t.After); err != nil {
+			return nil, err
+		}
+		if base == "" {
+			base = parentBase
+		}
+	}
+	// The owner's first wait must see this task's events.
+	if err := r.Store.InitCursor(state.CursorName(t.Owner)); err != nil {
+		return nil, err
+	}
 	if err := r.Store.Create(t); err != nil {
 		return nil, err
 	}
@@ -91,7 +111,7 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 			return nil, fmt.Errorf("branch %s already exists in %s", branch, t.RepoRoot)
 		}
 		if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
-			t.Worktree = &task.Worktree{Branch: branch, Base: o.Base}
+			t.Worktree = &task.Worktree{Branch: branch, Base: base}
 			return nil
 		}); err != nil {
 			return nil, err
@@ -114,16 +134,13 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 
 // StartLaunch moves a task to "starting" and hands it to a detached launcher.
 func (r *Runner) StartLaunch(id string) (*task.Task, error) {
-	t, _, err := r.Store.Transition(id, task.Starting, []task.Status{task.Queued, task.Held}, func(t *task.Task) {
-		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
-	})
+	t, changed, err := r.beginLaunch(id, nil)
 	if err != nil {
 		return nil, err
 	}
-	if t.Status != task.Starting {
+	if !changed {
 		return t, fmt.Errorf("%s is %s, not ready to launch", id, t.Status)
 	}
-	r.emit(t, "spawned", t.Title, "")
 	pid, err := r.StartLauncher(id)
 	if err != nil {
 		r.fail(id, "start launcher: "+err.Error())
@@ -133,6 +150,22 @@ func (r *Runner) StartLaunch(id string) (*task.Task, error) {
 		t.LauncherPID = pid
 		return nil
 	})
+}
+
+// beginLaunch moves a queued or held task to starting, applying mutate in
+// the same write, and emits spawned. changed is false when another process
+// already moved it.
+func (r *Runner) beginLaunch(id string, mutate func(*task.Task)) (*task.Task, bool, error) {
+	t, changed, err := r.Store.Transition(id, task.Starting, []task.Status{task.Queued, task.Held}, func(t *task.Task) {
+		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
+		if mutate != nil {
+			mutate(t)
+		}
+	})
+	if err == nil && changed {
+		r.emit(t, "spawned", t.Title, "")
+	}
+	return t, changed, err
 }
 
 func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error) {
@@ -241,10 +274,11 @@ func (r *Runner) pendingParents(after []string) ([]string, error) {
 	return pending, nil
 }
 
-// startDetachedLauncher runs `<bin> __launch <id>` in its own session with
-// every stream redirected, so neither spawn nor its caller waits for it.
-func (r *Runner) startDetachedLauncher(id string) (int, error) {
-	logPath := filepath.Join(r.Store.TaskDir(id), "launch.log")
+// startDetached runs `<bin> <verb> <id>` in its own session with every
+// stream redirected to the task's log, so neither the command nor its caller
+// waits for it.
+func (r *Runner) startDetached(id, verb, logName string) (int, error) {
+	logPath := filepath.Join(r.Store.TaskDir(id), logName)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return 0, err
@@ -255,7 +289,7 @@ func (r *Runner) startDetachedLauncher(id string) (int, error) {
 		return 0, err
 	}
 	defer func() { _ = devNull.Close() }()
-	cmd := exec.Command(r.Bin, "__launch", id)
+	cmd := exec.Command(r.Bin, verb, id)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {

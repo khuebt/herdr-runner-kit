@@ -192,3 +192,10 @@ func ShellQuote(s string) string {
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// ClaudeBlock returns the Stop hook output that keeps Claude working, with
+// reason as its next instruction.
+func ClaudeBlock(reason string) string {
+	out, _ := json.Marshal(map[string]string{"decision": "block", "reason": reason})
+	return string(out)
+}

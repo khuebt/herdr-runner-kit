@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
@@ -23,9 +24,65 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
+	if t, err = r.Store.Update(id, func(t *task.Task) error {
+		t.Unreported = 0
+		return nil
+	}); err != nil {
+		return false, err
+	}
 	r.emit(t, "sent", firstLine(text, 120), "")
 	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
 	return err == nil, nil
+}
+
+// Answer sends the user's answer to a runner that reported needs-human and
+// sets it running again. It reports whether herdr saw the turn start.
+func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
+	t, err := r.liveTask(id)
+	if err != nil {
+		return false, err
+	}
+	if t.Status != task.NeedsHuman {
+		return false, fmt.Errorf("%s is %s, not waiting for an answer; use send", id, t.Status)
+	}
+	if t.Question == "" {
+		return false, fmt.Errorf("%s waits on the %s dialog in its tab; answer it there (herdr-runner-kit focus %s)", id, t.Error, id)
+	}
+	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
+		return false, err
+	}
+	nt, changed, err := r.Store.Transition(id, task.Running, []task.Status{task.NeedsHuman}, func(t *task.Task) {
+		t.Question, t.Unreported = "", 0
+	})
+	if err != nil {
+		return false, err
+	}
+	if changed {
+		r.emit(nt, "answered", firstLine(text, 120), "")
+	}
+	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
+	return err == nil, nil
+}
+
+// Release opens a held task's human gate and launches it. A note is added
+// to its prompt.
+func (r *Runner) Release(id, note string) (*task.Task, error) {
+	t, err := r.Store.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status != task.Held {
+		return nil, fmt.Errorf("%s is %s, not held", id, t.Status)
+	}
+	if note = strings.TrimSpace(note); note != "" {
+		if _, err := r.Store.Update(id, func(t *task.Task) error {
+			t.Prompt = strings.TrimSpace(t.Prompt + "\n\nNote from the user: " + note)
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return r.StartLaunch(id)
 }
 
 // Focus switches the herdr UI to the runner.
@@ -65,6 +122,7 @@ func (r *Runner) Stop(ctx context.Context, id string, removeWorktree bool) (*tas
 	}
 	if changed {
 		r.emit(nt, "stopped", "stopped by the user", "")
+		_ = r.failDependents(nt)
 	}
 	return nt, nil
 }

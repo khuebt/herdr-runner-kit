@@ -91,7 +91,11 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 
 	// Address the agent by pane id from here on: herdr drops the name when
 	// a start times out.
-	text := adapter.FirstPrompt(t.Skill, t.Prompt, files.contractText)
+	prompt := t.Prompt
+	if t.Inputs != "" {
+		prompt = strings.TrimSpace(prompt + "\n\n" + t.Inputs)
+	}
+	text := adapter.FirstPrompt(t.Skill, prompt, files.contractText)
 	if err := r.Herdr.AgentPrompt(ctx, loc.PaneID, text); err != nil {
 		return fmt.Errorf("send first prompt: %w", err)
 	}
@@ -145,11 +149,15 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (runner
 	return files, nil
 }
 
-// runnerEnv is the environment every runner gets. TELEGRAM_BOT_TOKEN is empty
-// so the Telegram plugin exits before it takes over the main session's
+// runnerEnv is the environment every runner gets. HRK_STATE_DIR points
+// report and the turn-end hook at the spawner's state. TELEGRAM_BOT_TOKEN is
+// empty so the Telegram plugin exits before it takes over the main session's
 // poller.
-func runnerEnv(t *task.Task) []string {
-	env := []string{"HRK_TASK=" + t.ID, "TELEGRAM_BOT_TOKEN=", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"}
+func (r *Runner) runnerEnv(t *task.Task) []string {
+	env := []string{
+		"HRK_TASK=" + t.ID, "HRK_STATE_DIR=" + r.Store.Dir(),
+		"TELEGRAM_BOT_TOKEN=", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false",
+	}
 	if t.ClaudeConfigDir != "" {
 		env = append(env, "CLAUDE_CONFIG_DIR="+t.ClaudeConfigDir)
 	}
@@ -159,7 +167,7 @@ func runnerEnv(t *task.Task) []string {
 // openLocation creates the worktree workspace or the tab the agent runs in.
 func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location, error) {
 	label := t.ID + " · " + t.Title
-	env := runnerEnv(t)
+	env := r.runnerEnv(t)
 	if !t.UseWorktree {
 		return r.Herdr.TabCreate(ctx, t.MainWorkspace, t.Cwd, label, env)
 	}

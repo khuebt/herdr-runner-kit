@@ -29,6 +29,16 @@ Rules the runner follows:
 - Background shells and subagents finish before `done` is reported.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Files under `plans/` and agent folders (`.claude/`, `.codex/`, `.agents/`) are never committed. The runner never pushes and never opens a pull request.
 
+## A runner that forgets to report
+
+Each runner's turn-end hook (Claude's Stop hook, Codex's `notify`) checks whether the task reported:
+
+- The first turn that ends without a report is nudged: Claude's Stop hook keeps it working with a reminder, and Codex gets the reminder as a new prompt.
+- The second becomes `turn-ended-unreported` news for the main session.
+- Later turns are ignored until the main session sends or answers again.
+
+A Claude turn that ends while background shells or agents still run is not counted, because Claude wakes on its own when they finish. Codex's internal title-generation turn is ignored. If your Codex `config.toml` sets its own `notify`, the kit still calls it with the same argument.
+
 ## Compatibility
 
 Within one major product version the contract only grows. A runner started by an older binary can still report after an upgrade.

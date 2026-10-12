@@ -26,6 +26,8 @@ go install github.com/khuebt/herdr-runner-kit/cmd/herdr-runner-kit@latest
 
 ## Documentation
 
+- [Commands](docs/commands.md)
+- [Report contract](docs/report-contract.md)
 - [Configuration](docs/config.md)
 - [Versioning and releases](docs/versioning.md)
 - [Contributing](CONTRIBUTING.md)
