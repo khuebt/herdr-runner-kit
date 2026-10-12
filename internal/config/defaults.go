@@ -28,5 +28,6 @@ func Default() Config {
 		Telegram: Telegram{
 			Notify: slices.Clone(NotifyEvents),
 		},
+		UpdateCheck: true,
 	}
 }

@@ -9,8 +9,10 @@ Every command prints short plain text, so the main agent's context stays small. 
 | `setup [--claude-config DIR]… [--force] [--no-hook]` | Installs the main-agent skill and the auto re-arm hook, and creates the config and state. A second run prints `no changes`. |
 | `doctor [--claude-config DIR]…` | Checks every dependency and prints the fix for each problem. |
 | `uninstall [--claude-config DIR]… [--purge [--yes]]` | Removes what `setup` installed; `--purge` also deletes config and state. |
+| `upgrade [--version vX.Y.Z] [--check] [--yes] [--claude-config DIR]…` | Installs the latest release, or the named one, after verifying its checksum, then runs the new binary's `setup`. `--check` only shows what would change. |
+| `version [--json] [--check]` | Prints the version, schema and contract. `--check` also asks GitHub for a newer release. |
 
-See [setup.md](setup.md).
+See [setup.md](setup.md) and [upgrading.md](upgrading.md).
 
 ## Main session
 

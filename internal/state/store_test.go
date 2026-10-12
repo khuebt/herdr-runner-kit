@@ -271,3 +271,41 @@ func TestTransitionMutatesOnlyOnChange(t *testing.T) {
 		t.Fatalf("terminal task was mutated: %+v", got)
 	}
 }
+
+func TestMigrationBacksUpAndWaitsForLiveRunners(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "state")
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk := &task.Task{Kind: "fix", Agent: "claude", Prompt: "x", Title: "x", Owner: "/repo", Gate: task.GateAuto, Status: task.Running}
+	if err := s.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+	ran := 0
+	list := []migration{{from: 1, run: func(string) error { ran++; return nil }}}
+	if err := runMigrations(dir, list, 2); err == nil || !strings.Contains(err.Error(), tk.ID) || ran != 0 {
+		t.Fatalf("live runner: ran %d, %v", ran, err)
+	}
+	if _, err := os.Stat(dir + ".bak-1"); !os.IsNotExist(err) {
+		t.Fatalf("backup made before refusing: %v", err)
+	}
+
+	if _, _, err := s.SetStatus(tk.ID, task.Done); err != nil {
+		t.Fatal(err)
+	}
+	if err := runMigrations(dir, list, 2); err != nil || ran != 1 {
+		t.Fatalf("finished runner: ran %d, %v", ran, err)
+	}
+	saved, err := os.ReadFile(filepath.Join(dir+".bak-1", "tasks", tk.ID, "task.json"))
+	if err != nil || !strings.Contains(string(saved), `"status": "done"`) {
+		t.Fatalf("backup task: %s %v", saved, err)
+	}
+	if meta, _ := os.ReadFile(filepath.Join(dir+".bak-1", "state.json")); !strings.Contains(string(meta), `"schemaVersion":1`) {
+		t.Fatalf("backup state.json = %s", meta)
+	}
+	if locks, _ := filepath.Glob(filepath.Join(dir+".bak-1", "*.lock")); len(locks) != 0 {
+		t.Errorf("locks copied: %v", locks)
+	}
+}
