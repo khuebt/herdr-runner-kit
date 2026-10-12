@@ -117,6 +117,7 @@ func newTestRunner(t *testing.T) (*Runner, *fakeHerdr, env) {
 		Bin:           "/usr/local/bin/herdr-runner-kit",
 		Getenv:        e.get,
 		StartLauncher: func(string) (int, error) { return 4242, nil },
+		StartAfter:    func(string) error { return nil },
 		Sleep:         func(time.Duration) {},
 	}
 	return r, fake, e
@@ -365,7 +366,7 @@ func TestLaunchCodexWorktree(t *testing.T) {
 		t.Errorf("worktree create = %q", wt)
 	}
 	run := fake.call("pane", "run")
-	if len(run) != 4 || run[2] != "w2:p1" || !strings.HasPrefix(run[3], "export HRK_TASK=t1 TELEGRAM_BOT_TOKEN='' ") {
+	if len(run) != 4 || run[2] != "w2:p1" || !strings.HasPrefix(run[3], "export HRK_TASK=t1 HRK_STATE_DIR="+r.Store.Dir()+" TELEGRAM_BOT_TOKEN='' ") {
 		t.Errorf("pane run = %q", run)
 	}
 	start := strings.Join(fake.call("agent", "start"), " ")

@@ -153,3 +153,22 @@ func tomlStringArray(items ...string) string {
 	}
 	return "[" + strings.Join(quoted, ",") + "]"
 }
+
+// CodexUserNotify returns the notify command set in the user's config.toml.
+// A runner's -c notify replaces it, so __turn-end calls it in turn.
+func CodexUserNotify(configPath string) ([]string, error) {
+	data, err := os.ReadFile(configPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var cfg struct {
+		Notify []string `toml:"notify"`
+	}
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", configPath, err)
+	}
+	return cfg.Notify, nil
+}

@@ -28,7 +28,7 @@ type Event struct {
 	Type     string      `json:"type"`
 	Status   task.Status `json:"status,omitempty"`
 	Summary  string      `json:"summary,omitempty"`
-	Output   string      `json:"output,omitempty"`
+	Outputs  []string    `json:"outputs,omitempty"`
 	Question string      `json:"question,omitempty"`
 }
 

@@ -1,0 +1,127 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/spf13/cobra"
+
+	"github.com/khuebt/herdr-runner-kit/internal/state"
+	"github.com/khuebt/herdr-runner-kit/internal/wait"
+)
+
+func newWaitCommand() *cobra.Command {
+	var o wait.Options
+	var ids []string
+	cmd := &cobra.Command{
+		Use:   "wait",
+		Short: "Block until a task has news, then print one line per event",
+		Long: "wait blocks until one of your tasks reports done, needs-human or failed, " +
+			"is held or stopped, stalls, or ends a turn without reporting. It prints one " +
+			"short line per event and exits 0. Run it in the background and rerun it after " +
+			"each wake; a cursor makes sure no event is skipped or repeated.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			for _, a := range ids {
+				id, err := parseTaskID(a)
+				if err != nil {
+					return err
+				}
+				o.Tasks = append(o.Tasks, id)
+			}
+			if o.Owner == "" {
+				o.Owner = currentOwner(cmd)
+			}
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			res, err := wait.Run(ctx, r, o)
+			out := cmd.OutOrStdout()
+			switch {
+			case errors.Is(err, state.ErrAlreadyWaiting):
+				_, err = fmt.Fprintln(out, "already waiting: another wait holds this cursor")
+				return err
+			case errors.Is(err, context.Canceled):
+				return errors.New("wait interrupted")
+			case err != nil:
+				return err
+			case res.TimedOut:
+				_, err = fmt.Fprintf(out, "timeout: no news in %s; rerun wait\n", o.Timeout)
+			case res.Idle != "":
+				_, err = fmt.Fprintln(out, res.Idle)
+			default:
+				_, err = fmt.Fprintln(out, strings.Join(res.Lines, "\n"))
+			}
+			return err
+		},
+	}
+	f := cmd.Flags()
+	f.StringSliceVar(&ids, "task", nil, "only these tasks")
+	f.StringVar(&o.Owner, "owner", "", "main session to wait for (default: git top-level of the current folder)")
+	f.StringVar(&o.Cursor, "cursor", "", "cursor name (default: derived from the owner)")
+	f.DurationVar(&o.Timeout, "timeout", wait.DefaultTimeout, "safety timeout; wait prints `timeout` and exits 0")
+	return cmd
+}
+
+func newAnswerCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "answer <id> <text>",
+		Short: "Answer a runner that reported needs-human; it continues in the same session",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseTaskID(args[0])
+			if err != nil {
+				return err
+			}
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			working, err := r.Answer(cmd.Context(), id, strings.Join(args[1:], " "))
+			if err != nil {
+				return err
+			}
+			msg := id + " got the answer and is working"
+			if !working {
+				msg = id + " got the answer; herdr has not seen it start a turn yet"
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), msg)
+			return err
+		},
+	}
+}
+
+func newReleaseCommand() *cobra.Command {
+	var note string
+	cmd := &cobra.Command{
+		Use:   "release <id>",
+		Short: "Open a held task's human gate and start it",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseTaskID(args[0])
+			if err != nil {
+				return err
+			}
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			t, err := r.Release(id, note)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s · %s\n", t.ID, t.Status, t.Title)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&note, "note", "", "text added to the task's prompt")
+	return cmd
+}
