@@ -140,6 +140,9 @@ func (r *Runner) GC(ctx context.Context, owner string, olderThan time.Duration, 
 		if (owner != "" && t.Owner != owner) || !collectable(t, removeWorktree) || finishedAt(t).After(cutoff) {
 			continue
 		}
+		if !t.Herdr.Closed && r.inUse(ctx, t.Herdr.PaneID) {
+			continue // someone kept working in the tab after the report; try later
+		}
 		if err := r.closeRunner(ctx, t, removeWorktree); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", t.ID, err))
 			continue
@@ -147,6 +150,17 @@ func (r *Runner) GC(ctx context.Context, owner string, olderThan time.Duration, 
 		closed = append(closed, t.ID)
 	}
 	return closed, errors.Join(errs...)
+}
+
+// GCRetry is how long callers leave a runner that GC skipped or could not
+// close before they try again.
+const GCRetry = time.Minute
+
+// inUse reports whether the agent in pane is busy: working, or blocked on a
+// prompt someone may be answering.
+func (r *Runner) inUse(ctx context.Context, pane string) bool {
+	a, err := r.Herdr.AgentGet(ctx, pane)
+	return err == nil && (a.Status == "working" || a.Status == "blocked")
 }
 
 // NextGC returns when GC can first close one of these tasks' finished

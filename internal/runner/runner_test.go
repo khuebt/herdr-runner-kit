@@ -612,3 +612,23 @@ func TestSlugAndTitle(t *testing.T) {
 		t.Errorf("TitleFrom = %q", got)
 	}
 }
+
+func TestGCLeavesARunnerSomeoneStillUses(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Store.Transition(tk.ID, task.Done, nil, func(t *task.Task) { t.FinishedAt = time.Now().Add(-time.Hour) }); err != nil {
+		t.Fatal(err)
+	}
+	// The user kept typing in the tab after the report.
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
+	if closed, err := r.GC(context.Background(), "", GCAge, false); err != nil || len(closed) != 0 || fake.count("agent", "send-keys") != 0 {
+		t.Fatalf("closed %v, %v, send-keys %d", closed, err, fake.count("agent", "send-keys"))
+	}
+	fake.on("agent get", herdrErr(herdr.CodeAgentNotFound))
+	if closed, err := r.GC(context.Background(), "", GCAge, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
+		t.Fatalf("after the work: closed %v, %v", closed, err)
+	}
+}
