@@ -36,28 +36,27 @@ func newEventsCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			keep := func(ev state.Event) bool {
-				if since > 0 && time.Since(ev.TS) > since {
-					return false
-				}
-				return len(ids) == 0 || slices.Contains(ids, ev.Task)
-			}
 			var events []state.Event
 			for _, ev := range all {
-				if keep(ev) {
+				if since == 0 || time.Since(ev.TS) <= since {
 					events = append(events, ev)
 				}
 			}
 			out := cmd.OutOrStdout()
 			if timings {
+				// A task's latencies need its parents' and the main
+				// session's events too, so only the rows are filtered.
 				tasks, err := r.Store.List()
 				if err != nil {
 					return err
 				}
+				tasks = slices.DeleteFunc(tasks, func(t *task.Task) bool { return len(ids) > 0 && !slices.Contains(ids, t.ID) })
 				return printTimings(out, events, tasks)
 			}
 			for _, ev := range events {
-				fmt.Fprintln(out, eventLine(ev))
+				if forTasks(ids, ev) {
+					fmt.Fprintln(out, eventLine(ev))
+				}
 			}
 			for follow {
 				select {
@@ -70,7 +69,7 @@ func newEventsCommand() *cobra.Command {
 					return err
 				}
 				for _, ev := range more {
-					if len(ids) == 0 || slices.Contains(ids, ev.Task) {
+					if forTasks(ids, ev) {
 						fmt.Fprintln(out, eventLine(ev))
 					}
 				}
@@ -98,6 +97,15 @@ func eventLine(ev state.Event) string {
 		parts = append(parts, "out: "+strings.Join(ev.Outputs, ", "))
 	}
 	return strings.Join(parts, "  ")
+}
+
+// forTasks reports whether ev belongs to one of ids, counting a wake-up of
+// the main session that included one. No ids means every event.
+func forTasks(ids []string, ev state.Event) bool {
+	if len(ids) == 0 || slices.Contains(ids, ev.Task) {
+		return true
+	}
+	return ev.Type == "woke" && slices.ContainsFunc(strings.Split(ev.Summary, ","), func(id string) bool { return slices.Contains(ids, id) })
 }
 
 // printTimings prints, per task, the budget latencies that the event log can
