@@ -29,8 +29,8 @@ func (claude) LaunchArgs(o LaunchOptions) []string {
 	if o.SettingsPath != "" {
 		args = append(args, "--settings", o.SettingsPath)
 	}
-	if c := strings.TrimSpace(o.Contract); c != "" {
-		args = append(args, "--append-system-prompt", c)
+	if o.ContractPath != "" {
+		args = append(args, "--append-system-prompt-file", o.ContractPath)
 	}
 	return args
 }
@@ -63,7 +63,7 @@ func ClaudeSettings(bin string) ([]byte, error) {
 	if !filepath.IsAbs(bin) {
 		return nil, fmt.Errorf("hook binary must be an absolute path, got %q", bin)
 	}
-	hook := map[string]any{"type": "command", "command": shellQuote(bin) + " __turn-end --harness claude"}
+	hook := map[string]any{"type": "command", "command": ShellQuote(bin) + " __turn-end --harness claude"}
 	settings := map[string]any{
 		"hooks": map[string]any{
 			"Stop": []any{map[string]any{"hooks": []any{hook}}},
@@ -85,24 +85,21 @@ func ClaudeConfigPath() (string, error) {
 	return filepath.Join(home, ".claude.json"), nil
 }
 
-// claudeTrustFlags are the per-project flags that suppress Claude's
-// workspace-trust and external-import dialogs.
-var claudeTrustFlags = []string{
-	"hasTrustDialogAccepted",
-	"hasClaudeMdExternalIncludesApproved",
-	"hasClaudeMdExternalIncludesWarningShown",
-}
+const claudeTrustFlag = "hasTrustDialogAccepted"
 
-// CopyClaudeTrust copies the trust flags the user already granted to origin
-// onto the worktree path, so a runner's Claude starts without dialogs. Claude
-// treats a folder as trusted when it or any parent is, so workspace trust is
-// also taken from origin's parents. The import approvals are taken from
-// origin's own entry only. It never grants more than the user did, and it
-// returns the flags it set.
-func CopyClaudeTrust(configPath, origin, worktree string) ([]string, error) {
+// claudeImportFlags approve a CLAUDE.md that imports files from outside the
+// project. They are security decisions, so they are only ever copied.
+var claudeImportFlags = []string{"hasClaudeMdExternalIncludesApproved", "hasClaudeMdExternalIncludesWarningShown"}
+
+// PrepareClaudeTrust lets a runner's Claude start at runnerPath without
+// dialogs. Workspace trust is granted to runnerPath, because running spawn
+// there is the user's consent, the same rule the kit applies to Codex. The
+// external-import approvals are copied from origin's own entry only, so the
+// kit never approves imports the user did not. It returns the flags it set.
+func PrepareClaudeTrust(configPath, origin, runnerPath string) ([]string, error) {
 	info, err := os.Stat(configPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, nil // Claude has never run with this config dir
 	}
 	if err != nil {
 		return nil, err
@@ -112,13 +109,18 @@ func CopyClaudeTrust(configPath, origin, worktree string) ([]string, error) {
 		return nil, err
 	}
 	projects, _ := root["projects"].(map[string]any)
-	dst, _ := projects[filepath.Clean(worktree)].(map[string]any)
+	src, _ := projects[filepath.Clean(origin)].(map[string]any)
+	dst, _ := projects[filepath.Clean(runnerPath)].(map[string]any)
 	if dst == nil {
 		dst = map[string]any{}
 	}
 	var set []string
-	for _, flag := range claudeTrustFlags {
-		if originGrants(projects, origin, flag) && dst[flag] != true {
+	if dst[claudeTrustFlag] != true {
+		dst[claudeTrustFlag] = true
+		set = append(set, claudeTrustFlag)
+	}
+	for _, flag := range claudeImportFlags {
+		if src[flag] == true && dst[flag] != true {
 			dst[flag] = true
 			set = append(set, flag)
 		}
@@ -126,7 +128,7 @@ func CopyClaudeTrust(configPath, origin, worktree string) ([]string, error) {
 	if len(set) == 0 {
 		return nil, nil
 	}
-	projects[filepath.Clean(worktree)] = dst
+	projects[filepath.Clean(runnerPath)] = dst
 
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
@@ -136,31 +138,14 @@ func CopyClaudeTrust(configPath, origin, worktree string) ([]string, error) {
 		return nil, fmt.Errorf("write %s: %w", configPath, err)
 	}
 	// Claude rewrites this file itself, so confirm the flags landed.
-	ok, err := ClaudeTrustPresent(configPath, worktree, set)
+	ok, err := ClaudeTrustPresent(configPath, runnerPath, set)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("trust flags for %s were overwritten in %s", worktree, configPath)
+		return nil, fmt.Errorf("trust flags for %s were overwritten in %s", runnerPath, configPath)
 	}
 	return set, nil
-}
-
-// originGrants reports whether the user granted flag to origin, or for the
-// workspace-trust flag, to any of its parents.
-func originGrants(projects map[string]any, origin, flag string) bool {
-	dir := filepath.Clean(origin)
-	for {
-		entry, _ := projects[dir].(map[string]any)
-		if entry[flag] == true {
-			return true
-		}
-		parent := filepath.Dir(dir)
-		if flag != "hasTrustDialogAccepted" || parent == dir {
-			return false
-		}
-		dir = parent
-	}
 }
 
 // ClaudeTrustPresent reports whether every flag is true for path.
@@ -200,8 +185,8 @@ func readJSONObject(path string) (map[string]any, error) {
 	return root, nil
 }
 
-// shellQuote quotes s for /bin/sh.
-func shellQuote(s string) string {
+// ShellQuote quotes s for a POSIX shell.
+func ShellQuote(s string) string {
 	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+:@") == "" {
 		return s
 	}

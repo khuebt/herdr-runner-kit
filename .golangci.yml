@@ -10,6 +10,13 @@ linters:
     - revive
     - staticcheck
     - unused
+  settings:
+    errcheck:
+      # Terminal output errors surface at Flush or are not actionable.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
 
 formatters:
   enable:

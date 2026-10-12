@@ -28,10 +28,11 @@ type LaunchOptions struct {
 	Bin string
 	// SettingsPath is the per-task Claude settings file holding the Stop hook.
 	SettingsPath string
-	// Contract is the report contract. Claude receives it as an appended
-	// system prompt, which survives compaction. Codex receives it in the
-	// first prompt.
-	Contract string
+	// ContractPath is a file holding the report contract. Claude appends it
+	// to its system prompt, which survives compaction. Codex receives the
+	// contract in its first prompt instead. A file keeps the long text out of
+	// the shell line herdr types into the pane.
+	ContractPath string
 }
 
 // DialogAction says how the launcher handles a startup dialog.

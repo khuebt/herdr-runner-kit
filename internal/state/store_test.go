@@ -76,8 +76,9 @@ func TestTerminalStatusIsSticky(t *testing.T) {
 	s := openStore(t)
 	tk := newTask(t, s)
 	// The runner reports done before the slow launcher marks it running.
-	if _, changed, err := s.SetStatus(tk.ID, task.Done); err != nil || !changed {
-		t.Fatalf("set done: changed=%v err=%v", changed, err)
+	done, changed, err := s.SetStatus(tk.ID, task.Done)
+	if err != nil || !changed || done.FinishedAt.IsZero() {
+		t.Fatalf("set done: changed=%v finished=%v err=%v", changed, done.FinishedAt, err)
 	}
 	got, changed, err := s.SetStatus(tk.ID, task.Running, task.Starting)
 	if err != nil || changed || got.Status != task.Done {
@@ -254,5 +255,19 @@ func TestMissingMigrationIsAnError(t *testing.T) {
 	}
 	if err := runMigrations(dir, nil, 2); err == nil {
 		t.Fatal("want error for a missing migration step")
+	}
+}
+
+func TestTransitionMutatesOnlyOnChange(t *testing.T) {
+	s := openStore(t)
+	tk := newTask(t, s)
+	setErr := func(t *task.Task) { t.Error = "boom" }
+	got, changed, err := s.Transition(tk.ID, task.Failed, nil, setErr)
+	if err != nil || !changed || got.Error != "boom" {
+		t.Fatalf("got %+v changed=%v err=%v", got, changed, err)
+	}
+	got, changed, _ = s.Transition(tk.ID, task.Stopped, nil, func(t *task.Task) { t.Error = "other" })
+	if changed || got.Error != "boom" {
+		t.Fatalf("terminal task was mutated: %+v", got)
 	}
 }

@@ -57,6 +57,8 @@ type Worktree struct {
 	Path   string `json:"path"`
 	Branch string `json:"branch"`
 	Base   string `json:"base,omitempty"`
+	// Removed is set once the worktree was removed. The branch is kept.
+	Removed bool `json:"removed,omitempty"`
 }
 
 // Herdr holds the herdr handles of the runner. They are filled in by the
@@ -66,23 +68,40 @@ type Herdr struct {
 	TabID       string `json:"tabId,omitempty"`
 	PaneID      string `json:"paneId,omitempty"`
 	AgentName   string `json:"agentName,omitempty"`
+	// Closed is set once gc or stop has ended the runner's agent.
+	Closed bool `json:"closed,omitempty"`
 }
 
 // Task is the durable record stored in tasks/<id>/task.json.
 type Task struct {
-	SchemaVersion  int       `json:"schemaVersion"`
-	ID             string    `json:"id"`
-	Kind           string    `json:"kind"`
-	Agent          string    `json:"agent"`
-	Prompt         string    `json:"prompt"`
-	Skill          string    `json:"skill,omitempty"`
-	Title          string    `json:"title,omitempty"`
-	Cwd            string    `json:"cwd"`
-	Owner          string    `json:"owner"`
-	Worktree       *Worktree `json:"worktree,omitempty"`
-	After          []string  `json:"after,omitempty"`
-	Gate           Gate      `json:"gate"`
-	Herdr          Herdr     `json:"herdr"`
+	SchemaVersion int    `json:"schemaVersion"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Agent         string `json:"agent"`
+	Prompt        string `json:"prompt"`
+	Skill         string `json:"skill,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Cwd           string `json:"cwd"`
+	Owner         string `json:"owner"`
+	// RepoRoot is the main repository root of Cwd, empty outside git. Trust
+	// is prepared for it, and worktrees are created from it.
+	RepoRoot string `json:"repoRoot,omitempty"`
+	// MainWorkspace is the herdr workspace of the main session that spawned
+	// the task. Tabs open there, never in whatever workspace has focus.
+	MainWorkspace string `json:"mainWorkspace,omitempty"`
+	// ClaudeConfigDir is the main session's CLAUDE_CONFIG_DIR. herdr panes do
+	// not inherit it, so runners get it explicitly.
+	ClaudeConfigDir string    `json:"claudeConfigDir,omitempty"`
+	UseWorktree     bool      `json:"useWorktree,omitempty"`
+	Worktree        *Worktree `json:"worktree,omitempty"`
+	After           []string  `json:"after,omitempty"`
+	Gate            Gate      `json:"gate"`
+	Herdr           Herdr     `json:"herdr"`
+	// Error is the reason a task failed or needs a human, when the kit itself
+	// set that status.
+	Error string `json:"error,omitempty"`
+	// FinishedAt is set when the task reaches a terminal status.
+	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 	Status         Status    `json:"status"`
 	LauncherPID    int       `json:"launcherPid,omitempty"`
 	LaunchDeadline time.Time `json:"launchDeadline,omitzero"`

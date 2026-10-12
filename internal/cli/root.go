@@ -16,6 +16,16 @@ func NewRootCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newVersionCommand())
+	root.AddCommand(
+		newVersionCommand(),
+		newSpawnCommand(),
+		newLaunchCommand(),
+		newListCommand(),
+		newShowCommand(),
+		newSendCommand(),
+		newStopCommand(),
+		newFocusCommand(),
+		newGCCommand(),
+	)
 	return root
 }
