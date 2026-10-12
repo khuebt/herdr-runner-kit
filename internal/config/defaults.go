@@ -1,6 +1,10 @@
 package config
 
-import "github.com/khuebt/herdr-runner-kit/internal/buildinfo"
+import (
+	"slices"
+
+	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
+)
 
 // SchemaVersion is the config file format this binary reads and writes.
 const SchemaVersion = buildinfo.SchemaVersion
@@ -22,7 +26,7 @@ func Default() Config {
 		DefaultKind:          "code",
 		WorktreeBranchPrefix: "hrk/",
 		Telegram: Telegram{
-			Notify: []string{"needs-human", "failed", "stalled", "held", "done"},
+			Notify: slices.Clone(NotifyEvents),
 		},
 	}
 }

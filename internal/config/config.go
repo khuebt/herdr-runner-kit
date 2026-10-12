@@ -28,6 +28,9 @@ type Kind struct {
 // Telegram configures notifications. Empty fields use the Telegram channel
 // plugin's own files, which are resolved at send time.
 type Telegram struct {
+	// EnvFile is a dotenv file holding TELEGRAM_BOT_TOKEN and
+	// TELEGRAM_CHAT_ID, used instead of the plugin's files.
+	EnvFile  string
 	StateDir string   // overrides the plugin's channels/telegram directory
 	ChatID   string   // overrides the allowFrom list of the plugin's access.json
 	Notify   []string // event types that send a message
@@ -43,7 +46,7 @@ type Config struct {
 }
 
 // NotifyEvents lists the event types the telegram.notify key accepts.
-var NotifyEvents = []string{"needs-human", "failed", "stalled", "held", "done"}
+var NotifyEvents = []string{"needs-human", "failed", "stalled", "held", "done", "turn-ended-unreported"}
 
 // The file types use pointers so that an absent key keeps its default.
 type fileConfig struct {
@@ -60,6 +63,7 @@ type fileKind struct {
 }
 
 type fileTelegram struct {
+	EnvFile  *string  `yaml:"envFile"`
 	StateDir *string  `yaml:"stateDir"`
 	ChatID   *string  `yaml:"chatId"`
 	Notify   []string `yaml:"notify"`
@@ -126,6 +130,9 @@ func Parse(data []byte) (Config, error) {
 		cfg.WorktreeBranchPrefix = *file.WorktreeBranchPrefix
 	}
 	if t := file.Telegram; t != nil {
+		if t.EnvFile != nil {
+			cfg.Telegram.EnvFile = *t.EnvFile
+		}
 		if t.StateDir != nil {
 			cfg.Telegram.StateDir = *t.StateDir
 		}

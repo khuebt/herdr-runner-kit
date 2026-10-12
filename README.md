@@ -29,6 +29,7 @@ go install github.com/khuebt/herdr-runner-kit/cmd/herdr-runner-kit@latest
 - [Commands](docs/commands.md)
 - [Report contract](docs/report-contract.md)
 - [Configuration](docs/config.md)
+- [Telegram](docs/telegram.md)
 - [Versioning and releases](docs/versioning.md)
 - [Contributing](CONTRIBUTING.md)
 

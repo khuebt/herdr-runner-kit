@@ -61,7 +61,7 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 		Task: t.ID, Owner: t.Owner, Type: string(o.Status), Status: t.Status,
 		Summary: summary, Question: o.Question, Outputs: o.Outputs,
 	}
-	if err := r.Store.Append(ev); err != nil {
+	if err := r.record(ev); err != nil {
 		return t, fmt.Errorf("write event: %w", err)
 	}
 	if err := r.StartAfter(t.ID); err != nil {
