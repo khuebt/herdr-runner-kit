@@ -173,17 +173,45 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 	if err != nil || !slices.ContainsFunc(tasks, func(t *task.Task) bool { return t.Owner == owner }) {
 		return 0
 	}
+	var gcLock func()
 	for {
 		res, err := wait.Run(ctx, r, wait.Options{Owner: owner})
 		switch {
-		case err != nil, res.Idle != "":
+		case err != nil:
 			return 0
+		case res.Idle != "":
+			// wait closes finished runners while it watches. With nothing
+			// left to watch, one hook per owner stays to close them on
+			// time; every turn starts a hook, and the others leave.
+			if gcLock == nil {
+				if gcLock, err = r.Store.LockCursor(state.CursorName(owner) + "-gc"); err != nil {
+					return 0
+				}
+				defer gcLock()
+			}
+			tasks, err := r.Store.List()
+			if err != nil {
+				return 0
+			}
+			due, ok := runner.NextGC(tasks, owner)
+			if !ok {
+				return 0
+			}
+			select {
+			case <-ctx.Done():
+				return 0
+			case <-time.After(time.Until(due)):
+			}
+			// A runner gc cannot close would come due again at once.
+			if _, err := r.GC(ctx, owner, runner.GCAge, false); err != nil {
+				return 0
+			}
 		case res.TimedOut:
-			continue
+		default:
+			fmt.Fprintf(stderr, "herdr-runner-kit news\n%s\nRelay this to the user as is. This hook re-arms wait when your turn ends.\n",
+				strings.Join(res.Lines, "\n"))
+			return install.NewsExit
 		}
-		fmt.Fprintf(stderr, "herdr-runner-kit news\n%s\nRelay this to the user as is. This hook re-arms wait when your turn ends.\n",
-			strings.Join(res.Lines, "\n"))
-		return install.NewsExit
 	}
 }
 

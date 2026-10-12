@@ -209,15 +209,12 @@ func TestIdleAndTimeout(t *testing.T) {
 	if err != nil || got.Idle != "idle: no active tasks" {
 		t.Fatalf("empty: %+v %v", got, err)
 	}
-	h := addTask(t, r, task.Held, owner)
-	got, _ = Run(context.Background(), r, Options{Owner: owner})
-	if got.Idle != "idle: no running tasks; waiting on you: "+h.ID+" held" {
-		t.Errorf("idle = %q", got.Idle)
-	}
-	addTask(t, r, task.Running, owner)
+	// A held task can still bring news: another main session may release
+	// it from Telegram.
+	addTask(t, r, task.Held, owner)
 	got, err = Run(context.Background(), r, Options{Owner: owner, Timeout: 100 * time.Millisecond})
 	if err != nil || !got.TimedOut {
-		t.Errorf("timeout: %+v %v", got, err)
+		t.Errorf("held: %+v %v", got, err)
 	}
 }
 
@@ -283,5 +280,22 @@ func TestIdleWaitsForTheEventOfAFreshChange(t *testing.T) {
 	got := get(t, ch)
 	if got.err != nil || len(got.res.Lines) != 1 {
 		t.Fatalf("got %+v %v", got.res, got.err)
+	}
+}
+
+// An answer from another main session, or typed in the runner's tab, lets a
+// task that waits on a human finish; its owner's wait must still be there.
+func TestWaitStaysForATaskThatWaitsOnAHuman(t *testing.T) {
+	r, _ := newTestRunner(t)
+	tk := addTask(t, r, task.NeedsHuman, owner)
+	ch := start(r, Options{Owner: owner, Window: time.Millisecond})
+	select {
+	case got := <-ch:
+		t.Fatalf("returned while the task waits on a human: %+v", got)
+	case <-time.After(1500 * time.Millisecond): // past statusSettle
+	}
+	report(t, r, tk.ID, "answered elsewhere")
+	if got := get(t, ch); got.err != nil || len(got.res.Lines) != 1 || !strings.Contains(got.res.Lines[0], tk.ID+" done") {
+		t.Fatalf("got %+v", got)
 	}
 }

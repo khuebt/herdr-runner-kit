@@ -30,7 +30,7 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | `list [--all]`, `show <id>` | Stored status and herdr's live state; one task in full. |
 | `events [--since 1h] [--task ID] [--follow] [--timings]` | The event log, or the measured latencies per task. |
 | `focus <id>` | Switches herdr to the runner's tab. |
-| `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. Worktrees and branches are kept unless removal is asked. |
+| `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. `gc` closes those that finished at least 30 minutes ago (`--older-than`); `wait` does the same for its owner's runners while it watches, and the auto re-arm hook once nothing is left to watch. Worktrees and branches are kept unless removal is asked. |
 
 ## Chaining
 
@@ -52,7 +52,7 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.
 - It only sees tasks of its owner, the git top-level of the current folder by default, so several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`.
-- With nothing queued, starting or running, it exits with an `idle:` line that names the tasks waiting on you. It waits up to a second after the latest status change first, so news written right after that change is not lost.
+- When every task has finished, it exits with an `idle:` line. A task that is `needs-human` or `held` keeps it waiting, because the answer or release can come from another main session's Telegram or from the runner's tab. It waits up to a second after the latest status change first, so news written right after that change is not lost.
 - After 30 minutes without news it prints `timeout` and exits 0 (`--timeout` changes this).
 
 While it runs, `wait` also watches each runner through herdr. An agent that exits without reporting fails its task. An agent blocked on a prompt in its pane is reported as `stalled`. A launch that never finishes fails its task.

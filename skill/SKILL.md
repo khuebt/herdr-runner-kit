@@ -88,7 +88,7 @@ After you spawn, answer, send or release, run `herdr-runner-kit wait` with the B
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail.
 - `timeout`: rerun `wait` silently.
 - `already waiting`: another wait already holds the cursor, usually the auto re-arm hook. Do nothing and do not rerun.
-- `idle:`: nothing is running. Do not rerun until you start something.
+- `idle:`: every task has finished. Do not rerun until you start something.
 
 In the session `herdr-runner-kit main` started, news can also arrive as Stop hook feedback starting with `herdr-runner-kit news`. Handle it like a `wait` wake; the hook re-arms itself.
 

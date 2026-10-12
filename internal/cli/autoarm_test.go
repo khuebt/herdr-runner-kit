@@ -15,6 +15,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
+	"github.com/khuebt/herdr-runner-kit/internal/wait"
 )
 
 func testRunner(t *testing.T) *runner.Runner {
@@ -78,6 +79,60 @@ func TestAutoarm(t *testing.T) {
 	stderr.Reset()
 	if code := autoarm(context.Background(), r, "/repo", &stderr); code != 0 || stderr.Len() != 0 {
 		t.Fatalf("cursor held: code %d, %q", code, stderr.String())
+	}
+}
+
+func TestAutoarmClosesFinishedRunnersOnTime(t *testing.T) {
+	r := testRunner(t)
+	tk := &task.Task{Kind: "fix", Agent: "claude", Prompt: "x", Title: "fix", Owner: "/repo", Gate: task.GateAuto, Status: task.Done}
+	tk.Herdr.PaneID, tk.Herdr.TabID = "w1:p1", "w1:t1"
+	tk.FinishedAt = time.Now().Add(2 * time.Second).Add(-runner.GCAge)
+	if err := r.Store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing runs, so wait is idle; the first hook stays until the runner
+	// is due, closes it, and only then exits.
+	first := make(chan int)
+	go func() { first <- autoarm(context.Background(), r, "/repo", &strings.Builder{}) }()
+	time.Sleep(1300 * time.Millisecond)
+	// A later turn's hook leaves at once instead of piling up.
+	if code := autoarm(context.Background(), r, "/repo", &strings.Builder{}); code != 0 {
+		t.Fatalf("second hook: code %d", code)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Herdr.Closed {
+		t.Fatal("closed before it was due")
+	}
+	if code := <-first; code != 0 {
+		t.Fatalf("first hook: code %d", code)
+	}
+	if got, _ := r.Store.Get(tk.ID); !got.Herdr.Closed {
+		t.Fatal("not closed")
+	}
+}
+
+func TestWaitClosesDueRunnersWhileOthersRun(t *testing.T) {
+	r := testRunner(t)
+	busy := &task.Task{Kind: "fix", Agent: "claude", Prompt: "x", Title: "busy", Owner: "/repo", Gate: task.GateAuto, Status: task.Running}
+	busy.Herdr.PaneID = "w1:p1"
+	old := &task.Task{Kind: "fix", Agent: "claude", Prompt: "y", Title: "old", Owner: "/repo", Gate: task.GateAuto, Status: task.Done}
+	old.Herdr.PaneID, old.Herdr.TabID = "w1:p2", "w1:t2"
+	old.FinishedAt = time.Now().Add(-runner.GCAge - time.Minute)
+	other := &task.Task{Kind: "fix", Agent: "claude", Prompt: "z", Title: "other", Owner: "/elsewhere", Gate: task.GateAuto, Status: task.Done}
+	other.Herdr.PaneID = "w2:p1"
+	other.FinishedAt = old.FinishedAt
+	for _, tk := range []*task.Task{busy, old, other} {
+		if err := r.Store.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := wait.Run(context.Background(), r, wait.Options{Owner: "/repo", Timeout: 500 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(old.ID); !got.Herdr.Closed {
+		t.Fatal("the due runner is still open")
+	}
+	if got, _ := r.Store.Get(other.ID); got.Herdr.Closed {
+		t.Fatal("closed another owner's runner")
 	}
 }
 

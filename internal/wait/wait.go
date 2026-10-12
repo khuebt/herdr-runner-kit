@@ -33,6 +33,8 @@ const (
 	// Writers save the task first and append the event right after, so a
 	// task that just went idle may still have news on the way.
 	statusSettle = time.Second
+	// gcRetry is how long wait leaves a finished runner it tried to close.
+	gcRetry = time.Minute
 )
 
 // newsTypes are the events that wake the main session. Everything else is
@@ -104,6 +106,7 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	scan := time.NewTicker(scanEvery)
 	defer scan.Stop()
 	eventsPath := r.Store.EventsPath()
+	var gcAfter time.Time
 
 	for {
 		var news []state.Event
@@ -146,6 +149,13 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			return Result{Idle: idle}, nil
 		}
 		b.scan(ctx, tasks)
+		if due, ok := runner.NextGC(tasks, o.Owner); ok && time.Now().After(due) && time.Now().After(gcAfter) {
+			// In the background, so a slow agent exit never delays news; at
+			// most once a minute, so a runner that will not close is not
+			// sent Ctrl+C every scan.
+			gcAfter = time.Now().Add(gcRetry)
+			go func() { _, _ = r.GC(ctx, o.Owner, runner.GCAge, false) }()
+		}
 		if res, done, err := next(ctx, watcher, scan.C, timeout.C, eventsPath); done || err != nil {
 			return res, err
 		}
@@ -214,20 +224,14 @@ func ownTasks(s *state.Store, o Options) ([]*task.Task, error) {
 	return out, nil
 }
 
-// idleLine returns a message when none of the tasks can produce news on its
-// own: nothing is queued, starting or running.
+// idleLine returns a message when none of the tasks can produce news: all
+// are finished. A task waiting on a human still can, because the answer or
+// release may come from another main session or from its herdr tab.
 func idleLine(tasks []*task.Task) string {
-	var waiting []string
 	for _, t := range tasks {
-		switch t.Status {
-		case task.Queued, task.Starting, task.Running:
+		if !t.Status.Terminal() {
 			return ""
-		case task.NeedsHuman, task.Held:
-			waiting = append(waiting, t.ID+" "+string(t.Status))
 		}
-	}
-	if len(waiting) > 0 {
-		return "idle: no running tasks; waiting on you: " + strings.Join(waiting, ", ")
 	}
 	return "idle: no active tasks"
 }
