@@ -109,22 +109,20 @@ func (r *Runner) liveTask(id string) (*task.Task, error) {
 // its workspace and branch unless removeWorktree is set; removal refuses a
 // dirty worktree, and the branch is never deleted.
 func (r *Runner) Stop(ctx context.Context, id string, removeWorktree bool) (*task.Task, error) {
-	t, err := r.Store.Get(id)
-	if err != nil {
-		return nil, err
-	}
-	if err := r.closeRunner(ctx, t, removeWorktree); err != nil {
-		return nil, err
-	}
-	nt, changed, err := r.Store.SetStatus(id, task.Stopped)
+	// Mark it stopped before the agent quits, or a running wait's backstop
+	// sees the agent go first and reports a failure.
+	t, changed, err := r.Store.SetStatus(id, task.Stopped)
 	if err != nil {
 		return nil, err
 	}
 	if changed {
-		r.emit(nt, "stopped", "stopped by the user", "")
-		_ = r.failDependents(nt)
+		r.emit(t, "stopped", "stopped by the user", "")
+		_ = r.failDependents(t)
 	}
-	return nt, nil
+	if err := r.closeRunner(ctx, t, removeWorktree); err != nil {
+		return nil, err
+	}
+	return r.Store.Get(id)
 }
 
 // GC closes runners whose tasks finished more than olderThan ago, so their

@@ -506,7 +506,12 @@ func TestStopQuitsAgentAndClosesTab(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
-	fake.on("agent wait", herdrErr(herdr.CodeAgentNotRunning))
+	// The agent exits on Ctrl+C, and a running wait's backstop sees it go
+	// at once; the task must still end as stopped, not failed.
+	fake.on("agent wait", func(args []string) (string, error) {
+		r.fail(tk.ID, "the agent exited without reporting")
+		return herdrErr(herdr.CodeAgentNotRunning)(args)
+	})
 	got, err := r.Stop(context.Background(), tk.ID, false)
 	if err != nil {
 		t.Fatal(err)
