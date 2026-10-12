@@ -138,6 +138,13 @@ func (s *Store) Update(id string, fn func(*task.Task) error) (*task.Task, error)
 // a slow launcher writing "running" can not overwrite a fast runner's "done".
 // It returns the task as stored and whether the status changed.
 func (s *Store) SetStatus(id string, to task.Status, from ...task.Status) (*task.Task, bool, error) {
+	return s.Transition(id, to, from, nil)
+}
+
+// Transition is SetStatus with extra changes applied in the same write when,
+// and only when, the status changes. Reaching a terminal status stamps
+// FinishedAt.
+func (s *Store) Transition(id string, to task.Status, from []task.Status, mutate func(*task.Task)) (*task.Task, bool, error) {
 	if !to.Valid() {
 		return nil, false, fmt.Errorf("invalid status %q", to)
 	}
@@ -150,6 +157,12 @@ func (s *Store) SetStatus(id string, to task.Status, from ...task.Status) (*task
 			return errUnchanged
 		}
 		t.Status = to
+		if to.Terminal() {
+			t.FinishedAt = s.now().UTC()
+		}
+		if mutate != nil {
+			mutate(t)
+		}
 		return nil
 	})
 	if errors.Is(err, errUnchanged) {

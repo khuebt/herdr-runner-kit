@@ -26,22 +26,22 @@ func TestClaudeLaunchArgs(t *testing.T) {
 	tests := []struct {
 		agent    string
 		settings string
-		contract string
+		contract string // contract file path
 		want     []string
 	}{
 		{"claude", "", "", []string{"--dangerously-skip-permissions"}},
 		{"claude:claude-opus-5-5", "", "", []string{"--dangerously-skip-permissions", "--model", "claude-opus-5-5"}},
 		{"claude::max", "", "", []string{"--dangerously-skip-permissions", "--effort", "max"}},
 		{
-			"claude:claude-sonnet-5-5:medium", "/s/t3/settings.json", "Report when done.",
+			"claude:claude-sonnet-5-5:medium", "/s/t3/settings.json", "/s/t3/contract.md",
 			[]string{
 				"--dangerously-skip-permissions", "--model", "claude-sonnet-5-5", "--effort", "medium",
-				"--settings", "/s/t3/settings.json", "--append-system-prompt", "Report when done.",
+				"--settings", "/s/t3/settings.json", "--append-system-prompt-file", "/s/t3/contract.md",
 			},
 		},
 	}
 	for _, tt := range tests {
-		got := claude{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), SettingsPath: tt.settings, Contract: tt.contract})
+		got := claude{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), SettingsPath: tt.settings, ContractPath: tt.contract})
 		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
 		}
@@ -66,7 +66,7 @@ func TestCodexLaunchArgs(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		got := codex{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Bin: tt.bin, Contract: "ignored"})
+		got := codex{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Bin: tt.bin, ContractPath: "/ignored"})
 		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
 		}
@@ -197,52 +197,47 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func TestCopyClaudeTrust(t *testing.T) {
+func TestPrepareClaudeTrust(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".claude.json")
 	writeFile(t, path, `{
   "numStartups": 9007199254740993,
   "projects": {
     "/repo": {"hasTrustDialogAccepted": true, "hasClaudeMdExternalIncludesApproved": true, "allowedTools": []},
-    "/plain": {"hasTrustDialogAccepted": false}
+    "/plain": {"hasTrustDialogAccepted": true}
   }
 }`)
-	set, err := CopyClaudeTrust(path, "/repo/", "/wt/t3")
+	set, err := PrepareClaudeTrust(path, "/repo/", "/wt/t3")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(set, []string{"hasTrustDialogAccepted", "hasClaudeMdExternalIncludesApproved"}) {
 		t.Fatalf("set = %v", set)
 	}
-	ok, err := ClaudeTrustPresent(path, "/wt/t3", set)
-	if err != nil || !ok {
+	if ok, err := ClaudeTrustPresent(path, "/wt/t3", set); err != nil || !ok {
 		t.Fatalf("present = %v, %v", ok, err)
 	}
-	ok, _ = ClaudeTrustPresent(path, "/wt/t3", []string{"hasClaudeMdExternalIncludesWarningShown"})
-	if ok {
-		t.Error("granted a flag the origin did not have")
+	if ok, _ := ClaudeTrustPresent(path, "/wt/t3", []string{"hasClaudeMdExternalIncludesWarningShown"}); ok {
+		t.Error("approved an import flag the origin did not have")
 	}
 	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), "9007199254740993") {
-		t.Error("large integer was rewritten")
+	if !strings.Contains(string(data), "9007199254740993") || !strings.Contains(string(data), `"allowedTools": []`) {
+		t.Error("existing content was rewritten")
 	}
 	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
 		t.Errorf("mode = %o", info.Mode().Perm())
 	}
 
-	// Second run is a no-op; an untrusted origin grants nothing.
-	if set, err := CopyClaudeTrust(path, "/repo", "/wt/t3"); err != nil || set != nil {
+	// A second run is a no-op.
+	if set, err := PrepareClaudeTrust(path, "/repo", "/wt/t3"); err != nil || set != nil {
 		t.Errorf("second run = %v, %v", set, err)
 	}
-	if set, err := CopyClaudeTrust(path, "/plain", "/wt/t4"); err != nil || set != nil {
-		t.Errorf("untrusted origin = %v, %v", set, err)
-	}
-	// Workspace trust is inherited from a trusted parent; import approval is not.
-	writeFile(t, path, `{"projects": {"/home/u/Work": {"hasTrustDialogAccepted": true, "hasClaudeMdExternalIncludesApproved": true}}}`)
-	set, err = CopyClaudeTrust(path, "/home/u/Work/app", "/wt/t5")
+	// A folder the user never opened gets workspace trust from spawn, but no
+	// import approval.
+	set, err = PrepareClaudeTrust(path, "/new", "/new")
 	if err != nil || !reflect.DeepEqual(set, []string{"hasTrustDialogAccepted"}) {
-		t.Errorf("inherited trust = %v, %v", set, err)
+		t.Errorf("new folder = %v, %v", set, err)
 	}
-	if set, err := CopyClaudeTrust(filepath.Join(t.TempDir(), "missing.json"), "/repo", "/wt"); err != nil || set != nil {
+	if set, err := PrepareClaudeTrust(filepath.Join(t.TempDir(), "missing.json"), "/repo", "/wt"); err != nil || set != nil {
 		t.Errorf("missing file = %v, %v", set, err)
 	}
 }
