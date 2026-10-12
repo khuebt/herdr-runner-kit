@@ -2,7 +2,19 @@
 
 Every command prints short plain text, so the main agent's context stays small. `herdr-runner-kit <command> --help` lists every flag.
 
+## Setup
+
+| Command | What it does |
+|---|---|
+| `setup [--claude-config DIR]… [--force] [--no-hook]` | Installs the main-agent skill and the auto re-arm hook, and creates the config and state. A second run prints `no changes`. |
+| `doctor [--claude-config DIR]…` | Checks every dependency and prints the fix for each problem. |
+| `uninstall [--claude-config DIR]… [--purge [--yes]]` | Removes what `setup` installed; `--purge` also deletes config and state. |
+
+See [setup.md](setup.md).
+
 ## Main session
+
+Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so the main agent passes your words through a quoted heredoc instead of a shell string.
 
 | Command | What it does |
 |---|---|
@@ -10,7 +22,7 @@ Every command prints short plain text, so the main agent's context stays small. 
 | `wait` | Blocks until one of your tasks has news, prints one line per event and exits. Run it in the background and rerun it after each wake. |
 | `answer <id> <text>` | Answers a runner that reported `needs-human`. It continues in the same session. |
 | `answer --from-telegram --stdin` | Routes a Telegram reply by its `#id` tag, or to the only waiting task. See [telegram.md](telegram.md). |
-| `main [--exec]` | Prints, or runs, the command that starts the main session with the Telegram channel. |
+| `main [--exec]` | Prints, or runs, the command that starts the main session with the skill and the Telegram channel. |
 | `send <id> <text>` | Types a new prompt into a live runner. |
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
 | `list [--all]`, `show <id>` | Stored status and herdr's live state; one task in full. |
@@ -26,6 +38,8 @@ With `--gate auto` (the default) the child starts by itself within about a secon
 
 ## What `wait` reports
 
+The main agent runs `wait` in the background. In the session `main --exec` starts, the auto re-arm hook that `setup` installs also runs it after every turn, so no news is missed when the agent forgets to rerun it.
+
 `wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped` and `turn-ended-unreported`. Other events, such as `started`, only move its cursor.
 
 ```
@@ -36,7 +50,7 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.
 - It only sees tasks of its owner, the git top-level of the current folder by default, so several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`.
-- With nothing queued, starting or running, it exits at once with an `idle:` line that names the tasks waiting on you.
+- With nothing queued, starting or running, it exits with an `idle:` line that names the tasks waiting on you. It waits up to a second after the latest status change first, so news written right after that change is not lost.
 - After 30 minutes without news it prints `timeout` and exits 0 (`--timeout` changes this).
 
 While it runs, `wait` also watches each runner through herdr. An agent that exits without reporting fails its task. An agent blocked on a prompt in its pane is reported as `stalled`. A launch that never finishes fails its task.

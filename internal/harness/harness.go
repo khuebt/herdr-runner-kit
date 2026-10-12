@@ -13,8 +13,6 @@ package harness
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -110,29 +108,4 @@ func joinPrompt(rendered, prompt, contract string) string {
 		parts = append(parts, c)
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-// writeFileAtomic replaces path with data, keeping the existing file mode.
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".hrk-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
 }

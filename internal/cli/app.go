@@ -1,41 +1,37 @@
 package cli
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 )
 
-// openRunner loads the config and state and returns a ready Runner.
-func openRunner() (*runner.Runner, error) {
+// loadConfig reads the user's config file, or the defaults without one.
+func loadConfig() (config.Config, error) {
 	path, err := config.Path()
 	if err != nil {
-		return nil, err
+		return config.Config{}, err
 	}
-	cfg, err := config.Load(path)
+	return config.Load(path)
+}
+
+// openRunner loads the config and state and returns a ready Runner.
+func openRunner() (*runner.Runner, error) {
+	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
 	}
-	dir := os.Getenv("HRK_STATE_DIR")
-	if dir == "" {
-		if dir, err = state.DefaultDir(); err != nil {
-			return nil, err
-		}
+	dir, err := stateDir()
+	if err != nil {
+		return nil, err
 	}
 	store, err := state.Open(dir)
 	if err != nil {
 		return nil, err
 	}
-	bin, err := os.Executable()
+	bin, err := ownBinary()
 	if err != nil {
-		return nil, fmt.Errorf("locate own binary: %w", err)
-	}
-	if resolved, err := filepath.EvalSymlinks(bin); err == nil {
-		bin = resolved
+		return nil, err
 	}
 	return runner.New(store, cfg, bin), nil
 }

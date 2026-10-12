@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -134,7 +135,7 @@ func PrepareClaudeTrust(configPath, origin, runnerPath string) ([]string, error)
 	if err != nil {
 		return nil, err
 	}
-	if err := writeFileAtomic(configPath, append(data, '\n'), info.Mode().Perm()); err != nil {
+	if err := fsutil.WriteFileAtomic(configPath, append(data, '\n'), info.Mode().Perm()); err != nil {
 		return nil, fmt.Errorf("write %s: %w", configPath, err)
 	}
 	// Claude rewrites this file itself, so confirm the flags landed.

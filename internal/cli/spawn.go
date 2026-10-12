@@ -15,8 +15,9 @@ func newSpawnCommand() *cobra.Command {
 	var o runner.SpawnOptions
 	var worktree, noWorktree bool
 	var gate string
+	var stdin bool
 	cmd := &cobra.Command{
-		Use:     "spawn [flags] -- <prompt>",
+		Use:     "spawn [flags] -- <prompt> | spawn [flags] --stdin",
 		Aliases: []string{"run"},
 		Short:   "Start a runner for a task and return at once",
 		Long: "spawn records a task and opens a runner for it in a new herdr tab, or in a " +
@@ -33,7 +34,10 @@ func newSpawnCommand() *cobra.Command {
 				o.Worktree = &worktree
 			}
 			o.Gate = task.Gate(gate)
-			o.Prompt = strings.Join(args, " ")
+			var err error
+			if o.Prompt, err = promptText(cmd, args, stdin); err != nil {
+				return err
+			}
 			r, err := openRunner()
 			if err != nil {
 				return err
@@ -57,6 +61,7 @@ func newSpawnCommand() *cobra.Command {
 	f.StringVar(&gate, "gate", "auto", "auto starts on its own; human waits for `release`")
 	f.StringVar(&o.Cwd, "cwd", "", "folder the task works in (default: current folder)")
 	f.StringVar(&o.Title, "title", "", "short title (default: from the prompt)")
+	f.BoolVar(&stdin, "stdin", false, "read the prompt from stdin")
 	f.StringVar(&o.Owner, "owner", "", "main session the task reports to (default: git top-level of the current folder)")
 	return cmd
 }

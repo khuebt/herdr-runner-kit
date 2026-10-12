@@ -263,3 +263,25 @@ func TestLineIsShort(t *testing.T) {
 		t.Errorf("question line = %q", q)
 	}
 }
+
+// A status change lands before its event. A wait that looks in between must
+// still return the news, not idle.
+func TestIdleWaitsForTheEventOfAFreshChange(t *testing.T) {
+	r, _ := newTestRunner(t)
+	tk := addTask(t, r, task.Running, owner)
+	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Store.SetStatus(tk.ID, task.Done); err != nil {
+		t.Fatal(err)
+	}
+	ch := start(r, Options{Owner: owner, Window: time.Millisecond})
+	waitBlocked()
+	if err := r.Store.Append(state.Event{Task: tk.ID, Owner: owner, Type: "done", Status: task.Done, Summary: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	got := get(t, ch)
+	if got.err != nil || len(got.res.Lines) != 1 {
+		t.Fatalf("got %+v %v", got.res, got.err)
+	}
+}
