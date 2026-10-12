@@ -111,9 +111,19 @@ func printNotes(ctx context.Context, out io.Writer, c *upgrade.Client, current s
 		}
 	}
 	for _, r := range notes {
-		fmt.Fprintf(out, "\n## %s\n%s\n", r.Tag, strings.TrimSpace(r.Body))
+		fmt.Fprintf(out, "\n%s\n", releaseNotes(r))
 	}
 	fmt.Fprintln(out)
+}
+
+// releaseNotes is a release's notes under one heading. release-please notes
+// open with their own "## 0.1.0 (date)" heading, so only others get one.
+func releaseNotes(r upgrade.Release) string {
+	body := strings.TrimSpace(r.Body)
+	if strings.HasPrefix(body, "#") {
+		return body
+	}
+	return "## " + r.Tag + "\n" + body
 }
 
 // checkStaged vetoes a binary that cannot work on the state on disk: an

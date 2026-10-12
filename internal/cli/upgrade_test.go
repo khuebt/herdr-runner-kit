@@ -175,3 +175,13 @@ func TestUpgradeAsksBeforeAMinorBumpBefore1(t *testing.T) {
 		t.Fatalf("--yes: %q %v", out, err)
 	}
 }
+
+func TestReleaseNotesHaveOneHeading(t *testing.T) {
+	own := upgrade.Release{Tag: "v0.1.0", Body: "## 0.1.0 (2026-10-12)\n\n### Features\n"}
+	if got := releaseNotes(own); strings.Contains(got, "v0.1.0") || !strings.HasPrefix(got, "## 0.1.0 (") {
+		t.Errorf("own heading: %q", got)
+	}
+	if got := releaseNotes(upgrade.Release{Tag: "v0.2.0", Body: "- feat: faster wait"}); got != "## v0.2.0\n- feat: faster wait" {
+		t.Errorf("no heading: %q", got)
+	}
+}
