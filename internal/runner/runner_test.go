@@ -580,11 +580,11 @@ func TestGCClosesOnlyOldFinishedRunners(t *testing.T) {
 	if _, _, err := r.Store.SetStatus("t2", task.Done); err != nil { // finished just now
 		t.Fatal(err)
 	}
-	closed, err := r.GC(context.Background(), GCAge, false)
+	closed, err := r.GC(context.Background(), "", GCAge, false)
 	if err != nil || !slices.Equal(closed, []string{"t1"}) {
 		t.Fatalf("closed = %v, %v", closed, err)
 	}
-	if closed, _ := r.GC(context.Background(), GCAge, false); len(closed) != 0 {
+	if closed, _ := r.GC(context.Background(), "", GCAge, false); len(closed) != 0 {
 		t.Errorf("second gc closed %v", closed)
 	}
 }

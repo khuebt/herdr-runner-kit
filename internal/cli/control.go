@@ -146,7 +146,7 @@ func newGCCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			closed, err := r.GC(cmd.Context(), olderThan, removeWorktree)
+			closed, err := r.GC(cmd.Context(), "", olderThan, removeWorktree)
 			if len(closed) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "closed %s\n", strings.Join(closed, ", "))
 			} else if err == nil {

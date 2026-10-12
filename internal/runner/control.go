@@ -128,8 +128,9 @@ func (r *Runner) Stop(ctx context.Context, id string, removeWorktree bool) (*tas
 }
 
 // GC closes runners whose tasks finished more than olderThan ago, so their
-// agents stop using memory. It returns the ids it closed.
-func (r *Runner) GC(ctx context.Context, olderThan time.Duration, removeWorktree bool) ([]string, error) {
+// agents stop using memory. An empty owner means every owner's tasks. It
+// returns the ids it closed.
+func (r *Runner) GC(ctx context.Context, owner string, olderThan time.Duration, removeWorktree bool) ([]string, error) {
 	tasks, err := r.Store.List()
 	if err != nil {
 		return nil, err
@@ -138,15 +139,7 @@ func (r *Runner) GC(ctx context.Context, olderThan time.Duration, removeWorktree
 	var errs []error
 	cutoff := time.Now().Add(-olderThan)
 	for _, t := range tasks {
-		if !t.Status.Terminal() || t.Herdr.PaneID == "" ||
-			(t.Herdr.Closed && (!removeWorktree || t.Worktree == nil || t.Worktree.Removed)) {
-			continue
-		}
-		finished := t.FinishedAt
-		if finished.IsZero() {
-			finished = t.UpdatedAt
-		}
-		if finished.After(cutoff) {
+		if (owner != "" && t.Owner != owner) || !collectable(t, removeWorktree) || finishedAt(t).After(cutoff) {
 			continue
 		}
 		if err := r.closeRunner(ctx, t, removeWorktree); err != nil {
@@ -156,6 +149,36 @@ func (r *Runner) GC(ctx context.Context, olderThan time.Duration, removeWorktree
 		closed = append(closed, t.ID)
 	}
 	return closed, errors.Join(errs...)
+}
+
+// NextGC returns when GC can first close one of these tasks' finished
+// runners, and false when none is open. A non-empty owner limits it to that
+// owner's tasks.
+func NextGC(tasks []*task.Task, owner string) (time.Time, bool) {
+	var next time.Time
+	for _, t := range tasks {
+		if (owner != "" && t.Owner != owner) || !collectable(t, false) {
+			continue
+		}
+		if due := finishedAt(t).Add(GCAge); next.IsZero() || due.Before(next) {
+			next = due
+		}
+	}
+	return next, !next.IsZero()
+}
+
+// collectable reports whether t finished and still has something for GC
+// to close: its runner, or with removeWorktree its worktree.
+func collectable(t *task.Task, removeWorktree bool) bool {
+	return t.Status.Terminal() && t.Herdr.PaneID != "" &&
+		(!t.Herdr.Closed || (removeWorktree && t.Worktree != nil && !t.Worktree.Removed))
+}
+
+func finishedAt(t *task.Task) time.Time {
+	if t.FinishedAt.IsZero() {
+		return t.UpdatedAt
+	}
+	return t.FinishedAt
 }
 
 // closeRunner quits the agent gracefully, then closes its tab. A worktree
