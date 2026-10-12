@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -72,16 +73,45 @@ func newWaitCommand() *cobra.Command {
 }
 
 func newAnswerCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "answer <id> <text>",
+	var fromTelegram, stdin bool
+	cmd := &cobra.Command{
+		Use:   "answer <id> <text> | answer --from-telegram [--stdin | <text>]",
 		Short: "Answer a runner that reported needs-human; it continues in the same session",
-		Args:  cobra.MinimumNArgs(2),
+		Long: "answer types the answer into the runner that asked. With --from-telegram, the " +
+			"text is a Telegram reply: a leading #id picks the task; without one, the only task " +
+			"waiting for you gets it. A held task is released by ok, yes or duyệt, and any other " +
+			"text releases it with that note. Pass the reply with --stdin and a quoted heredoc, " +
+			"never inside a shell string.",
+		Example: `  herdr-runner-kit answer t3 "Use option A"
+  herdr-runner-kit answer --from-telegram --stdin <<'EOF'
+  #t3 dùng phương án A
+  EOF`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := parseTaskID(args[0])
+			r, err := openRunner()
 			if err != nil {
 				return err
 			}
-			r, err := openRunner()
+			out := cmd.OutOrStdout()
+			if fromTelegram {
+				text := strings.Join(args, " ")
+				if stdin {
+					data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 64<<10))
+					if err != nil {
+						return err
+					}
+					text = string(data)
+				}
+				line, err := r.RouteTelegram(cmd.Context(), text)
+				if err != nil {
+					return err
+				}
+				_, err = fmt.Fprintln(out, line)
+				return err
+			}
+			if len(args) < 2 {
+				return errors.New("answer needs <id> and <text>")
+			}
+			id, err := parseTaskID(args[0])
 			if err != nil {
 				return err
 			}
@@ -93,10 +123,13 @@ func newAnswerCommand() *cobra.Command {
 			if !working {
 				msg = id + " got the answer; herdr has not seen it start a turn yet"
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), msg)
+			_, err = fmt.Fprintln(out, msg)
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&fromTelegram, "from-telegram", false, "route a Telegram reply by its #id tag")
+	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the reply from stdin")
+	return cmd
 }
 
 func newReleaseCommand() *cobra.Command {

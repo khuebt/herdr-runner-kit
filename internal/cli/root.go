@@ -33,6 +33,8 @@ func NewRootCommand() *cobra.Command {
 		newAnswerCommand(),
 		newReleaseCommand(),
 		newEventsCommand(),
+		newMainCommand(),
+		newNotifyCommand(),
 	)
 	return root
 }

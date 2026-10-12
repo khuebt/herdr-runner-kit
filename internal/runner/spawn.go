@@ -17,6 +17,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
+	"github.com/khuebt/herdr-runner-kit/internal/telegram"
 )
 
 // LaunchBudget is how long a launch may take before the backstop treats a
@@ -41,13 +42,21 @@ type Runner struct {
 	StartLauncher func(id string) (int, error)
 	// StartAfter starts the detached follow-up of a report.
 	StartAfter func(id string) error
+	// Notify hands a news event to the detached Telegram notifier.
+	Notify func(ev state.Event)
+	// Telegram sends notifications in the notifier process.
+	Telegram *telegram.Client
 	// Sleep pauses between polls; tests replace it.
 	Sleep func(time.Duration)
 }
 
 // New returns a Runner for the real environment.
 func New(store *state.Store, cfg config.Config, bin string) *Runner {
-	r := &Runner{Store: store, Config: cfg, Herdr: herdr.New(), Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep}
+	r := &Runner{
+		Store: store, Config: cfg, Herdr: herdr.New(), Telegram: telegram.New(),
+		Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep,
+	}
+	r.Notify = r.startDetachedNotify
 	r.StartLauncher = func(id string) (int, error) { return r.startDetached(id, "__launch", "launch.log") }
 	r.StartAfter = func(id string) error {
 		_, err := r.startDetached(id, "__after", "after.log")
@@ -304,7 +313,7 @@ func (r *Runner) startDetached(id, verb, logName string) (int, error) {
 // because the task file already holds the state.
 func (r *Runner) emit(t *task.Task, typ, summary, question string) {
 	ev := state.Event{Task: t.ID, Owner: t.Owner, Type: typ, Status: t.Status, Summary: summary, Question: question}
-	if err := r.Store.Append(ev); err != nil {
+	if err := r.record(ev); err != nil {
 		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: write event: %v\n", t.ID, err)
 	}
 }

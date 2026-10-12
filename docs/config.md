@@ -35,9 +35,10 @@ telegram:
 | `kinds.<name>.agent` | see below | Agent spec for tasks of this kind. Required for a new kind. |
 | `kinds.<name>.worktree` | see below | `true` runs the task in a new git worktree when its cwd is inside a git repository. |
 | `worktreeBranchPrefix` | `hrk/` | Prefix of runner branches, for example `hrk/t3-fix-login`. |
+| `telegram.envFile` | none | Dotenv file holding `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used instead of the plugin's files. `~/` is expanded. See [telegram.md](telegram.md). |
 | `telegram.stateDir` | the plugin's directory | Directory holding the Telegram channel plugin's `.env` and `access.json`. By default it is `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. |
 | `telegram.chatId` | the plugin's `allowFrom` | Chat to notify, when it should differ from the plugin's allow list. |
-| `telegram.notify` | `[needs-human, failed, stalled, held, done]` | Events that send a Telegram message. `done` is sent only for a task that no other task waits on. Accepted values: `needs-human`, `failed`, `stalled`, `held`, `done`. |
+| `telegram.notify` | every accepted value | Events that send a Telegram message. `done` is sent only for a task that no other task waits on. Accepted values: `needs-human`, `failed`, `stalled`, `held`, `done`, `turn-ended-unreported`. |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.
 

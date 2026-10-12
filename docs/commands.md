@@ -9,6 +9,8 @@ Every command prints short plain text, so the main agent's context stays small. 
 | `spawn [flags] -- <prompt>` (alias `run`) | Records a task and returns at once. A detached launcher opens the runner in a new herdr tab, or a new worktree workspace, and sends the first prompt. |
 | `wait` | Blocks until one of your tasks has news, prints one line per event and exits. Run it in the background and rerun it after each wake. |
 | `answer <id> <text>` | Answers a runner that reported `needs-human`. It continues in the same session. |
+| `answer --from-telegram --stdin` | Routes a Telegram reply by its `#id` tag, or to the only waiting task. See [telegram.md](telegram.md). |
+| `main [--exec]` | Prints, or runs, the command that starts the main session with the Telegram channel. |
 | `send <id> <text>` | Types a new prompt into a live runner. |
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
 | `list [--all]`, `show <id>` | Stored status and herdr's live state; one task in full. |
