@@ -174,6 +174,7 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 		return 0
 	}
 	var gcLock func()
+	var retry time.Time
 	for {
 		res, err := wait.Run(ctx, r, wait.Options{Owner: owner})
 		switch {
@@ -197,12 +198,14 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 			if !ok {
 				return 0
 			}
+			// A runner gc skipped or could not close stays due, so the next
+			// try waits at least GCRetry.
 			select {
 			case <-ctx.Done():
 				return 0
-			case <-time.After(time.Until(due)):
+			case <-time.After(max(time.Until(due), time.Until(retry))):
 			}
-			// A runner gc cannot close would come due again at once.
+			retry = time.Now().Add(runner.GCRetry)
 			if _, err := r.GC(ctx, owner, runner.GCAge, false); err != nil {
 				return 0
 			}

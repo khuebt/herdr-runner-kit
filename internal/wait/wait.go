@@ -33,8 +33,6 @@ const (
 	// Writers save the task first and append the event right after, so a
 	// task that just went idle may still have news on the way.
 	statusSettle = time.Second
-	// gcRetry is how long wait leaves a finished runner it tried to close.
-	gcRetry = time.Minute
 )
 
 // newsTypes are the events that wake the main session. Everything else is
@@ -151,9 +149,9 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 		b.scan(ctx, tasks)
 		if due, ok := runner.NextGC(tasks, o.Owner); ok && time.Now().After(due) && time.Now().After(gcAfter) {
 			// In the background, so a slow agent exit never delays news; at
-			// most once a minute, so a runner that will not close is not
+			// most once a minute, so a runner that is in use or will not close is not
 			// sent Ctrl+C every scan.
-			gcAfter = time.Now().Add(gcRetry)
+			gcAfter = time.Now().Add(runner.GCRetry)
 			go func() { _, _ = r.GC(ctx, o.Owner, runner.GCAge, false) }()
 		}
 		if res, done, err := next(ctx, watcher, scan.C, timeout.C, eventsPath); done || err != nil {
