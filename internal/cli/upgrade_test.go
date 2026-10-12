@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 	"github.com/khuebt/herdr-runner-kit/internal/upgrade"
@@ -43,7 +44,7 @@ func fakeRelease(t *testing.T, schema int) (target string) {
 			{Name: name, URL: srv.URL + "/a"}, {Name: "checksums.txt", URL: srv.URL + "/s"},
 		}}
 		switch r.URL.Path {
-		case "/repos/" + upgrade.Repo + "/releases/latest":
+		case "/repos/" + upgrade.Repo + "/releases/latest", "/repos/" + upgrade.Repo + "/releases/tags/v0.2.0":
 			_ = json.NewEncoder(w).Encode(rel)
 		case "/repos/" + upgrade.Repo + "/releases":
 			_ = json.NewEncoder(w).Encode([]upgrade.Release{rel})
@@ -98,14 +99,59 @@ func TestUpgradeWaitsForRunnersBeforeAMigration(t *testing.T) {
 	if err := s.Create(tk); err != nil {
 		t.Fatal(err)
 	}
-	root := NewRootCommand()
-	root.SetArgs([]string{"upgrade"})
-	root.SetOut(&bytes.Buffer{})
-	root.SetErr(&bytes.Buffer{})
-	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), tk.ID) {
+	if _, err := runErr("upgrade"); err == nil || !strings.Contains(err.Error(), tk.ID) {
 		t.Fatalf("want a refusal naming %s, got %v", tk.ID, err)
 	}
 	if data, _ := os.ReadFile(target); string(data) != "old" {
 		t.Fatalf("binary changed: %q", data)
+	}
+}
+
+func runErr(args ...string) (string, error) {
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetArgs(args)
+	root.SetOut(&out)
+	root.SetErr(&out)
+	err := root.Execute()
+	return out.String(), err
+}
+
+func withVersion(t *testing.T, v string) {
+	t.Helper()
+	old := buildinfo.Version
+	buildinfo.Version = v
+	t.Cleanup(func() { buildinfo.Version = old })
+}
+
+func TestUpgradeDowngradeNeedsVersion(t *testing.T) {
+	target := fakeRelease(t, 1)
+	withVersion(t, "0.3.0")
+	if _, err := runErr("upgrade"); err == nil || !strings.Contains(err.Error(), "--version to downgrade") {
+		t.Fatalf("plain upgrade to an older latest: %v", err)
+	}
+	if data, _ := os.ReadFile(target); string(data) != "old" {
+		t.Fatal("binary changed")
+	}
+	if out, err := runErr("upgrade", "--version", "0.2.0"); err != nil || !strings.Contains(out, "upgraded 0.3.0 to v0.2.0") {
+		t.Fatalf("named downgrade: %q %v", out, err)
+	}
+}
+
+func TestUpgradeRefusesAnOlderSchemaThanTheState(t *testing.T) {
+	target := fakeRelease(t, 0)
+	withVersion(t, "0.1.0")
+	dir, err := stateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Open(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runErr("upgrade"); err == nil || !strings.Contains(err.Error(), "cannot go back") {
+		t.Fatalf("got %v", err)
+	}
+	if data, _ := os.ReadFile(target); string(data) != "old" {
+		t.Fatal("binary changed")
 	}
 }

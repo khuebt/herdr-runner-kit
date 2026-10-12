@@ -309,3 +309,31 @@ func TestMigrationBacksUpAndWaitsForLiveRunners(t *testing.T) {
 		t.Errorf("locks copied: %v", locks)
 	}
 }
+
+func TestMigrationBackupWithTrailingSlashAndAnOlderBackup(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	s, err := Open(dir + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir+".bak-1", 0o700); err != nil { // an older backup
+		t.Fatal(err)
+	}
+	list := []migration{{from: 1, run: func(string) error { return nil }}}
+	if err := runMigrations(s.Dir(), list, 2); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := filepath.Glob(dir + ".bak-1-*")
+	if len(fresh) != 1 {
+		t.Fatalf("backups beside the older one: %v", fresh)
+	}
+	if _, err := os.Stat(filepath.Join(fresh[0], "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	if partial, _ := filepath.Glob(dir + "*.partial"); len(partial) != 0 {
+		t.Fatalf("partial left: %v", partial)
+	}
+	if inside, _ := filepath.Glob(filepath.Join(dir, "*.bak-*")); len(inside) != 0 {
+		t.Fatalf("backup inside the state folder: %v", inside)
+	}
+}

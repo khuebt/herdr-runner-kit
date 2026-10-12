@@ -32,7 +32,18 @@ type Client struct {
 
 // New returns a client for api.github.com that honours GITHUB_TOKEN.
 func New() *Client {
-	return &Client{API: "https://api.github.com", HTTP: &http.Client{Timeout: 2 * time.Minute}, Token: os.Getenv("GITHUB_TOKEN")}
+	return &Client{API: "https://api.github.com", HTTP: &http.Client{Timeout: 2 * time.Minute, CheckRedirect: httpsOnly}, Token: os.Getenv("GITHUB_TOKEN")}
+}
+
+// httpsOnly keeps redirects, which release downloads always take, on HTTPS.
+func httpsOnly(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing a redirect to %s: downloads need HTTPS", req.URL)
+	}
+	if len(via) >= 10 {
+		return errors.New("too many redirects")
+	}
+	return nil
 }
 
 // Release is one published release.

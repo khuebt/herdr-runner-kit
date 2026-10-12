@@ -57,7 +57,8 @@ echo "ok: install and setup"
 
 # A tampered checksum installs nothing and keeps the current binary.
 cp "$bin/herdr-runner-kit" "$work/before"
-sed 's/^./0/' "$rel/checksums.txt" >"$work/sums" && mv "$work/sums" "$rel/checksums.txt"
+awk '{ print "0000000000000000000000000000000000000000000000000000000000000000", $2 }' "$rel/checksums.txt" >"$work/sums"
+mv "$work/sums" "$rel/checksums.txt"
 if sh "$root/install.sh" >"$work/tamper.log" 2>&1; then
 	fail "install accepted a tampered checksum"
 fi
@@ -65,7 +66,9 @@ grep -q "checksum mismatch" "$work/tamper.log" || fail "tampered: $(cat "$work/t
 cmp -s "$work/before" "$bin/herdr-runner-kit" || fail "tampered install changed the binary"
 echo "ok: tampered checksum refused"
 
-# doctor reports the missing herdr and exits non-zero, without crashing.
+# doctor reports the missing herdr and exits non-zero, without crashing. The
+# test release is not on GitHub, so its update check stays off.
+echo "updateCheck: false" >>"$XDG_CONFIG_HOME/herdr-runner-kit/config.yaml"
 status=0
 "$bin/herdr-runner-kit" doctor >"$work/doctor.log" 2>&1 || status=$?
 [ "$status" = 1 ] || {

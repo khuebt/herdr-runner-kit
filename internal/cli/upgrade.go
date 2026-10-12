@@ -116,11 +116,13 @@ func printNotes(ctx context.Context, out io.Writer, c *upgrade.Client, current s
 	fmt.Fprintln(out)
 }
 
-// checkStaged vetoes a binary whose state schema the current state cannot
-// move to safely: an older one cannot read the state, and a newer one would
-// migrate it under runners that still report against the old layout.
+// checkStaged vetoes a binary that cannot work on the state on disk: an
+// older schema cannot read it, and a newer one would migrate it under runners
+// that still report against the old layout.
 func checkStaged(staged string) error {
-	data, err := exec.Command(staged, "version", "--json").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	data, err := exec.CommandContext(ctx, staged, "version", "--json").Output()
 	if err != nil {
 		return fmt.Errorf("the new binary does not run here: %w", err)
 	}
@@ -128,16 +130,20 @@ func checkStaged(staged string) error {
 	if err := json.Unmarshal(data, &info); err != nil {
 		return fmt.Errorf("the new binary's version: %w", err)
 	}
-	switch {
-	case info.SchemaVersion < buildinfo.SchemaVersion:
-		return fmt.Errorf("%s reads state schema %d, older than this state (%d); it cannot go back that far",
-			info.Version, info.SchemaVersion, buildinfo.SchemaVersion)
-	case info.SchemaVersion == buildinfo.SchemaVersion:
-		return nil
-	}
 	dir, err := stateDir()
 	if err != nil {
 		return err
+	}
+	onDisk, err := state.DiskSchema(dir)
+	if err != nil {
+		return err
+	}
+	switch {
+	case onDisk == 0 || info.SchemaVersion == onDisk:
+		return nil
+	case info.SchemaVersion < onDisk:
+		return fmt.Errorf("%s reads state schema %d, older than the state in %s (%d); it cannot go back that far",
+			info.Version, info.SchemaVersion, dir, onDisk)
 	}
 	live, err := state.LiveTasks(dir)
 	if err != nil {

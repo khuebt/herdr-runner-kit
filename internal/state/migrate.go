@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
 )
@@ -83,6 +84,23 @@ func runMigrations(dir string, list []migration, target int) error {
 // report on the state as it is now.
 var liveStatuses = []string{"starting", "running", "needs-human"}
 
+// DiskSchema returns the schema version recorded in the state directory, or
+// 0 when there is no state yet.
+func DiskSchema(dir string) (int, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var meta stateMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return 0, fmt.Errorf("parse %s: %w", filepath.Join(dir, "state.json"), err)
+	}
+	return meta.SchemaVersion, nil
+}
+
 // LiveTasks lists the tasks in the state directory whose runner is still
 // working. It reads only the id and status, so it works on any schema.
 func LiveTasks(dir string) ([]string, error) {
@@ -96,7 +114,15 @@ func LiveTasks(dir string) ([]string, error) {
 			ID     string `json:"id"`
 			Status string `json:"status"`
 		}
-		if data, err := os.ReadFile(p); err == nil && json.Unmarshal(data, &t) == nil && slices.Contains(liveStatuses, t.Status) {
+		data, err := os.ReadFile(p)
+		if err == nil {
+			err = json.Unmarshal(data, &t)
+		}
+		switch {
+		case err != nil:
+			// Unreadable is treated as live: migrating under it is the risk.
+			live = append(live, filepath.Base(filepath.Dir(p))+" (unreadable)")
+		case slices.Contains(liveStatuses, t.Status):
 			live = append(live, t.ID)
 		}
 	}
@@ -104,8 +130,9 @@ func LiveTasks(dir string) ([]string, error) {
 }
 
 // prepareMigration refuses while runners are live and then copies the state
-// directory to <dir>.bak-<from>. An existing backup is kept: it is the older
-// copy, from before an earlier attempt.
+// directory to <dir>.bak-<from>, or to a time-stamped name beside an older
+// backup. The copy is made under a temporary name and renamed into place, so
+// a backup that exists is complete.
 func prepareMigration(dir string, from int) error {
 	live, err := LiveTasks(dir)
 	if err != nil {
@@ -113,15 +140,22 @@ func prepareMigration(dir string, from int) error {
 	}
 	if len(live) > 0 {
 		return fmt.Errorf("state schema %d needs a migration, but runners are still working (%s); "+
-			"reinstall the previous release with herdr-runner-kit upgrade --version vX.Y.Z, finish or stop them, then upgrade again",
+			"reinstall the previous release (herdr-runner-kit upgrade --version vX.Y.Z, or install.sh with HRK_VERSION=vX.Y.Z), "+
+			"finish or stop them, then upgrade again",
 			from, strings.Join(live, ", "))
 	}
 	backup := fmt.Sprintf("%s.bak-%d", dir, from)
-	if _, err := os.Stat(backup); err == nil {
-		return nil
+	if _, err := os.Lstat(backup); err == nil {
+		backup += time.Now().UTC().Format("-20060102T150405Z")
 	}
-	if err := copyDir(dir, backup); err != nil {
-		_ = os.RemoveAll(backup)
+	tmp := backup + ".partial"
+	_ = os.RemoveAll(tmp) // left by a crash during an earlier copy
+	if err := copyDir(dir, tmp); err != nil {
+		_ = os.RemoveAll(tmp)
+		return fmt.Errorf("back up state before migrating: %w", err)
+	}
+	if err := os.Rename(tmp, backup); err != nil {
+		_ = os.RemoveAll(tmp)
 		return fmt.Errorf("back up state before migrating: %w", err)
 	}
 	return nil
