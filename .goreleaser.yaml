@@ -1,0 +1,46 @@
+version: 2
+
+project_name: herdr-runner-kit
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: herdr-runner-kit
+    main: ./cmd/herdr-runner-kit
+    binary: herdr-runner-kit
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/khuebt/herdr-runner-kit/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/khuebt/herdr-runner-kit/internal/buildinfo.Commit={{ .ShortCommit }}
+      - -X github.com/khuebt/herdr-runner-kit/internal/buildinfo.Date={{ .Date }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# release-please owns CHANGELOG.md and the release notes.
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: khuebt
+    name: herdr-runner-kit
+  mode: keep-existing
+  prerelease: auto

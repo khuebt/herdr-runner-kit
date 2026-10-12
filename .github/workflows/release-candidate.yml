@@ -1,0 +1,27 @@
+name: Release candidate
+
+# Release candidates are tagged by hand (vX.Y.Z-rc.N) to test install and
+# upgrade against a real release before the stable one.
+on:
+  push:
+    tags: ["v*-rc.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v7.2.3
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
