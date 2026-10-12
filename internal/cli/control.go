@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -15,26 +18,58 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
+// maxPromptBytes bounds --stdin text; a longer prompt is an error, never cut.
+// The prompt reaches the agent as one argument of herdr agent prompt, and
+// Linux caps one argument at 128 KiB, which must also fit the kit's wrapper.
+const maxPromptBytes = 100 << 10
+
+// promptText is the text a command sends: args joined, or stdin with --stdin,
+// so user text passes through a quoted heredoc instead of a shell string.
+func promptText(cmd *cobra.Command, args []string, stdin bool) (string, error) {
+	if !stdin {
+		return strings.Join(args, " "), nil
+	}
+	if len(args) > 0 {
+		return "", errors.New("give the text either as arguments or on stdin, not both")
+	}
+	data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), maxPromptBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxPromptBytes {
+		return "", fmt.Errorf("the text on stdin is over %d KiB; put it in a file and name the file instead", maxPromptBytes>>10)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 func parseTaskID(arg string) (string, error) {
 	id, _, err := task.ParseID(arg)
 	return id, err
 }
 
 func newSendCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "send <id> <text>",
+	var stdin bool
+	cmd := &cobra.Command{
+		Use:   "send <id> <text> | send <id> --stdin",
 		Short: "Type a new prompt into a running runner",
-		Args:  cobra.MinimumNArgs(2),
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseTaskID(args[0])
 			if err != nil {
 				return err
 			}
+			text, err := promptText(cmd, args[1:], stdin)
+			if err != nil {
+				return err
+			}
+			if text == "" {
+				return errors.New("send needs the text to type")
+			}
 			r, err := openRunner()
 			if err != nil {
 				return err
 			}
-			working, err := r.Send(cmd.Context(), id, strings.Join(args[1:], " "))
+			working, err := r.Send(cmd.Context(), id, text)
 			if err != nil {
 				return err
 			}
@@ -46,6 +81,8 @@ func newSendCommand() *cobra.Command {
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the text from stdin")
+	return cmd
 }
 
 func newFocusCommand() *cobra.Command {
@@ -225,7 +262,13 @@ func currentOwner(cmd *cobra.Command) string {
 	if err != nil {
 		return ""
 	}
-	if top := runner.Toplevel(cmd.Context(), cwd); top != "" {
+	return ownerOf(cmd.Context(), cwd)
+}
+
+// ownerOf names the main session working in cwd: its git top-level, or cwd
+// itself outside a repository.
+func ownerOf(ctx context.Context, cwd string) string {
+	if top := runner.Toplevel(ctx, cwd); top != "" {
 		return top
 	}
 	return cwd

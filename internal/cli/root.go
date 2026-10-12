@@ -35,6 +35,10 @@ func NewRootCommand() *cobra.Command {
 		newEventsCommand(),
 		newMainCommand(),
 		newNotifyCommand(),
+		newAutoarmCommand(),
+		newSetupCommand(),
+		newDoctorCommand(),
+		newUninstallCommand(),
 	)
 	return root
 }

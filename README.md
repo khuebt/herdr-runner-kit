@@ -24,8 +24,19 @@ To build from source:
 go install github.com/khuebt/herdr-runner-kit/cmd/herdr-runner-kit@latest
 ```
 
+## Get started
+
+```sh
+herdr-runner-kit setup     # skill, auto re-arm hook, config and state
+herdr-runner-kit doctor    # checks herdr, the agents and Telegram, and prints fixes
+herdr-runner-kit main --exec
+```
+
+`main --exec` starts the main Claude Code session with the routing rules in its system prompt and, when configured, the Telegram channel. See [setup](docs/setup.md).
+
 ## Documentation
 
+- [Setup, doctor and uninstall](docs/setup.md)
 - [Commands](docs/commands.md)
 - [Report contract](docs/report-contract.md)
 - [Configuration](docs/config.md)

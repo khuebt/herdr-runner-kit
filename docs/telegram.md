@@ -20,7 +20,23 @@ telegram:
 
 or let it use the channel plugin's own files: the token from `<dir>/.env` and the chats from `allowFrom` in `<dir>/access.json`, where `<dir>` is `telegram.stateDir`, else `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. `telegram.chatId` overrides the chat ids from either source. Without credentials, Telegram is simply off.
 
-Use the same bot for the plugin and the kit. Set up the plugin once in Claude Code (`/plugin install telegram@claude-plugins-official`, then follow its pairing steps), and switch its access policy to `allowlist` after pairing, so only your chat can reach the main session.
+Use the same bot for the plugin and the kit.
+
+## Setting up the plugin
+
+Install the plugin in the Claude config folder of your main session, then disable it, so only the main session loads it:
+
+```sh
+CLAUDE_CONFIG_DIR=~/.claude2 claude plugin install telegram@claude-plugins-official
+CLAUDE_CONFIG_DIR=~/.claude2 claude plugin disable telegram@claude-plugins-official
+herdr-runner-kit setup --claude-config ~/.claude2
+```
+
+- The plugin's server needs [Bun](https://bun.sh).
+- `setup` writes the plugin's `access.json` with your chat on an `allowlist`, so there is no pairing step. It never changes an existing access list.
+- With a dotenv file (`telegram.envFile`), the plugin does not need its own `.env`. `main --exec` passes the token to the main session only.
+- `main` enables the plugin for its own session with `--settings`. Every other Claude session leaves it off, so none of them takes over the bot's update polling. If the plugin has its own `.env` and is enabled everywhere, any session that starts it takes over the polling, and `doctor` warns about it.
+- Channels can be turned off by an organization's managed settings. Claude then prints `--channels blocked by org policy` at start, and Telegram replies are dropped. Use a config folder whose account allows channels.
 
 ## Messages
 
@@ -44,8 +60,11 @@ Reply: #t3 <answer>
 ## Starting the main session
 
 ```sh
-herdr-runner-kit main          # prints: claude --channels plugin:telegram@claude-plugins-official
-herdr-runner-kit main --exec   # starts it
+herdr-runner-kit main          # prints the command
+herdr-runner-kit main --exec   # starts it, with the bot token from the kit's config
+CLAUDE_CONFIG_DIR=~/.claude2 herdr-runner-kit main --exec   # with the plugin in another config folder
 ```
+
+The skill and the plugin come from `$CLAUDE_CONFIG_DIR`, or `~/.claude`. `main` warns when that folder has no skill. The command is `HRK_MAIN=<pid> claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels plugin:telegram@claude-plugins-official --append-system-prompt-file <claude config>/skills/herdr-runner-kit/SKILL.md`. The skill in the system prompt keeps the routing rules in force for the whole session, including after compaction.
 
 Run one such session per bot. It answers tasks from every repository. A reply sent while no main session is running is lost; send it again once the session is up.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -75,7 +74,7 @@ func newWaitCommand() *cobra.Command {
 func newAnswerCommand() *cobra.Command {
 	var fromTelegram, stdin bool
 	cmd := &cobra.Command{
-		Use:   "answer <id> <text> | answer --from-telegram [--stdin | <text>]",
+		Use:   "answer <id> [--stdin | <text>] | answer --from-telegram [--stdin | <text>]",
 		Short: "Answer a runner that reported needs-human; it continues in the same session",
 		Long: "answer types the answer into the runner that asked. With --from-telegram, the " +
 			"text is a Telegram reply: a leading #id picks the task; without one, the only task " +
@@ -93,13 +92,9 @@ func newAnswerCommand() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if fromTelegram {
-				text := strings.Join(args, " ")
-				if stdin {
-					data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 64<<10))
-					if err != nil {
-						return err
-					}
-					text = string(data)
+				text, err := promptText(cmd, args, stdin)
+				if err != nil {
+					return err
 				}
 				line, err := r.RouteTelegram(cmd.Context(), text)
 				if err != nil {
@@ -108,14 +103,21 @@ func newAnswerCommand() *cobra.Command {
 				_, err = fmt.Fprintln(out, line)
 				return err
 			}
-			if len(args) < 2 {
-				return errors.New("answer needs <id> and <text>")
+			if len(args) < 1 {
+				return errors.New("answer needs <id> and the text")
 			}
 			id, err := parseTaskID(args[0])
 			if err != nil {
 				return err
 			}
-			working, err := r.Answer(cmd.Context(), id, strings.Join(args[1:], " "))
+			text, err := promptText(cmd, args[1:], stdin)
+			if err != nil {
+				return err
+			}
+			if text == "" {
+				return errors.New("answer needs the text")
+			}
+			working, err := r.Answer(cmd.Context(), id, text)
 			if err != nil {
 				return err
 			}
@@ -128,7 +130,7 @@ func newAnswerCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&fromTelegram, "from-telegram", false, "route a Telegram reply by its #id tag")
-	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the reply from stdin")
+	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the text from stdin")
 	return cmd
 }
 

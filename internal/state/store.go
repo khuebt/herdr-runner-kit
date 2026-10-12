@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -241,30 +242,8 @@ func (s *Store) write(t *task.Task) error {
 	return writeFileAtomic(filepath.Join(s.TaskDir(t.ID), "task.json"), append(data, '\n'))
 }
 
-// writeFileAtomic writes data to a temporary file in the same directory and
-// renames it over path, so readers see either the old or the new content.
 func writeFileAtomic(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if err := tmp.Chmod(filePerm); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := fsutil.WriteFileAtomic(path, data, filePerm); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

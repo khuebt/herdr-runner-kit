@@ -29,6 +29,10 @@ const (
 	MaxLine = 300
 	// scanEvery is how often wait checks launches and new runners.
 	scanEvery = 2 * time.Second
+	// statusSettle is how long a status change may go without its event.
+	// Writers save the task first and append the event right after, so a
+	// task that just went idle may still have news on the way.
+	statusSettle = time.Second
 )
 
 // newsTypes are the events that wake the main session. Everything else is
@@ -132,6 +136,13 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			return Result{}, err
 		}
 		if idle := idleLine(tasks); idle != "" {
+			// min guards against a clock that stepped back past UpdatedAt.
+			if d := min(statusSettle-sinceLastChange(tasks), statusSettle); d > 0 {
+				if !sleep(ctx, d) {
+					return Result{}, ctx.Err()
+				}
+				continue
+			}
 			return Result{Idle: idle}, nil
 		}
 		b.scan(ctx, tasks)
@@ -219,6 +230,16 @@ func idleLine(tasks []*task.Task) string {
 		return "idle: no running tasks; waiting on you: " + strings.Join(waiting, ", ")
 	}
 	return "idle: no active tasks"
+}
+
+func sinceLastChange(tasks []*task.Task) time.Duration {
+	var last time.Time
+	for _, t := range tasks {
+		if t.UpdatedAt.After(last) {
+			last = t.UpdatedAt
+		}
+	}
+	return time.Since(last)
 }
 
 // wake formats the news and records the wake-up, the measurement point for
