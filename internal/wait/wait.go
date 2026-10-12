@@ -224,20 +224,14 @@ func ownTasks(s *state.Store, o Options) ([]*task.Task, error) {
 	return out, nil
 }
 
-// idleLine returns a message when none of the tasks can produce news on its
-// own: nothing is queued, starting or running.
+// idleLine returns a message when none of the tasks can produce news: all
+// are finished. A task waiting on a human still can, because the answer or
+// release may come from another main session or from its herdr tab.
 func idleLine(tasks []*task.Task) string {
-	var waiting []string
 	for _, t := range tasks {
-		switch t.Status {
-		case task.Queued, task.Starting, task.Running:
+		if !t.Status.Terminal() {
 			return ""
-		case task.NeedsHuman, task.Held:
-			waiting = append(waiting, t.ID+" "+string(t.Status))
 		}
-	}
-	if len(waiting) > 0 {
-		return "idle: no running tasks; waiting on you: " + strings.Join(waiting, ", ")
 	}
 	return "idle: no active tasks"
 }

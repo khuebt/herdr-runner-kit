@@ -52,7 +52,7 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.
 - It only sees tasks of its owner, the git top-level of the current folder by default, so several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`.
-- With nothing queued, starting or running, it exits with an `idle:` line that names the tasks waiting on you. It waits up to a second after the latest status change first, so news written right after that change is not lost.
+- When every task has finished, it exits with an `idle:` line. A task that is `needs-human` or `held` keeps it waiting, because the answer or release can come from another main session's Telegram or from the runner's tab. It waits up to a second after the latest status change first, so news written right after that change is not lost.
 - After 30 minutes without news it prints `timeout` and exits 0 (`--timeout` changes this).
 
 While it runs, `wait` also watches each runner through herdr. An agent that exits without reporting fails its task. An agent blocked on a prompt in its pane is reported as `stalled`. A launch that never finishes fails its task.
