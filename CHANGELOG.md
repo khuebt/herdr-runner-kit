@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.0 (2026-10-12)
+
+
+### Features
+
+* add CLI skeleton with version command ([e3768b5](https://github.com/khuebt/herdr-runner-kit/commit/e3768b5b7a584e72a853f5322137134fc637e97b))
+* add install script and upgrade ([#8](https://github.com/khuebt/herdr-runner-kit/issues/8)) ([6f77118](https://github.com/khuebt/herdr-runner-kit/commit/6f771186aa88b4975c20b60477de810ec9c74d81))
+* add setup, doctor and the main-agent skill ([#7](https://github.com/khuebt/herdr-runner-kit/issues/7)) ([bf80301](https://github.com/khuebt/herdr-runner-kit/commit/bf80301faa2b6c41e3f87169221c265cb9d04c5b))
+* add task model, config, state store and agent adapters ([#3](https://github.com/khuebt/herdr-runner-kit/issues/3)) ([281fb6f](https://github.com/khuebt/herdr-runner-kit/commit/281fb6f620d6f5c32fb63a41041880bba4b0cc6f))
+* launch runners in herdr tabs ([#4](https://github.com/khuebt/herdr-runner-kit/issues/4)) ([bf419b4](https://github.com/khuebt/herdr-runner-kit/commit/bf419b4aab4051df3bba563d704c2603f478e936))
+* report results, wait for news and chain tasks ([#5](https://github.com/khuebt/herdr-runner-kit/issues/5)) ([533868f](https://github.com/khuebt/herdr-runner-kit/commit/533868fd95a1ab6299fe2104f7371b171934a28b))
+* send runner news to Telegram and route replies ([#6](https://github.com/khuebt/herdr-runner-kit/issues/6)) ([b96c36e](https://github.com/khuebt/herdr-runner-kit/commit/b96c36ebb95bc288edcdcde90b82a6e6744d6fae))
+
+
+### Bug Fixes
+
+* acceptance fixes for v0.1.0 ([#9](https://github.com/khuebt/herdr-runner-kit/issues/9)) ([3b1bc8f](https://github.com/khuebt/herdr-runner-kit/commit/3b1bc8fe7e1cea0fd47c6e42e821b5f4bdacc663))
+
+## Changelog
+
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
