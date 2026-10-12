@@ -10,14 +10,12 @@ herdr-runner-kit upgrade --version v0.3.0   # install a named release, newer or 
 
 1. asks the GitHub Releases API for the latest release, or the named one. Set `GITHUB_TOKEN` to raise the API's rate limit of 60 anonymous requests an hour;
 2. refuses to go to an older release unless you name it with `--version`;
-3. for a new major version, prints the release notes and asks first (`--yes` skips the question);
+3. for a release that may hold incompatible changes, prints the release notes and asks first (`--yes` skips the question). That is a new major version, or before 1.0 a new minor version;
 4. downloads the archive over HTTPS and checks it against the release's `checksums.txt`; on a mismatch nothing changes;
 5. runs the new binary's `version --json` beside the old one, and refuses when its state schema is older than the state on disk, or when it would migrate that state while runners are still working;
 6. renames the new binary over the old one, then runs the new binary's `setup`, which refreshes the skill and the hook. Pass `--claude-config DIR` (repeatable) to set up those folders instead of the default. `HRK_NO_SETUP=1` skips `setup`.
 
 Running runners are separate processes, so an upgrade interrupts nothing. Their `report` calls go to the same path and reach the new binary. Within one major version the [report contract](report-contract.md) stays backward compatible, so a runner started by the old version still reports correctly.
-
-Before 1.0, an incompatible change bumps the minor version (see [versioning.md](versioning.md)). Read `upgrade --check` before such an upgrade.
 
 ## State migrations
 

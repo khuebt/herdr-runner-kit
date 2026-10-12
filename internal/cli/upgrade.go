@@ -68,8 +68,8 @@ func newUpgradeCommand() *cobra.Command {
 			case newer < 0 && version == "":
 				return fmt.Errorf("the latest release %s is older than this binary (%s); name it with --version to downgrade", rel.Tag, current)
 			}
-			if newer > 0 && upgrade.Major(rel.Tag) > upgrade.Major(current) && upgrade.Major(current) >= 0 {
-				fmt.Fprintf(out, "%s is a new major version. Read its notes first:\n", rel.Tag)
+			if newer > 0 && upgrade.MayBreak(current, rel.Tag) {
+				fmt.Fprintf(out, "%s may hold incompatible changes. Read its notes first:\n", rel.Tag)
 				printNotes(ctx, out, c, current, rel)
 				if !yes && !confirm(cmd.InOrStdin(), out, "Upgrade? [y/N] ") {
 					return errors.New("upgrade cancelled")
@@ -97,7 +97,7 @@ func newUpgradeCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&version, "version", "", "install this release instead of the latest, such as v0.2.0; allows a downgrade")
 	cmd.Flags().BoolVar(&check, "check", false, "only print the current and latest versions and what changed")
-	cmd.Flags().BoolVar(&yes, "yes", false, "do not ask before a new major version")
+	cmd.Flags().BoolVar(&yes, "yes", false, "do not ask before a release that may hold incompatible changes")
 	cmd.Flags().StringArrayVar(&dirs, "claude-config", nil, "Claude config folder for the setup that follows (repeatable; default $CLAUDE_CONFIG_DIR or ~/.claude)")
 	return cmd
 }

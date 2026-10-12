@@ -148,10 +148,30 @@ func TestUpgradeRefusesAnOlderSchemaThanTheState(t *testing.T) {
 	if _, err := state.Open(dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runErr("upgrade"); err == nil || !strings.Contains(err.Error(), "cannot go back") {
+	if _, err := runErr("upgrade", "--yes"); err == nil || !strings.Contains(err.Error(), "cannot go back") {
 		t.Fatalf("got %v", err)
 	}
 	if data, _ := os.ReadFile(target); string(data) != "old" {
 		t.Fatal("binary changed")
+	}
+}
+
+func TestUpgradeAsksBeforeAMinorBumpBefore1(t *testing.T) {
+	target := fakeRelease(t, 1)
+	withVersion(t, "0.1.0")
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetArgs([]string{"upgrade"})
+	root.SetIn(strings.NewReader("n\n"))
+	root.SetOut(&out)
+	root.SetErr(&out)
+	if err := root.Execute(); err == nil || !strings.Contains(out.String(), "faster wait") {
+		t.Fatalf("declined: %q %v", out.String(), err)
+	}
+	if data, _ := os.ReadFile(target); string(data) != "old" {
+		t.Fatal("binary changed after no")
+	}
+	if out, err := runErr("upgrade", "--yes"); err != nil || !strings.Contains(out, "upgraded 0.1.0 to v0.2.0") {
+		t.Fatalf("--yes: %q %v", out, err)
 	}
 }

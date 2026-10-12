@@ -165,6 +165,18 @@ func Compare(a, b string) int {
 	return cmpInt(len(pa), len(pb))
 }
 
+// MayBreak reports whether going from one release to a newer one may bring
+// incompatible changes: a new major version, or before 1.0 a new minor one,
+// as docs/versioning.md defines. A version it cannot read never does.
+func MayBreak(from, to string) bool {
+	a, oka := parse(from)
+	b, okb := parse(to)
+	if !oka || !okb {
+		return false
+	}
+	return b.core[0] > a.core[0] || (b.core[0] == 0 && a.core[0] == 0 && b.core[1] > a.core[1])
+}
+
 // Major is the major version number, or -1 for a version it cannot read.
 func Major(v string) int {
 	if p, ok := parse(v); ok {

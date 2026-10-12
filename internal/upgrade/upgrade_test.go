@@ -198,6 +198,21 @@ func TestCompare(t *testing.T) {
 	if Major("v2.3.4") != 2 || Major("dev") != -1 {
 		t.Error("Major")
 	}
+	for _, tc := range []struct {
+		from, to string
+		want     bool
+	}{
+		{"v0.1.0", "v0.1.5", false},
+		{"v0.1.0", "v0.2.0", true},
+		{"v0.9.0", "v1.0.0", true},
+		{"v1.2.0", "v1.3.0", false},
+		{"v1.2.0", "v2.0.0", true},
+		{"dev", "v0.2.0", false},
+	} {
+		if got := MayBreak(tc.from, tc.to); got != tc.want {
+			t.Errorf("MayBreak(%s, %s) = %v", tc.from, tc.to, got)
+		}
+	}
 }
 
 func TestBetween(t *testing.T) {
