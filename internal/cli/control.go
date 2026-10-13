@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -157,6 +158,74 @@ func newGCCommand() *cobra.Command {
 	}
 	cmd.Flags().DurationVar(&olderThan, "older-than", runner.GCAge, "close runners whose task finished at least this long ago")
 	cmd.Flags().BoolVar(&removeWorktree, "remove-worktree", false, "also remove clean worktrees (branches are kept)")
+	return cmd
+}
+
+func newCleanupCommand() *cobra.Command {
+	var yes, noFetch bool
+	var owner string
+	cmd := &cobra.Command{
+		Use:   "cleanup [id]...",
+		Short: "List finished worktrees and branches left behind, and remove the merged ones with --yes",
+		Long: "cleanup fetches origin, then lists this main session's finished worktree tasks whose " +
+			"worktree or branch is still there: merged (safe to remove), unmerged or dirty. With --yes " +
+			"it removes the worktree and deletes the local branch of each merged one, or of the given " +
+			"ids. Unmerged branches and worktrees with changes are never removed.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ids := make([]string, 0, len(args))
+			for _, a := range args {
+				id, err := parseTaskID(a)
+				if err != nil {
+					return err
+				}
+				ids = append(ids, id)
+			}
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			if owner == "" {
+				owner = currentOwner(cmd)
+			}
+			items, err := r.Cleanable(cmd.Context(), owner, !noFetch)
+			if err != nil {
+				return err
+			}
+			if len(ids) > 0 {
+				items = slices.DeleteFunc(items, func(it runner.CleanupItem) bool { return !slices.Contains(ids, it.Task.ID) })
+			}
+			out := cmd.OutOrStdout()
+			if len(items) == 0 {
+				_, err := fmt.Fprintln(out, "nothing to clean up")
+				return err
+			}
+			merged := 0
+			w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+			for _, it := range items {
+				if it.Verdict == runner.Merged {
+					merged++
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", it.Task.ID, it.Verdict, it.Task.Worktree.Branch, it.Detail)
+			}
+			if err := w.Flush(); err != nil {
+				return err
+			}
+			if !yes {
+				if merged > 0 {
+					_, err = fmt.Fprintf(out, "run cleanup --yes to remove the worktree and branch of %d merged task(s)\n", merged)
+				}
+				return err
+			}
+			cleaned, err := r.Cleanup(cmd.Context(), items)
+			if len(cleaned) > 0 {
+				fmt.Fprintf(out, "removed the worktree and branch of %s\n", strings.Join(cleaned, ", "))
+			}
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "remove the worktree and branch of each merged task")
+	cmd.Flags().BoolVar(&noFetch, "no-fetch", false, "compare with the local refs, without fetching origin")
+	cmd.Flags().StringVar(&owner, "owner", "", "main session whose tasks to clean (default: git top-level of the current folder)")
 	return cmd
 }
 

@@ -57,8 +57,13 @@ type Worktree struct {
 	Path   string `json:"path"`
 	Branch string `json:"branch"`
 	Base   string `json:"base,omitempty"`
-	// Removed is set once the worktree was removed. The branch is kept.
+	// Removed is set once the worktree was removed.
 	Removed bool `json:"removed,omitempty"`
+	// BranchDeleted is set once cleanup deleted the merged branch.
+	BranchDeleted bool `json:"branchDeleted,omitempty"`
+	// Offered is set once the main session was told the worktree and
+	// branch can be cleaned up, so it is told only once.
+	Offered bool `json:"offered,omitempty"`
 }
 
 // Herdr holds the herdr handles of the runner. They are filled in by the
