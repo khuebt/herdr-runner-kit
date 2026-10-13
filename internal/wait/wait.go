@@ -44,8 +44,12 @@ func IsNews(typ string) bool { return slices.Contains(newsTypes, typ) }
 
 // Options select what a wait watches.
 type Options struct {
-	Owner   string
-	Tasks   []string // empty means every task of Owner
+	Owner string
+	// Also are more owners watched with Owner, such as the owners of the
+	// registered projects, whose runners report to the main session from
+	// any folder. They are ignored when Owner is empty.
+	Also    []string
+	Tasks   []string // empty means every task of the owners
 	Cursor  string   // cursor name; default derived from Owner
 	Timeout time.Duration
 	Window  time.Duration
@@ -108,7 +112,12 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	// Look for merged worktrees to offer in the background, since it may
 	// fetch. An idle wait lets it finish first, so its news is not lost.
 	checking := make(chan struct{})
-	go func() { defer close(checking); r.NoticeCleanable(ctx, o.Owner) }()
+	go func() {
+		defer close(checking)
+		for _, owner := range o.owners() {
+			r.NoticeCleanable(ctx, owner)
+		}
+	}()
 
 	for {
 		var news []state.Event
@@ -160,12 +169,17 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			return Result{Idle: idle}, nil
 		}
 		b.scan(ctx, tasks)
-		if due, ok := runner.NextGC(tasks, o.Owner); ok && time.Now().After(due) && time.Now().After(gcAfter) {
+		// tasks holds only the watched owners' tasks.
+		if due, ok := runner.NextGC(tasks, ""); ok && time.Now().After(due) && time.Now().After(gcAfter) {
 			// In the background, so a slow agent exit never delays news; at
 			// most once a minute, so a runner that is in use or will not close is not
 			// sent Ctrl+C every scan.
 			gcAfter = time.Now().Add(runner.GCRetry)
-			go func() { _, _ = r.GC(ctx, o.Owner, runner.GCAge, false) }()
+			go func() {
+				for _, owner := range o.owners() {
+					_, _ = r.GC(ctx, owner, runner.GCAge, false)
+				}
+			}()
 		}
 		if res, done, err := next(ctx, watcher, scan.C, timeout.C, eventsPath); done || err != nil {
 			return res, err
@@ -215,10 +229,25 @@ func readNews(s *state.Store, cursor int64, o Options) ([]state.Event, int64, er
 }
 
 func mine(owner, id string, o Options) bool {
-	if o.Owner != "" && owner != o.Owner {
+	if o.Owner != "" && !slices.Contains(o.owners(), owner) {
 		return false
 	}
 	return len(o.Tasks) == 0 || slices.Contains(o.Tasks, id)
+}
+
+// owners lists Owner and the other owners it watches, each once. An empty
+// Owner means every owner.
+func (o Options) owners() []string {
+	if o.Owner == "" {
+		return []string{""}
+	}
+	out := []string{o.Owner}
+	for _, a := range o.Also {
+		if a != "" && !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 func ownTasks(s *state.Store, o Options) ([]*task.Task, error) {

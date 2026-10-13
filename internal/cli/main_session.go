@@ -127,7 +127,7 @@ func newAutoarmCommand() *cobra.Command {
 			if pid, err := strconv.Atoi(main); err == nil && pid > 1 {
 				ctx = whileAlive(ctx, pid)
 			}
-			if code := autoarm(ctx, r, ownerOf(ctx, payload.Cwd), cmd.ErrOrStderr()); code != 0 {
+			if code := autoarm(ctx, r, runner.CallerOwner(ctx, payload.Cwd), cmd.ErrOrStderr()); code != 0 {
 				os.Exit(code)
 			}
 			return nil
@@ -163,20 +163,25 @@ func whileAlive(ctx context.Context, pid int) context.Context {
 	return ctx
 }
 
-// autoarm waits for the owner's news, re-arming across wait's own timeout.
-// It returns install.NewsExit after printing news for Claude, and 0 when
-// there is nothing to report.
+// autoarm waits for the news of the owner and of every registered project,
+// re-arming across wait's own timeout. It returns install.NewsExit after
+// printing news for Claude, and 0 when there is nothing to report.
 func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writer) int {
-	// A folder that never spawned a task has no news, so skip wait and its
-	// cursor file.
+	also, err := projectOwners(r.Store)
+	if err != nil {
+		return 0
+	}
+	owners := append([]string{owner}, also...)
+	// A folder that never spawned a task, with no project task either, has
+	// no news, so skip wait and its cursor file.
 	tasks, err := r.Store.List()
-	if err != nil || !slices.ContainsFunc(tasks, func(t *task.Task) bool { return t.Owner == owner }) {
+	if err != nil || !slices.ContainsFunc(tasks, func(t *task.Task) bool { return slices.Contains(owners, t.Owner) }) {
 		return 0
 	}
 	var gcLock func()
 	var retry time.Time
 	for {
-		res, err := wait.Run(ctx, r, wait.Options{Owner: owner})
+		res, err := wait.Run(ctx, r, wait.Options{Owner: owner, Also: also})
 		switch {
 		case err != nil:
 			return 0
@@ -194,7 +199,8 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 			if err != nil {
 				return 0
 			}
-			due, ok := runner.NextGC(tasks, owner)
+			tasks = slices.DeleteFunc(tasks, func(t *task.Task) bool { return !slices.Contains(owners, t.Owner) })
+			due, ok := runner.NextGC(tasks, "")
 			if !ok {
 				return 0
 			}
@@ -206,8 +212,10 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 			case <-time.After(max(time.Until(due), time.Until(retry))):
 			}
 			retry = time.Now().Add(runner.GCRetry)
-			if _, err := r.GC(ctx, owner, runner.GCAge, false); err != nil {
-				return 0
+			for _, o := range owners {
+				if _, err := r.GC(ctx, o, runner.GCAge, false); err != nil {
+					return 0
+				}
 			}
 		case res.TimedOut:
 		default:

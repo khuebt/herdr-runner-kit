@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -246,15 +245,19 @@ func newListCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			owners := []string{owner}
 			if !all && owner == "" {
-				owner = currentOwner(cmd)
+				if owners, err = projectOwners(r.Store); err != nil {
+					return err
+				}
+				owners = append(owners, currentOwner(cmd))
 			}
 			live, _ := r.Herdr.AgentList(cmd.Context()) // herdr down: show stored state only
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			now := time.Now()
 			fmt.Fprintln(w, "ID\tKIND\tAGENT\tSTATUS\tLIVE\tTAB\tAGE\tTITLE")
 			for _, t := range tasks {
-				if !all && t.Owner != owner {
+				if !all && !slices.Contains(owners, t.Owner) {
 					continue
 				}
 				state := "-"
@@ -268,7 +271,7 @@ func newListCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "show tasks of every main session")
-	cmd.Flags().StringVar(&owner, "owner", "", "show tasks of this main session (default: git top-level of the current folder)")
+	cmd.Flags().StringVar(&owner, "owner", "", "show tasks of this main session only (default: git top-level of the current folder, plus every registered project)")
 	return cmd
 }
 
@@ -404,16 +407,7 @@ func currentOwner(cmd *cobra.Command) string {
 	if err != nil {
 		return ""
 	}
-	return ownerOf(cmd.Context(), cwd)
-}
-
-// ownerOf names the main session working in cwd: its git top-level, or cwd
-// itself outside a repository.
-func ownerOf(ctx context.Context, cwd string) string {
-	if top := runner.Toplevel(ctx, cwd); top != "" {
-		return top
-	}
-	return cwd
+	return runner.CallerOwner(cmd.Context(), cwd)
 }
 
 func age(t time.Time) string {

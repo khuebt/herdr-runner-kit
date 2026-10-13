@@ -88,6 +88,12 @@ type SpawnOptions struct {
 	Branch string
 	// Language overrides the configured report language.
 	Language string
+	// Project names the registered project the task works for. Empty means
+	// the project whose folder holds Cwd, if any. A project task runs in
+	// the project's folder by default and reports to its project owner.
+	Project string
+	// Stage is the project stage the task runs; it needs a project.
+	Stage string
 }
 
 // Spawn records a task and, unless it waits on other tasks or on a human,
@@ -97,7 +103,7 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 	if r.Getenv("HRK_TASK") != "" {
 		return nil, ErrInsideRunner
 	}
-	t, err := r.newTask(ctx, o)
+	t, caller, err := r.newTask(ctx, o)
 	if err != nil {
 		return nil, err
 	}
@@ -115,9 +121,12 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 			base = parentBase
 		}
 	}
-	// The owner's first wait must see this task's events.
-	if err := r.Store.InitCursor(state.CursorName(t.Owner)); err != nil {
-		return nil, err
+	// The owner's first wait must see this task's events. A project task's
+	// news reaches the caller's wait too, so its cursor starts here as well.
+	for _, owner := range []string{t.Owner, caller} {
+		if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+			return nil, err
+		}
 	}
 	if err := r.Store.Create(t); err != nil {
 		return nil, err
@@ -189,9 +198,11 @@ func (r *Runner) beginLaunch(id string, mutate func(*task.Task)) (*task.Task, bo
 	return t, changed, err
 }
 
-func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error) {
+// newTask builds the task from the options, and returns it with the owner
+// of the main session that called spawn.
+func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, string, error) {
 	if strings.TrimSpace(o.Prompt) == "" && strings.TrimSpace(o.Skill) == "" {
-		return nil, errors.New("a prompt or --skill is required")
+		return nil, "", errors.New("a prompt or --skill is required")
 	}
 	kindName := o.Kind
 	if kindName == "" {
@@ -199,7 +210,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 	}
 	kind, ok := r.Config.Kinds[kindName]
 	if !ok {
-		return nil, fmt.Errorf("unknown kind %q", kindName)
+		return nil, "", fmt.Errorf("unknown kind %q", kindName)
 	}
 	agent := kind.Agent
 	if o.Agent != "" {
@@ -207,17 +218,17 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 	}
 	spec, err := task.ParseAgentSpec(agent)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// The main session may run with CLAUDE_CONFIG_DIR=~/.claude; store it as
 	// Claude's default, as --claude-config does.
 	configDir := harness.DefaultClaudeConfigDir(r.Getenv("CLAUDE_CONFIG_DIR"))
 	if o.ClaudeConfig != "" {
 		if spec.Harness != task.Claude {
-			return nil, fmt.Errorf("--claude-config needs a Claude runner, not %s", spec.Harness)
+			return nil, "", fmt.Errorf("--claude-config needs a Claude runner, not %s", spec.Harness)
 		}
 		if configDir, err = ClaudeConfigDir(o.ClaudeConfig); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	gate := o.Gate
@@ -225,42 +236,76 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 		gate = task.GateAuto
 	}
 	if !gate.Valid() {
-		return nil, fmt.Errorf("invalid gate %q: want auto or human", gate)
+		return nil, "", fmt.Errorf("invalid gate %q: want auto or human", gate)
 	}
 	workspace := r.Getenv("HERDR_WORKSPACE_ID")
 	if r.Getenv("HERDR_ENV") != "1" || workspace == "" {
-		return nil, errors.New("spawn must run inside a herdr pane, so runners can open next to it")
+		return nil, "", errors.New("spawn must run inside a herdr pane, so runners can open next to it")
 	}
 
-	cwd := o.Cwd
-	if cwd == "" {
-		if cwd, err = os.Getwd(); err != nil {
-			return nil, err
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil, "", err
+	}
+	var project state.Project
+	if o.Project != "" {
+		if project, err = r.Store.ProjectByName(o.Project); err != nil {
+			return nil, "", err
+		}
+		if project.Reserved {
+			return nil, "", fmt.Errorf("project %s is still being set up", project.Name)
 		}
 	}
+	cwd := o.Cwd
+	switch {
+	case cwd != "":
+	case project.Path != "":
+		cwd = project.Path
+	default:
+		cwd = wd
+	}
 	if cwd, err = filepath.Abs(cwd); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("cwd %s is not a directory", cwd)
+		return nil, "", fmt.Errorf("cwd %s is not a directory", cwd)
 	}
 	root := RepoRoot(ctx, cwd)
+	// A linked worktree belongs to the project of its main repository.
+	home := cwd
+	if root != "" {
+		home = root
+	}
+	found, ok, err := r.Store.ProjectFor(home)
+	if err != nil {
+		return nil, "", err
+	}
+	switch {
+	case project.Name == "" && ok:
+		project = found
+	case project.Name != "" && (!ok || found.Name != project.Name):
+		return nil, "", fmt.Errorf("cwd %s is outside project %s (%s)", cwd, project.Name, project.Path)
+	}
+	stage := strings.TrimSpace(o.Stage)
+	if stage != "" && project.Name == "" {
+		return nil, "", errors.New("--stage needs a project task")
+	}
 	useWorktree := kind.Worktree && root != ""
 	if o.Worktree != nil {
 		useWorktree = *o.Worktree
 	}
 	if useWorktree && root == "" {
-		return nil, fmt.Errorf("--worktree needs a git repository, and %s is not in one", cwd)
+		return nil, "", fmt.Errorf("--worktree needs a git repository, and %s is not in one", cwd)
 	}
 	if o.Base != "" && !useWorktree {
-		return nil, errors.New("--base needs a worktree task")
+		return nil, "", errors.New("--base needs a worktree task")
 	}
 	if o.Branch != "" {
 		if !useWorktree {
-			return nil, errors.New("--branch needs a worktree task")
+			return nil, "", errors.New("--branch needs a worktree task")
 		}
 		if exec.CommandContext(ctx, "git", "check-ref-format", "--branch", o.Branch).Run() != nil {
-			return nil, fmt.Errorf("invalid branch name %q", o.Branch)
+			return nil, "", fmt.Errorf("invalid branch name %q", o.Branch)
 		}
 	}
 	language := r.Config.Language
@@ -268,13 +313,16 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 		language = l
 	}
 	if err := config.CheckLanguage(language); err != nil {
-		return nil, fmt.Errorf("--language: %w", err)
+		return nil, "", fmt.Errorf("--language: %w", err)
 	}
+	caller := CallerOwner(ctx, wd)
 	owner := o.Owner
-	if owner == "" {
-		if owner = Toplevel(ctx, cwd); owner == "" {
-			owner = cwd
-		}
+	switch {
+	case owner != "":
+	case project.Name != "":
+		owner = task.ProjectOwner(project.Name)
+	default:
+		owner = caller
 	}
 	title := strings.TrimSpace(o.Title)
 	if title == "" {
@@ -287,18 +335,22 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 	for _, a := range o.After {
 		id, _, err := task.ParseID(a)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		after = append(after, id)
+	}
+	if o.Owner != "" {
+		caller = o.Owner
 	}
 	return &task.Task{
 		Kind: kindName, Agent: spec.String(), Prompt: o.Prompt, Skill: o.Skill, Title: title,
 		Cwd: cwd, Owner: owner, RepoRoot: root, UseWorktree: useWorktree, After: after, Gate: gate,
 		MainWorkspace: workspace, ClaudeConfigDir: configDir, Language: language,
+		Project: project.Name, Stage: stage,
 		// Queued until spawn decides: a task with no pending parents moves on
 		// to held or starting at once.
 		Status: task.Queued,
-	}, nil
+	}, caller, nil
 }
 
 // ClaudeConfigDir resolves a --claude-config value: a path, or a bare name
@@ -388,4 +440,13 @@ func (r *Runner) fail(id, reason string) {
 		return
 	}
 	r.emit(t, "failed", reason, "")
+}
+
+// CallerOwner names the main session working in dir: its git top-level, or
+// dir itself outside a repository.
+func CallerOwner(ctx context.Context, dir string) string {
+	if top := Toplevel(ctx, dir); top != "" {
+		return top
+	}
+	return dir
 }

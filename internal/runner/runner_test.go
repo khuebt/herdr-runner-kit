@@ -179,6 +179,7 @@ func TestSpawnNeedsHerdr(t *testing.T) {
 func TestSpawnStartsLauncherQuickly(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	dir := plainDir(t)
+	t.Chdir(dir)
 	start := time.Now()
 	tk, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "Compare two queues", Cwd: dir})
 	if err != nil {
@@ -1361,5 +1362,63 @@ func TestKeepOffLeavesAnAgentInUse(t *testing.T) {
 	got, err := r.Keep(context.Background(), tk.ID, false)
 	if err != nil || got.Herdr.Closed || got.Keep || fake.count("agent", "send-keys") != 0 {
 		t.Fatalf("keep --off with the agent in use: %+v, %v", got, err)
+	}
+}
+
+func TestSpawnOwnerIsTheCallersFolder(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	caller := gitRepo(t)
+	t.Chdir(filepath.Join(caller, "."))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if tk.Owner != caller || tk.Project != "" {
+		t.Fatalf("owner = %q, project = %q; want the caller's top-level %q", tk.Owner, tk.Project, caller)
+	}
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t), Owner: "/elsewhere"})
+	if tk.Owner != "/elsewhere" {
+		t.Fatalf("--owner ignored: %q", tk.Owner)
+	}
+}
+
+func TestSpawnProjectTaskOwner(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	if _, err := r.Store.ReserveProject("demo-app", repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(plainDir(t))
+	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"}); err == nil {
+		t.Fatal("spawned into a project still being set up")
+	}
+	if err := r.Store.CommitProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	caller, _ := os.Getwd()
+
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app", Stage: "intake"})
+	if tk.Cwd != repo || tk.Owner != "project:demo-app" || tk.Project != "demo-app" || tk.Stage != "intake" {
+		t.Fatalf("task = %+v", tk)
+	}
+	if _, found, _ := r.Store.Cursor(state.CursorName(caller)); !found {
+		t.Error("the caller's cursor was not started, so its first wait could miss the task")
+	}
+
+	// A folder inside the project makes a project task without --project.
+	sub := filepath.Join(repo, "docs")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: sub})
+	if tk.Owner != "project:demo-app" || tk.Project != "demo-app" {
+		t.Fatalf("inferred: %+v", tk)
+	}
+
+	for _, o := range []SpawnOptions{
+		{Kind: "research", Prompt: "x", Project: "demo-app", Cwd: plainDir(t)}, // outside the project
+		{Kind: "research", Prompt: "x", Project: "nope"},                       // unknown
+		{Kind: "research", Prompt: "x", Cwd: plainDir(t), Stage: "intake"},     // stage without project
+	} {
+		if _, err := r.Spawn(context.Background(), o); err == nil {
+			t.Errorf("Spawn(%+v) succeeded", o)
+		}
 	}
 }

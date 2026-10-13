@@ -381,3 +381,31 @@ func TestWaitStaysForATaskThatWaitsOnAHuman(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestWaitSeesProjectNews(t *testing.T) {
+	r, _ := newTestRunner(t)
+	projectOwner := task.ProjectOwner("demo-app")
+	proj := addTask(t, r, task.Running, projectOwner)
+	other := addTask(t, r, task.Running, task.ProjectOwner("other-app"))
+	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+		t.Fatal(err)
+	}
+	ch := start(r, Options{Owner: owner, Also: []string{projectOwner}, Window: time.Millisecond})
+	waitBlocked()
+	report(t, r, other.ID, "not watched")
+	report(t, r, proj.ID, "spec written")
+	got := get(t, ch)
+	if got.err != nil || len(got.res.Lines) != 1 || !strings.HasPrefix(got.res.Lines[0], proj.ID+" done") {
+		t.Fatalf("lines = %q, err = %v", got.res.Lines, got.err)
+	}
+
+	// --owner narrows wait to that one owner.
+	addTask(t, r, task.Running, owner)
+	next := addTask(t, r, task.Running, projectOwner)
+	ch = start(r, Options{Owner: owner, Window: time.Millisecond, Timeout: 300 * time.Millisecond})
+	waitBlocked()
+	report(t, r, next.ID, "not for this wait")
+	if got := get(t, ch); !got.res.TimedOut {
+		t.Fatalf("narrowed wait woke: %+v", got.res)
+	}
+}

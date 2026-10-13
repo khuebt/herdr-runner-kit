@@ -273,6 +273,7 @@ func TestPaneRunFailureKeepsWorktreeRecord(t *testing.T) {
 		return fmt.Sprintf(`{"result":{"root_pane":{"pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"},"worktree":{"path":%q}}}`, wt), nil
 	})
 	fake.on("pane run", herdrErr("pane_not_found"))
+	t.Chdir(repo) // the main session works in the repository
 	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo})
 	if err := r.Launch(context.Background(), tk.ID); err == nil {
 		t.Fatal("want error")
