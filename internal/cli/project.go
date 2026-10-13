@@ -110,6 +110,9 @@ func printCreated(cmd *cobra.Command, c project.Created) {
 		fmt.Fprintf(w, "registry: not registered: %s\n", c.RegistryErr)
 	}
 	fmt.Fprintf(w, "brief: original kept untracked at %s\n", c.Brief)
+	if c.GitignoreNote != "" {
+		fmt.Fprintf(w, "gitignore: %s\n", c.GitignoreNote)
+	}
 	fmt.Fprintf(w, "next: herdr-runner-kit project status %s\n", c.Name)
 }
 
@@ -223,9 +226,11 @@ func printProjectList(out io.Writer, s *state.Store) error {
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tPATH\tSTAGE\tMILESTONE\tACTIVE")
+	var reserved []string
 	for _, p := range list {
 		if p.Reserved {
 			fmt.Fprintf(w, "%s\t%s\t(being set up)\t-\t-\n", p.Name, p.Path)
+			reserved = append(reserved, p.Name)
 			continue
 		}
 		r, err := projectReport(s, p)
@@ -238,7 +243,15 @@ func printProjectList(out io.Writer, s *state.Store) error {
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", p.Name, p.Path, stage, r.Milestone(), len(r.Runners)+len(r.Waiting))
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	for _, name := range reserved {
+		if _, err := fmt.Fprintf(out, "%s is being set up; if herdr-runner-kit new was interrupted, drop it with: herdr-runner-kit project forget %s\n", name, name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newProjectRegisterCommand() *cobra.Command {
@@ -306,19 +319,4 @@ func openStore() (*state.Store, error) {
 		return nil, err
 	}
 	return state.Open(dir)
-}
-
-// projectOwners returns the owner of every registered project. A main
-// session watches them along with its own, since project runners report
-// there whichever folder the session works in.
-func projectOwners(s *state.Store) ([]string, error) {
-	list, err := s.Projects()
-	if err != nil {
-		return nil, err
-	}
-	owners := make([]string, 0, len(list))
-	for _, p := range list {
-		owners = append(owners, task.ProjectOwner(p.Name))
-	}
-	return owners, nil
 }

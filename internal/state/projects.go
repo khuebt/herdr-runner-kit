@@ -113,6 +113,23 @@ func (s *Store) ReleaseProject(name string) error {
 	})
 }
 
+// ReleaseStaleReservation drops the reservation of name when it was made
+// more than age ago and abandoned reports true for it, and reports whether
+// it did. Both checks run under the registry lock, so a reservation another
+// process has just made is never dropped. A committed entry is left alone.
+func (s *Store) ReleaseStaleReservation(name string, age time.Duration, abandoned func(Project) bool) (bool, error) {
+	released := false
+	err := s.updateProjects(func(list []Project) ([]Project, error) {
+		cutoff := s.now().Add(-age)
+		return slices.DeleteFunc(list, func(p Project) bool {
+			drop := p.Name == name && p.Reserved && p.RegisteredAt.Before(cutoff) && abandoned(p)
+			released = released || drop
+			return drop
+		}), nil
+	})
+	return released, err
+}
+
 // ForgetProject removes the entry and the project's kit files. The
 // repository itself is never touched.
 func (s *Store) ForgetProject(name string) error {

@@ -42,6 +42,7 @@ func newSpawnCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			o.Warn = func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }
 			t, err := r.Spawn(cmd.Context(), o)
 			if err != nil {
 				return err

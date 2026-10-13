@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func openTestStore(t *testing.T) *Store {
@@ -162,5 +163,38 @@ func TestWithin(t *testing.T) {
 		if got := Within(c.dir, c.path); got != c.want {
 			t.Errorf("Within(%s, %s) = %v", c.dir, c.path, got)
 		}
+	}
+}
+
+func TestReleaseStaleReservation(t *testing.T) {
+	s := openTestStore(t)
+	app := filepath.Join(resolvedTemp(t), "app")
+	if _, err := s.ReserveProject("demo-app", app); err != nil {
+		t.Fatal(err)
+	}
+	always := func(Project) bool { return true }
+	if ok, err := s.ReleaseStaleReservation("demo-app", time.Hour, always); err != nil || ok {
+		t.Fatalf("a fresh reservation was released: %v %v", ok, err)
+	}
+	s.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if ok, err := s.ReleaseStaleReservation("demo-app", time.Hour, func(Project) bool { return false }); err != nil || ok {
+		t.Fatalf("a reservation still in use was released: %v %v", ok, err)
+	}
+	if ok, err := s.ReleaseStaleReservation("demo-app", time.Hour, always); err != nil || !ok {
+		t.Fatalf("stale reservation kept: %v %v", ok, err)
+	}
+	if _, err := s.ProjectByName("demo-app"); !errors.Is(err, ErrUnknownProject) {
+		t.Fatalf("still registered: %v", err)
+	}
+
+	if _, err := s.ReserveProject("other-app", app); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitProject("other-app"); err != nil {
+		t.Fatal(err)
+	}
+	s.now = func() time.Time { return time.Now().Add(4 * time.Hour) }
+	if ok, err := s.ReleaseStaleReservation("other-app", time.Hour, always); err != nil || ok {
+		t.Fatalf("a committed project was released: %v %v", ok, err)
 	}
 }

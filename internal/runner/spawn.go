@@ -94,6 +94,9 @@ type SpawnOptions struct {
 	Project string
 	// Stage is the project stage the task runs; it needs a project.
 	Stage string
+	// Warn, when set, receives a one-line warning that spawn carried on
+	// without the project registry because it could not be read.
+	Warn func(string)
 }
 
 // Spawn records a task and, unless it waits on other tasks or on a human,
@@ -253,7 +256,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 			return nil, "", err
 		}
 		if project.Reserved {
-			return nil, "", fmt.Errorf("project %s is still being set up", project.Name)
+			return nil, "", fmt.Errorf("project %s is still being set up; if herdr-runner-kit new was interrupted, drop it with: herdr-runner-kit project forget %s, then run new again", project.Name, project.Name)
 		}
 	}
 	cwd := o.Cwd
@@ -277,8 +280,16 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 		home = root
 	}
 	found, ok, err := r.Store.ProjectFor(home)
-	if err != nil {
+	switch {
+	case err != nil && project.Name != "":
 		return nil, "", err
+	case err != nil:
+		// Only project tasks need the registry; any other task starts as if
+		// no project were registered.
+		if o.Warn != nil {
+			o.Warn(fmt.Sprintf("warning: %v; spawning as if no project were registered", err))
+		}
+		ok = false
 	}
 	switch {
 	case project.Name == "" && ok:

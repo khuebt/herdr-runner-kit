@@ -39,10 +39,7 @@ func newWaitCommand() *cobra.Command {
 				return err
 			}
 			if o.Owner == "" {
-				o.Owner = currentOwner(cmd)
-				if o.Also, err = projectOwners(r.Store); err != nil {
-					return err
-				}
+				o.Owner, o.Projects = currentOwner(cmd), true
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -68,7 +65,7 @@ func newWaitCommand() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringSliceVar(&ids, "task", nil, "only these tasks")
-	f.StringVar(&o.Owner, "owner", "", "main session to wait for, and only it (default: git top-level of the current folder, plus every registered project)")
+	f.StringVar(&o.Owner, "owner", "", "main session to wait for, and only it (default: git top-level of the current folder, plus the tasks of every project)")
 	f.StringVar(&o.Cursor, "cursor", "", "cursor name (default: derived from the owner)")
 	f.DurationVar(&o.Timeout, "timeout", wait.DefaultTimeout, "safety timeout; wait prints `timeout` and exits 0")
 	return cmd

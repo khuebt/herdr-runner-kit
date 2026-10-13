@@ -1386,8 +1386,9 @@ func TestSpawnProjectTaskOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(plainDir(t))
-	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"}); err == nil {
-		t.Fatal("spawned into a project still being set up")
+	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"}); err == nil ||
+		!strings.Contains(err.Error(), "herdr-runner-kit project forget demo-app") {
+		t.Fatalf("spawned into a project still being set up, or gave no fix: %v", err)
 	}
 	if err := r.Store.CommitProject("demo-app"); err != nil {
 		t.Fatal(err)
@@ -1420,6 +1421,25 @@ func TestSpawnProjectTaskOwner(t *testing.T) {
 		if _, err := r.Spawn(context.Background(), o); err == nil {
 			t.Errorf("Spawn(%+v) succeeded", o)
 		}
+	}
+}
+
+func TestSpawnCarriesOnWithABrokenRegistry(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	if err := os.WriteFile(filepath.Join(r.Store.Dir(), "projects.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	caller := gitRepo(t)
+	t.Chdir(caller)
+	var warnings []string
+	warn := func(line string) { warnings = append(warnings, line) }
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Warn: warn})
+	if tk.Owner != caller || tk.Project != "" || len(warnings) != 1 || !strings.Contains(warnings[0], "projects.json") {
+		t.Fatalf("task %+v, warnings %q", tk, warnings)
+	}
+	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app", Warn: warn}); err == nil ||
+		!strings.Contains(err.Error(), "projects.json") {
+		t.Fatalf("a project task spawned without the registry: %v", err)
 	}
 }
 

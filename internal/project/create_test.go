@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,8 +10,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 )
 
 // fakeWorkspaces stands in for herdr.
@@ -159,17 +162,136 @@ func TestCreateNonEmptyKeepsFiles(t *testing.T) {
 	}
 	o := ideaOptions(path)
 	o.AllowNonEmpty = true
-	if _, err := Create(context.Background(), s, &fakeWorkspaces{}, o); err != nil {
+	c, err := Create(context.Background(), s, &fakeWorkspaces{}, o)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(readme); err != nil || string(data) != "hello\n" {
 		t.Errorf("README changed: %q %v", data, err)
 	}
-	if got := run(t, path, "show", "HEAD:.gitignore"); got != "node_modules\n"+ignoreLine {
-		t.Errorf(".gitignore %q", got)
+	if data, err := os.ReadFile(filepath.Join(path, ".gitignore")); err != nil || string(data) != "node_modules" {
+		t.Errorf(".gitignore changed: %q %v", data, err)
 	}
-	if st := run(t, path, "status", "--porcelain"); st != "?? README.md" {
+	files := strings.Fields(run(t, path, "log", "--all", "--name-only", "--format="))
+	slices.Sort(files)
+	if want := []string{DecisionsPath, SnapshotPath}; !slices.Equal(files, want) {
+		t.Errorf("committed %v, want %v: the user's .gitignore stays out", files, want)
+	}
+	if st := run(t, path, "status", "--porcelain"); st != "?? .gitignore\n?? README.md" {
 		t.Errorf("status %q: only the kit's files may be committed", st)
+	}
+	run(t, path, "check-ignore", "-q", "--", filepath.Join(BriefDir, IdeaFile))
+	if !strings.Contains(c.GitignoreNote, ignoreLine) {
+		t.Errorf("note %q lacks the line to add", c.GitignoreNote)
+	}
+}
+
+func TestCreateNeverWritesThroughALink(t *testing.T) {
+	root := scratch(t)
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, link, target string
+	}{
+		{"linked handbook", "handbook", outside},
+		{"linked discovery", filepath.Join("handbook", "product", "discovery"), outside},
+		{"linked gitignore", ".gitignore", filepath.Join(outside, "ignore")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(root, strings.ReplaceAll(tc.name, " ", "-"))
+			link := filepath.Join(path, tc.link)
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(outside, "ignore"), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(tc.target, link); err != nil {
+				t.Fatal(err)
+			}
+			s := openStore(t)
+			o := ideaOptions(path)
+			o.AllowNonEmpty = true
+			_, err := Create(context.Background(), s, &fakeWorkspaces{}, o)
+			if err == nil || !strings.Contains(err.Error(), tc.link) {
+				t.Fatalf("err = %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(path, ".git")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a refused call made the repository: %v", err)
+			}
+			if entries, _ := os.ReadDir(outside); len(entries) != 1 {
+				t.Errorf("wrote outside the folder: %v", entries)
+			}
+			if data, _ := os.ReadFile(filepath.Join(outside, "ignore")); string(data) != "x\n" {
+				t.Errorf("the linked file changed: %q", data)
+			}
+			if list, _ := s.Projects(); len(list) != 0 {
+				t.Errorf("a refused call registered %+v", list)
+			}
+		})
+	}
+}
+
+func TestCreateFailsWhenTheBriefIsNotIgnored(t *testing.T) {
+	root := scratch(t)
+	path := filepath.Join(root, "demo-app")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The user's rule outranks the repository's info/exclude.
+	if err := os.WriteFile(filepath.Join(path, ".gitignore"), []byte("!"+ignoreLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t)
+	o := ideaOptions(path)
+	o.AllowNonEmpty = true
+	_, err := Create(context.Background(), s, &fakeWorkspaces{}, o)
+	if err == nil || !strings.Contains(err.Error(), "does not ignore the original brief") {
+		t.Fatalf("err = %v", err)
+	}
+	if out, _ := exec.Command("git", "-C", path, "rev-parse", "--verify", "-q", "HEAD").Output(); len(out) != 0 {
+		t.Errorf("committed %s with the brief not ignored", out)
+	}
+}
+
+func TestCreateReleasesAStaleReservation(t *testing.T) {
+	root := scratch(t)
+	s := openStore(t)
+	path := filepath.Join(root, "demo-app")
+	// An interrupted new left the name reserved, with no repository made.
+	if _, err := s.ReserveProject("demo-app", path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(context.Background(), s, &fakeWorkspaces{}, ideaOptions(path)); err == nil ||
+		!strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("a fresh reservation was taken over: %v", err)
+	}
+	stale := time.Now().Add(-staleReservation - time.Minute).UTC()
+	data, err := os.ReadFile(filepath.Join(s.Dir(), "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg struct {
+		SchemaVersion int             `json:"schemaVersion"`
+		Projects      []state.Project `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &reg); err != nil {
+		t.Fatal(err)
+	}
+	reg.Projects[0].RegisteredAt = stale
+	if data, err = json.Marshal(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir(), "projects.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(context.Background(), s, &fakeWorkspaces{}, ideaOptions(path)); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := s.ProjectByName("demo-app"); err != nil || p.Reserved {
+		t.Errorf("registry %+v %v", p, err)
 	}
 }
 

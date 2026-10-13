@@ -101,7 +101,12 @@ type Herdr struct {
 
 // ProjectOwner is the owner of every task of a project, so its news reaches
 // the main session whichever folder that session works in.
-func ProjectOwner(name string) string { return "project:" + name }
+func ProjectOwner(name string) string { return projectOwnerPrefix + name }
+
+// IsProjectOwner reports whether owner is the owner of a project's tasks.
+func IsProjectOwner(owner string) bool { return strings.HasPrefix(owner, projectOwnerPrefix) }
+
+const projectOwnerPrefix = "project:"
 
 // Task is the durable record stored in tasks/<id>/task.json.
 type Task struct {

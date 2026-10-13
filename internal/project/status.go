@@ -26,6 +26,9 @@ type Report struct {
 	Remote string
 	// PathMissing is set when the project's folder no longer exists.
 	PathMissing bool
+	// Reserved is set while new has not finished setting the project up,
+	// or was interrupted.
+	Reserved bool
 	// Stage is the stage of the project's latest staged task, else intake.
 	Stage string
 	// Runners are the project's tasks at work or about to start; Waiting
@@ -37,7 +40,7 @@ type Report struct {
 // Status builds the report of a registered project from its record (nil
 // when there is none) and the tasks of every project.
 func Status(rec *Record, reg state.Project, tasks []*task.Task, now time.Time) Report {
-	r := Report{Name: reg.Name, Path: reg.Path, Record: rec, Stage: "intake", Now: now}
+	r := Report{Name: reg.Name, Path: reg.Path, Record: rec, Reserved: reg.Reserved, Stage: "intake", Now: now}
 	for _, t := range tasks {
 		if t.Project != reg.Name {
 			continue
@@ -69,6 +72,9 @@ func (r Report) Text() string {
 		head = append(head, "graduated "+day(rec.Graduated.At))
 	}
 	b.WriteString(strings.Join(head, " · ") + "\n")
+	if r.Reserved {
+		b.WriteString("setup: not finished\n")
+	}
 	if r.PathMissing {
 		b.WriteString("folder: missing\n")
 	}
@@ -151,6 +157,8 @@ func (r Report) taskLine(t *task.Task) string {
 func (r Report) Next() string {
 	rec := r.Record
 	switch {
+	case r.Reserved:
+		return fmt.Sprintf("wait for herdr-runner-kit new to finish; if it was interrupted, drop the project with: herdr-runner-kit project forget %s, then run new again", r.Name)
 	case rec == nil:
 		return fmt.Sprintf("the kit has no record of %s; import it again with: herdr-runner-kit project forget %s && herdr-runner-kit project register %s --name %s",
 			r.Name, r.Name, shellCommand([]string{r.Path}), r.Name)

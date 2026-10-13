@@ -8,8 +8,10 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -29,6 +31,15 @@ const (
 
 // createMessage is the message of a project's first commit.
 const createMessage = "docs: start project"
+
+// staleReservation is how old a reservation must be before new may take
+// its name over. new reserves the name first and registers the project at
+// the end; a run that was interrupted in between leaves the reservation
+// behind. A later new with the same name releases it once it is older than
+// this and its folder holds no git repository, so the interrupted run never
+// got to set anything up there. Any other reservation stays until
+// project forget drops it.
+const staleReservation = 10 * time.Minute
 
 // errCredentials is returned for a URL that carries credentials, which
 // would end up in .git/config, in output and in the record.
@@ -63,6 +74,10 @@ type Created struct {
 	Remote, RemoteErr          string
 	Workspace, WorkspaceErr    string
 	RegistryErr                string
+	// GitignoreNote is set when the folder already held a .gitignore: new
+	// leaves it unchanged and out of the first commit, and the note says
+	// how the brief is kept ignored and which line to add.
+	GitignoreNote string
 	// Brief is the untracked copy of the original brief.
 	Brief string
 }
@@ -73,14 +88,22 @@ type Created struct {
 // origin, a herdr workspace and a registry entry.
 //
 // Every check runs before anything is written. Files are created
-// exclusively, so nothing that exists is overwritten; only an existing
-// .gitignore, with AllowNonEmpty, gets one line appended. Once the
-// repository exists nothing is ever deleted: a failed first commit keeps
-// the folder, the brief and the registration, and the error holds the
-// command that finishes the commit.
+// exclusively and never through a symbolic link, so nothing that exists is
+// overwritten and nothing is written outside the folder. An existing
+// .gitignore, with AllowNonEmpty, is left unchanged and out of the commit;
+// the brief is ignored through the repository's info/exclude instead. Once
+// the repository exists nothing is ever deleted: a failed first commit
+// keeps the folder, the brief and the registration, and the error holds
+// the command that finishes the commit.
 func Create(ctx context.Context, s *state.Store, ws Workspaces, o CreateOptions) (Created, error) {
 	p, err := checkCreate(ctx, o)
 	if err != nil {
+		return Created{}, err
+	}
+	if _, err := s.ReleaseStaleReservation(p.name, staleReservation, func(old state.Project) bool {
+		_, err := os.Lstat(filepath.Join(old.Path, ".git"))
+		return errors.Is(err, fs.ErrNotExist)
+	}); err != nil {
 		return Created{}, err
 	}
 	if _, err := s.ReserveProject(p.name, p.path); err != nil {
@@ -107,7 +130,7 @@ func Create(ctx context.Context, s *state.Store, ws Workspaces, o CreateOptions)
 		return Created{}, fmt.Errorf("%w\nnothing was deleted: the folder %s and the original brief %s are kept, and %s stays registered",
 			err, p.path, c.Brief, p.name)
 	}
-	if err := writeFiles(p, o, rec); err != nil {
+	if err := writeFiles(ctx, p, o, rec); err != nil {
 		return keep(err)
 	}
 	if c.Commit, err = firstCommit(ctx, s, p); err != nil {
@@ -131,6 +154,10 @@ func Create(ctx context.Context, s *state.Store, ws Workspaces, o CreateOptions)
 	if c.Workspace, err = openWorkspace(ctx, s, ws, p); err != nil {
 		c.WorkspaceErr = fmt.Sprintf("%s; project runners open it on their first launch, or open it with: herdr workspace create --cwd %s --label %s",
 			err, shellCommand([]string{p.path}), p.name)
+	}
+	if p.gitignoreExists {
+		c.GitignoreNote = fmt.Sprintf("your %s is unchanged and not in the first commit; the brief is ignored through .git/info/exclude, so to keep it ignored in every clone add this line to %s and commit it: %s",
+			GitignorePath, GitignorePath, ignoreLine)
 	}
 	if err := s.CommitProject(p.name); err != nil {
 		c.RegistryErr = fmt.Sprintf("%s; register it with: herdr-runner-kit project forget %s --yes && herdr-runner-kit project register %s",
@@ -204,9 +231,16 @@ func checkCreate(ctx context.Context, o CreateOptions) (plan, error) {
 		}
 		p.briefName = filepath.Base(o.BriefFile)
 	}
-	for _, rel := range []string{SnapshotPath, DecisionsPath, filepath.Join(BriefDir, p.briefName)} {
+	written := []string{SnapshotPath, DecisionsPath, filepath.Join(BriefDir, p.briefName)}
+	if !p.gitignoreExists {
+		written = append(written, GitignorePath)
+	}
+	for _, rel := range written {
 		if _, err := os.Lstat(filepath.Join(p.path, rel)); !errors.Is(err, fs.ErrNotExist) {
 			return p, fmt.Errorf("%s already exists in %s; new never overwrites a file", rel, p.path)
+		}
+		if err := checkParents(p.path, rel); err != nil {
+			return p, err
 		}
 	}
 
@@ -280,8 +314,41 @@ func checkFolder(path string, allowNonEmpty bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	_, err = os.Lstat(filepath.Join(path, GitignorePath))
-	return err == nil, nil
+	info, err = os.Lstat(filepath.Join(path, GitignorePath))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, err
+	case !info.Mode().IsRegular():
+		return false, fmt.Errorf("%s in %s is not a regular file; new reads it only when it is one", GitignorePath, path)
+	}
+	return true, nil
+}
+
+// checkParents refuses a file path rel under root whose existing folders
+// include a symbolic link or something that is not a folder, so a write
+// never lands outside root.
+func checkParents(root, rel string) error {
+	dir := root
+	for _, part := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
+		if part == "." {
+			continue
+		}
+		dir = filepath.Join(dir, part)
+		info, err := os.Lstat(dir)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil
+		case err != nil:
+			return err
+		case info.Mode()&fs.ModeSymlink != 0:
+			return fmt.Errorf("%s is a symbolic link; new writes only inside %s and never through a link", dir, root)
+		case !info.IsDir():
+			return fmt.Errorf("%s is not a folder, so new cannot write %s", dir, rel)
+		}
+	}
+	return nil
 }
 
 // nearestExisting returns path, or its nearest parent that exists.
@@ -437,9 +504,9 @@ func initRepo(ctx context.Context, p plan) error {
 const ignoreLine = BriefDir + "/"
 
 // writeFiles writes the .gitignore, the original brief and the rendered
-// record, each created exclusively.
-func writeFiles(p plan, o CreateOptions, rec Record) error {
-	if err := writeGitignore(p); err != nil {
+// record, each created exclusively, and checks that git ignores the brief.
+func writeFiles(ctx context.Context, p plan, o CreateOptions, rec Record) error {
+	if err := writeIgnore(p); err != nil {
 		return err
 	}
 	brief := []byte(strings.TrimSpace(o.Idea) + "\n")
@@ -450,10 +517,11 @@ func writeFiles(p plan, o CreateOptions, rec Record) error {
 		}
 		brief = data
 	}
-	if err := os.MkdirAll(filepath.Join(p.path, BriefDir), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", BriefDir, err)
+	briefRel := filepath.Join(BriefDir, p.briefName)
+	if err := writeNew(p.path, briefRel, brief, 0o600); err != nil {
+		return err
 	}
-	if err := writeNew(filepath.Join(p.path, BriefDir, p.briefName), brief, 0o600); err != nil {
+	if err := checkIgnored(ctx, p.path, briefRel); err != nil {
 		return err
 	}
 	for _, rel := range []string{SnapshotPath, DecisionsPath} {
@@ -461,45 +529,60 @@ func writeFiles(p plan, o CreateOptions, rec Record) error {
 		if err != nil {
 			return err
 		}
-		if err := writeNew(filepath.Join(p.path, rel), data, 0o644); err != nil {
+		if err := writeNew(p.path, rel, data, 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// writeGitignore creates the .gitignore, or appends the brief's line to an
-// existing one that lacks it.
-func writeGitignore(p plan) error {
-	path := filepath.Join(p.path, GitignorePath)
+// writeIgnore keeps the brief out of git: in a new .gitignore, or, when the
+// folder already holds one, in the repository's info/exclude, so the
+// user's file stays as it is.
+func writeIgnore(p plan) error {
 	if !p.gitignoreExists {
-		return writeNew(path, []byte(ignoreLine+"\n"), 0o644)
+		return writeNew(p.path, GitignorePath, []byte(ignoreLine+"\n"), 0o644)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", GitignorePath, err)
+	// initRepo just made .git, so info/exclude is the kit's own file.
+	exclude := filepath.Join(p.path, ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(exclude), err)
 	}
-	for line := range strings.Lines(string(data)) {
-		if strings.TrimSpace(line) == ignoreLine {
-			return nil
-		}
+	data, err := os.ReadFile(exclude)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", exclude, err)
 	}
 	add := ignoreLine + "\n"
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		add = "\n" + add
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	f, err := os.OpenFile(exclude, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", GitignorePath, err)
+		return fmt.Errorf("open %s: %w", exclude, err)
 	}
 	_, err = f.WriteString(add)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		return fmt.Errorf("append to %s: %w", GitignorePath, err)
+		return fmt.Errorf("append to %s: %w", exclude, err)
 	}
 	return nil
+}
+
+// checkIgnored fails unless git ignores rel in root, so the original brief
+// can never reach a commit.
+func checkIgnored(ctx context.Context, root, rel string) error {
+	err := exec.CommandContext(ctx, "git", "-C", root, "check-ignore", "-q", "--", rel).Run()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return fmt.Errorf("git does not ignore the original brief %s: a rule in the folder's ignore files lets it in; fix the rule so git check-ignore %s succeeds, then commit the record",
+			rel, shellCommand([]string{rel}))
+	}
+	return fmt.Errorf("git check-ignore: %w", err)
 }
 
 func readBrief(path string) ([]byte, error) {
@@ -522,12 +605,20 @@ func readBrief(path string) ([]byte, error) {
 	return data, nil
 }
 
-// writeNew creates path with data, refusing to replace an existing file.
-func writeNew(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+// writeNew creates rel under root with data, refusing to replace an
+// existing file, to follow a symbolic link, or to write outside root.
+func writeNew(root, rel string, data []byte, mode os.FileMode) error {
+	path := filepath.Join(root, rel)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if resolved, err := filepath.EvalSymlinks(dir); err != nil {
+		return fmt.Errorf("resolve %s: %w", dir, err)
+	} else if resolved != root && !state.Within(root, resolved) {
+		return fmt.Errorf("%s leads outside %s; new writes only inside the folder", dir, root)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", path, err)
 	}
@@ -549,7 +640,10 @@ func firstCommit(ctx context.Context, s *state.Store, p plan) (string, error) {
 		return "", err
 	}
 	defer unlock()
-	paths := []string{GitignorePath, SnapshotPath, DecisionsPath}
+	paths := []string{SnapshotPath, DecisionsPath}
+	if !p.gitignoreExists {
+		paths = append([]string{GitignorePath}, paths...)
+	}
 	if out, err := gitLocked(ctx, p.path, append([]string{"add", "--"}, paths...)...); err != nil {
 		return "", fmt.Errorf("git add: %s\ncommit the files with:\n  %s", firstLine(out, err),
 			shellCommand(append([]string{"git", "-C", p.path, "add", "--"}, paths...))+" && "+

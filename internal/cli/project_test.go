@@ -155,6 +155,83 @@ func TestAutoarmWakesForProjectNews(t *testing.T) {
 	}
 }
 
+func TestAutoarmWakesForAProjectStartedAfterIt(t *testing.T) {
+	r := testRunner(t)
+	mainTask := &task.Task{Kind: "fix", Agent: "claude", Prompt: "x", Title: "fix login", Owner: "/main", Gate: task.GateAuto, Status: task.Running}
+	mainTask.Herdr.PaneID = "w1:p1"
+	if err := r.Store.Create(mainTask); err != nil {
+		t.Fatal(err)
+	}
+	type armed struct {
+		code   int
+		stderr string
+	}
+	ch := make(chan armed, 1)
+	go func() {
+		var stderr strings.Builder
+		code := autoarm(context.Background(), r, "/main", &stderr)
+		ch <- armed{code, stderr.String()}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	// new registers a project while the hook waits; its runner reports.
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Store.ReserveProject("demo-app", repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.CommitProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	tk := &task.Task{
+		Kind: "fix", Agent: "claude", Prompt: "x", Title: "write spec", Owner: task.ProjectOwner("demo-app"),
+		Project: "demo-app", Gate: task.GateAuto, Status: task.Running,
+	}
+	tk.Herdr.PaneID = "w1:p2"
+	if err := r.Store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(tk.ID, runner.ReportOptions{Status: task.Done, Summary: "Spec written"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-ch:
+		if got.code != install.NewsExit || !strings.Contains(got.stderr, tk.ID+" done · write spec") {
+			t.Fatalf("code %d, %q", got.code, got.stderr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the project's news never reached the hook")
+	}
+}
+
+func TestBrokenRegistryKeepsOtherCommandsWorking(t *testing.T) {
+	r := testRunner(t)
+	if err := os.WriteFile(filepath.Join(r.Store.Dir(), "projects.json"), []byte(`{"schemaVersion": 99, "projects": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tk := &task.Task{
+		Kind: "fix", Agent: "claude", Prompt: "x", Title: "write spec", Owner: task.ProjectOwner("demo-app"),
+		Project: "demo-app", Gate: task.GateAuto, Status: task.Running,
+	}
+	tk.Herdr.PaneID = "w1:p1"
+	if err := r.Store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = r.Report(tk.ID, runner.ReportOptions{Status: task.Done, Summary: "Spec written"})
+	}()
+	var stderr strings.Builder
+	if code := autoarm(context.Background(), r, "/main", &stderr); code != install.NewsExit ||
+		!strings.Contains(stderr.String(), tk.ID+" done") {
+		t.Fatalf("code %d, %q", code, stderr.String())
+	}
+	if line, err := r.RouteTelegram(context.Background(), "status demo-app"); err != nil || !strings.HasPrefix(line, "ambiguous: no task is waiting") {
+		t.Fatalf("telegram routing: %q %v", line, err)
+	}
+}
+
 func TestProjectStatus(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	t.Setenv("HRK_STATE_DIR", stateDir)

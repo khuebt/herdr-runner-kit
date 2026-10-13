@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
@@ -101,16 +102,37 @@ func Commit(ctx context.Context, s *state.Store, name, message string, paths ...
 	return sha, nil
 }
 
-// checkCheckout refuses to commit while a merge is in progress or a runner
-// of the project works in the main checkout, since either may be editing
-// the index the commit uses.
+// inProgress are the files git keeps while an operation that rewrites the
+// index is unfinished, with the operation each one stands for.
+var inProgress = []struct{ path, what string }{
+	{"MERGE_HEAD", "a merge"},
+	{"rebase-merge", "a rebase"},
+	{"rebase-apply", "a rebase or git am"},
+	{"CHERRY_PICK_HEAD", "a cherry-pick"},
+	{"REVERT_HEAD", "a revert"},
+	{"BISECT_LOG", "a bisect"},
+}
+
+// checkCheckout refuses to commit while a merge, rebase, cherry-pick,
+// revert or bisect is in progress, or a runner of the project works in the
+// main checkout, since any of them may be editing the index the commit uses.
 func checkCheckout(ctx context.Context, s *state.Store, p state.Project) error {
-	mergeHead, err := git(ctx, p.Path, "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD")
+	args := []string{"rev-parse", "--path-format=absolute"}
+	for _, op := range inProgress {
+		args = append(args, "--git-path", op.path)
+	}
+	out, err := git(ctx, p.Path, args...)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(mergeHead); err == nil {
-		return fmt.Errorf("%s has a merge in progress; finish or abort it, then retry", p.Path)
+	paths := strings.Split(out, "\n")
+	if len(paths) != len(inProgress) {
+		return fmt.Errorf("git rev-parse returned %d paths for %d", len(paths), len(inProgress))
+	}
+	for i, op := range inProgress {
+		if _, err := os.Stat(paths[i]); err == nil {
+			return fmt.Errorf("%s has %s in progress; finish or abort it, then retry", p.Path, op.what)
+		}
 	}
 	tasks, err := s.List()
 	if err != nil {
@@ -153,7 +175,12 @@ func gitLocked(ctx context.Context, root string, args ...string) (string, error)
 		case err == nil:
 			return out, nil
 		case timedOut:
-			return fmt.Sprintf("git %s did not finish in %s", args[0], CommitTimeout), err
+			msg := fmt.Sprintf("git %s did not finish in %s", args[0], CommitTimeout)
+			if lock := leftLock(ctx, root); lock != "" {
+				msg += fmt.Sprintf("; it left %s behind: once no git command runs in %s, remove it with: rm %s",
+					lock, root, shellCommand([]string{lock}))
+			}
+			return msg, err
 		case strings.Contains(out, "index.lock") && attempt < indexLockRetries:
 		default:
 			return out, err
@@ -192,11 +219,42 @@ func staged(ctx context.Context, root string, paths []string) (bool, error) {
 	return false, fmt.Errorf("git diff: %w", err)
 }
 
+// leftLock returns the path of the repository's index lock when one is
+// left, else "".
+func leftLock(ctx context.Context, root string) string {
+	lock, err := git(ctx, root, "rev-parse", "--path-format=absolute", "--git-path", "index.lock")
+	if err != nil {
+		return ""
+	}
+	if _, err := os.Stat(lock); err != nil {
+		return ""
+	}
+	return lock
+}
+
+// gitCombined runs git in its own process group. When ctx ends, the group
+// gets SIGTERM, so git removes its index lock on the way out and hook
+// children stop with it; whatever is left of the group after WaitDelay is
+// killed.
 func gitCombined(ctx context.Context, root string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return signalGroup(cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil && cmd.Process != nil {
+		_ = signalGroup(cmd.Process.Pid, syscall.SIGKILL) // the group may be gone already
+	}
 	return string(out), err
+}
+
+// signalGroup sends sig to the process group led by pid. A group that is
+// already gone is not an error.
+func signalGroup(pid int, sig syscall.Signal) error {
+	if err := syscall.Kill(-pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
 }
 
 func firstLine(out string, err error) string {

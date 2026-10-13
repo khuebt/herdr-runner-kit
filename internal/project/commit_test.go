@@ -230,3 +230,78 @@ func TestCommitGivesUpOnAStuckIndexLock(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestCommitRefusesDuringOtherOperations(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"rebase-merge", "a rebase in progress"},
+		{"rebase-apply", "a rebase or git am in progress"},
+		{"CHERRY_PICK_HEAD", "a cherry-pick in progress"},
+		{"REVERT_HEAD", "a revert in progress"},
+		{"BISECT_LOG", "a bisect in progress"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			dir := newRepo(t)
+			s := registered(t, dir)
+			marker := filepath.Join(dir, ".git", tc.path)
+			var err error
+			if strings.HasPrefix(tc.path, "rebase-") {
+				err = os.Mkdir(marker, 0o755)
+			} else {
+				err = os.WriteFile(marker, []byte("x\n"), 0o644)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Commit(context.Background(), s, "demo-app", "docs: x")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, SnapshotPath)); !os.IsNotExist(statErr) {
+				t.Error("files written during the operation")
+			}
+		})
+	}
+}
+
+func TestCommitTimeoutLeavesNoIndexLock(t *testing.T) {
+	dir := newRepo(t)
+	s := registered(t, dir)
+	done := filepath.Join(t.TempDir(), "hook-finished")
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	// The hook outlives the timeout; its child must stop with git.
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep 2\ntouch "+done+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	timeout := CommitTimeout
+	CommitTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { CommitTimeout = timeout })
+	start := time.Now()
+	_, err := Commit(context.Background(), s, "demo-app", "docs: x")
+	if err == nil || !strings.Contains(err.Error(), "did not finish") {
+		t.Fatalf("err = %v", err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("the timed-out commit took %s", took)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "index.lock")); !os.IsNotExist(err) {
+		t.Errorf("index.lock left behind: %v", err)
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if _, err := os.Stat(done); !os.IsNotExist(err) {
+		t.Error("the hook kept running after the timeout")
+	}
+}
+
+func TestLeftLockNamesTheFix(t *testing.T) {
+	dir := newRepo(t)
+	if got := leftLock(context.Background(), dir); got != "" {
+		t.Fatalf("no lock, got %q", got)
+	}
+	lock := filepath.Join(dir, ".git", "index.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := leftLock(context.Background(), dir); got != lock {
+		t.Fatalf("lock %q, want %q", got, lock)
+	}
+}

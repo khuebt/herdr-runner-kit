@@ -245,19 +245,18 @@ func newListCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			owners := []string{owner}
+			// Without --owner, project tasks show along with the folder's,
+			// as wait watches them.
+			projects := owner == ""
 			if !all && owner == "" {
-				if owners, err = projectOwners(r.Store); err != nil {
-					return err
-				}
-				owners = append(owners, currentOwner(cmd))
+				owner = currentOwner(cmd)
 			}
 			live, _ := r.Herdr.AgentList(cmd.Context()) // herdr down: show stored state only
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			now := time.Now()
 			fmt.Fprintln(w, "ID\tKIND\tAGENT\tSTATUS\tLIVE\tTAB\tAGE\tTITLE")
 			for _, t := range tasks {
-				if !all && !slices.Contains(owners, t.Owner) {
+				if !all && t.Owner != owner && (!projects || !task.IsProjectOwner(t.Owner)) {
 					continue
 				}
 				state := "-"
@@ -271,7 +270,7 @@ func newListCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "show tasks of every main session")
-	cmd.Flags().StringVar(&owner, "owner", "", "show tasks of this main session only (default: git top-level of the current folder, plus every registered project)")
+	cmd.Flags().StringVar(&owner, "owner", "", "show tasks of this main session only (default: git top-level of the current folder, plus the tasks of every project)")
 	return cmd
 }
 

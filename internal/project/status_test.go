@@ -98,3 +98,12 @@ func TestStatusWithoutRecord(t *testing.T) {
 		t.Errorf("stage %q, milestone %q", r.Stage, r.Milestone())
 	}
 }
+
+func TestStatusOfAnUnfinishedSetup(t *testing.T) {
+	rec := NewRecord("demo-app")
+	r := Status(&rec, state.Project{Name: "demo-app", Path: "/work/demo-app", Reserved: true}, nil, time.Now())
+	got := r.Text()
+	if !strings.Contains(got, "setup: not finished\n") || !strings.Contains(got, "next: wait for herdr-runner-kit new to finish; if it was interrupted, drop the project with: herdr-runner-kit project forget demo-app") {
+		t.Errorf("status:\n%s", got)
+	}
+}
