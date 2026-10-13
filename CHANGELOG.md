@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.2.0...v0.3.0) (2026-10-13)
+
+
+### Features
+
+* brief before runners, named branches and worktree cleanup ([#15](https://github.com/khuebt/herdr-runner-kit/issues/15)) ([25b7349](https://github.com/khuebt/herdr-runner-kit/commit/25b73497dec4dd46f2bf581b9e128fd8f8ce1d4b))
+
 ## [0.2.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.1.1...v0.2.0) (2026-10-13)
 
 
