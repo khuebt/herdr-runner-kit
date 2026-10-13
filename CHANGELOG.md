@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.4.0...v0.5.0) (2026-10-13)
+
+
+### Features
+
+* usage-limit fallback, branch sync and learning numbers ([#19](https://github.com/khuebt/herdr-runner-kit/issues/19)) ([edf9c1d](https://github.com/khuebt/herdr-runner-kit/commit/edf9c1d338866caacd9d051724c415dfb03b59c6))
+
 ## [0.4.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.3.0...v0.4.0) (2026-10-13)
 
 
