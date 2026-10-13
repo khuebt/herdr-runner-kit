@@ -16,6 +16,7 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -442,7 +443,9 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 		if err != nil {
 			return nil, err
 		}
-		cr := runner.TitleFrom(data.Notes)
+		// The title and the file name are committed, so neither may carry
+		// a secret from the request.
+		cr := redact.Secrets(runner.TitleFrom(data.Notes))
 		if change, err = project.AddChange(r.Store, p.Name, cr, runner.Slug(cr, 40), time.Now()); err != nil {
 			return nil, err
 		}
@@ -615,9 +618,12 @@ var gateVerbs = map[string]struct{ use, short, long string }{
 		long: "approve records who approved which version, and when, then commits the project's " +
 			"records in one commit. The version is read from the committed artifact: the spec's " +
 			"version, or the highest committed pack folder. It refuses an artifact that is not " +
-			"committed, has uncommitted changes or already has an outcome. Approving the pack " +
+			"committed, has uncommitted changes or already has an outcome. An outcome holds for the " +
+			"committed content: when that content changes under the same version, the gate opens " +
+			"again and a new outcome replaces the old one. Approving the pack " +
 			"imports the roadmap from the committed roadmap proposal. A lite-track project may " +
-			"skip the pack only with --waive-pack at spec approval; the spec gate is never waived.",
+			"skip the pack only with --waive-pack at spec approval, before the pack has an outcome; " +
+			"the spec gate is never waived.",
 	},
 	"changes": {
 		use:   "changes <spec|pack> --stdin",
@@ -710,6 +716,10 @@ func decideGate(cmd *cobra.Command, r *runner.Runner, p state.Project, o project
 	fmt.Fprintln(out)
 	if err != nil {
 		return err
+	}
+	if d.Replaced != "" {
+		fmt.Fprintf(out, "note: %s %s changed since it was %s under the same version; this outcome replaces that one\n",
+			d.Gate, d.Version, strings.ReplaceAll(d.Replaced, "-", " "))
 	}
 	if d.Waived {
 		fmt.Fprintln(out, "pack gate: waived for the lite track by your choice; recorded in decisions.md")

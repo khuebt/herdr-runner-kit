@@ -43,7 +43,7 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		if line, ok := r.gateApproval(text); ok {
 			return line, nil
 		}
-		waiting, err := r.waitingForHuman()
+		waiting, held, err := r.waitingForHuman()
 		if err != nil {
 			return "", err
 		}
@@ -55,10 +55,21 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 			}
 			return `ambiguous: "status ` + name + `" could be an answer for ` + strings.Join(waiting, ", ") + "; ask, or show project status", nil
 		}
-		switch len(waiting) {
-		case 0:
+		switch {
+		case len(waiting) == 0 && len(held) == 1:
+			// A task held for a reason, such as a dependency, waits for
+			// the user to name it; a bare "ok" may be meant for something
+			// else.
+			return fmt.Sprintf("ambiguous: %s is held (%s); release it with \"#%s ok\" once that is settled", held[0].ID, held[0].HoldReason, held[0].ID), nil
+		case len(waiting) == 0 && len(held) > 1:
+			ids := make([]string, 0, len(held))
+			for _, t := range held {
+				ids = append(ids, t.ID)
+			}
+			return "ambiguous: " + strings.Join(ids, ", ") + " are held for a reason; release one with \"#<id> ok\" once it is settled", nil
+		case len(waiting) == 0:
 			return "ambiguous: no task is waiting; ask which task this is for", nil
-		case 1:
+		case len(waiting) == 1:
 			id = waiting[0]
 		default:
 			return "ambiguous: waiting " + strings.Join(waiting, ", ") + "; ask for a #id tag", nil
@@ -69,10 +80,6 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		return "", err
 	}
 	switch {
-	case t.Status == task.Held && t.HoldReason != "" && m == nil:
-		// A task held for a reason, such as a dependency, waits for the
-		// user to name it; a bare "ok" may be meant for something else.
-		return fmt.Sprintf("ambiguous: %s is held (%s); release it with \"#%s ok\" once that is settled", id, t.HoldReason, id), nil
 	case t.Status == task.Held:
 		note := body
 		if isApproval(body) {
@@ -136,20 +143,24 @@ func (r *Runner) gateApproval(text string) (string, bool) {
 	return fmt.Sprintf("meta: user approves %s of %q, which is not a registered project; ask which project they mean", gate, name), true
 }
 
-// waitingForHuman lists tasks that a reply can resolve: a runner's question
-// or a held gate.
-func (r *Runner) waitingForHuman() ([]string, error) {
+// waitingForHuman lists the tasks an untagged reply can resolve: a
+// runner's question or a held gate. Tasks held for a reason, such as a
+// dependency, are listed apart in held: only a reply tagged with their id
+// releases them, so they never make a reply ambiguous.
+func (r *Runner) waitingForHuman() (ids []string, held []*task.Task, err error) {
 	tasks, err := r.Store.List()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var ids []string
 	for _, t := range tasks {
-		if t.Status == task.Held || (t.Status == task.NeedsHuman && t.Question != "") {
+		switch {
+		case t.Status == task.Held && t.HoldReason != "":
+			held = append(held, t)
+		case t.Status == task.Held, t.Status == task.NeedsHuman && t.Question != "":
 			ids = append(ids, t.ID)
 		}
 	}
-	return ids, nil
+	return ids, held, nil
 }
 
 func isApproval(s string) bool {

@@ -115,7 +115,7 @@ func TestReportRejectsBadRoundsAndDecisions(t *testing.T) {
 	six := []string{"a?", "b?", "c?", "d?", "e?", "f?"}
 	for _, o := range []ReportOptions{
 		{Status: task.NeedsHuman, Questions: six},
-		{Status: task.NeedsHuman, Questions: []string{strings.Repeat("é", MaxQuestionRunes+1)}},
+		{Status: task.NeedsHuman, Questions: []string{"a?", strings.Repeat("é", MaxQuestionRunes+1)}},
 		{Status: task.NeedsHuman, Questions: []string{"a?"}, Decisions: []string{"x -> y"}},
 		{Status: task.Failed, Summary: "s", Decisions: []string{"x -> y"}},
 		{Status: task.Done, Summary: "s", Decisions: []string{"no arrow"}},
@@ -275,5 +275,46 @@ func TestContractV2Rules(t *testing.T) {
 		if !strings.Contains(c, want) {
 			t.Errorf("contract lacks %q:\n%s", want, c)
 		}
+	}
+}
+
+func TestReportCutsALongSingleQuestion(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	got, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Questions: []string{strings.Repeat("é", MaxQuestionRunes+50)}})
+	if err != nil {
+		t.Fatalf("a long single question was refused: %v", err)
+	}
+	if q := []rune(got.Question); len(q) != MaxQuestionRunes || q[len(q)-1] != '…' {
+		t.Errorf("question has %d runes, ends %q", len(q), q[len(q)-1])
+	}
+}
+
+func TestReportHidesSecrets(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	const token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	got, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Summary: "found " + token, Questions: []string{"use " + token + "?", "or password=hunter2?"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := lastEvent(t, r)
+	for _, text := range []string{got.Summary, got.Question, ev.Summary, ev.Question} {
+		if strings.Contains(text, token) || strings.Contains(text, "hunter2") || !strings.Contains(text, redact.Mark) {
+			t.Errorf("report keeps a secret: %q", text)
+		}
+	}
+	if _, err := r.Send(context.Background(), tk.ID, "the key is "+token); err != nil {
+		t.Fatal(err)
+	}
+	if ev := lastEvent(t, r); ev.Type != "sent" || strings.Contains(ev.Summary, token) {
+		t.Errorf("sent event = %+v", ev)
+	}
+	got, err = r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "done", Decisions: []string{"which key -> " + token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev := lastEvent(t, r); strings.Contains(got.Decisions[0], token) || strings.Contains(ev.Decisions[0], token) {
+		t.Errorf("decision keeps a secret: %q %q", got.Decisions, ev.Decisions)
 	}
 }

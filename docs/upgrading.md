@@ -28,6 +28,8 @@ An upgrade within the same schema needs no migration and is always allowed.
 
 Do not go back to a release with report contract 1 while runners started by a contract 2 binary are open: the older binary keeps only the last question of a round and rejects `--decision`. See [report-contract.md](report-contract.md#compatibility).
 
+A project record written by this release uses `manifestVersion: 2`, in the kit's state and in a project's committed `handbook/product/project.md`. Version 2 adds a gate outcome's `content` (the git object id of the approved spec or pack) and a change request's `path`. An older binary that reads only version 1 refuses such a record with "upgrade herdr-runner-kit" rather than an unknown field. Version 1 records are read as before and written back as version 2 at their next change. An older release cannot drive a project once its record is version 2, so do not go back to one while you drive projects. The id of a change request's impact runner stays in the kit's state and is never committed.
+
 An older binary refuses a config key it does not know. Before going back to a release older than a key you set, such as `quotaFallback`, remove that key from the config.
 
 ## Update notes

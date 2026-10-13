@@ -65,12 +65,12 @@ func ParseChangeID(s string) (string, error) {
 	return "CR-" + m[1], nil
 }
 
-// AddChange allocates the next change request of a project for request,
-// whose first line becomes its title, and names its file with slug. The
-// impact runner writes the file; the record keeps the request until the
-// next commit point.
+// AddChange allocates the next change request of a project titled title,
+// with values that look like secrets hidden, and names its file with slug.
+// The impact runner writes the file; the record keeps the request until
+// the next commit point.
 func AddChange(s *state.Store, name, title, slug string, now time.Time) (Change, error) {
-	title = oneLine(title)
+	title = redact.Secrets(oneLine(title))
 	if title == "" {
 		return Change{}, errors.New("the change request is empty")
 	}

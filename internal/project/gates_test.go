@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -395,4 +396,137 @@ func sameSet(a, b []string) bool {
 	slices.Sort(a)
 	slices.Sort(b)
 	return slices.Equal(a, b)
+}
+
+func TestGateWaiverRefusedOnceThePackHasAnOutcome(t *testing.T) {
+	dir := newRepo(t)
+	s := registered(t, dir)
+	commitSpec(t, dir, 1, "lite")
+	if _, err := decide(s, GateSpec, "approve"); err != nil {
+		t.Fatal(err)
+	}
+	commitPack(t, dir, 1, proposal)
+	if _, err := decide(s, GatePack, "approve"); err != nil {
+		t.Fatal(err)
+	}
+	commitSpec(t, dir, 2, "lite")
+	before := commitCount(t, dir)
+	_, err := decide(s, GateSpec, "approve", func(o *DecideOptions) { o.WaivePack = true })
+	if err == nil || !strings.Contains(err.Error(), "the pack gate already has an outcome (approved v1)") {
+		t.Fatalf("waiver over an approved pack: %v", err)
+	}
+	rec := load(t, s)
+	if g := rec.Gates.Pack; g.Status != GateApproved || g.Version != "v1" || g.Waived {
+		t.Errorf("pack gate = %+v", g)
+	}
+	if rec.Gates.Spec.Version != "v1" || commitCount(t, dir) != before {
+		t.Error("a refused waiver recorded the spec approval")
+	}
+}
+
+func TestGateApprovalIsBoundToContent(t *testing.T) {
+	dir := newRepo(t)
+	s := registered(t, dir)
+	ctx := context.Background()
+	commitSpec(t, dir, 1, "standard")
+	if _, err := decide(s, GateSpec, "approve"); err != nil {
+		t.Fatal(err)
+	}
+	rec := load(t, s)
+	if blob := run(t, dir, "rev-parse", "HEAD:"+SpecPath); rec.Gates.Spec.Content != blob {
+		t.Fatalf("spec content = %q, want blob %s", rec.Gates.Spec.Content, blob)
+	}
+	// The same version with other content reopens the gate.
+	writeFile(t, dir, SpecPath, specText(1, "standard")+"\nAlso export to PDF.\n")
+	run(t, dir, "commit", "-q", "-am", "docs(discovery): spec")
+	g, err := ReadGate(ctx, dir, rec, GateSpec)
+	if err != nil || !g.Changed || g.Status() != GateChanged || g.Passed() {
+		t.Fatalf("changed spec: %+v %v", g, err)
+	}
+	if err := RequireGate(ctx, dir, rec, GateSpec); err == nil || !strings.Contains(err.Error(), "spec v1 changed since its approval") {
+		t.Errorf("changed spec passed: %v", err)
+	}
+	d, err := decide(s, GateSpec, "approve")
+	if err != nil || d.Replaced != GateApproved || d.Version != "v1" {
+		t.Fatalf("approve the changed spec: %+v %v", d, err)
+	}
+	if !strings.Contains(run(t, dir, "show", "HEAD:"+DecisionsPath), "its content changed since it was approved, which this outcome replaces") {
+		t.Error("decisions.md does not say the outcome replaced one")
+	}
+	if err := RequireGate(ctx, dir, load(t, s), GateSpec); err != nil {
+		t.Errorf("re-approved spec: %v", err)
+	}
+	if _, err := decide(s, GateSpec, "approve"); err == nil || !strings.Contains(err.Error(), "already has an outcome") {
+		t.Errorf("a second outcome for the same content: %v", err)
+	}
+
+	// Each pack version keeps its folder; a change to it reopens the gate.
+	commitPack(t, dir, 1, proposal)
+	if _, err := decide(s, GatePack, "approve"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireGate(ctx, dir, load(t, s), GatePack); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, PackDir(1)+"/"+PackHTML, "<html>other</html>\n")
+	run(t, dir, "commit", "-q", "-am", "docs(approval): pack")
+	if err := RequireGate(ctx, dir, load(t, s), GatePack); err == nil || !strings.Contains(err.Error(), "pack v1 changed since its approval") {
+		t.Errorf("changed pack passed: %v", err)
+	}
+	// An outcome recorded without content keeps its old meaning.
+	rec = load(t, s)
+	rec.Gates.Pack.Content = ""
+	if err := RequireGate(ctx, dir, rec, GatePack); err != nil {
+		t.Errorf("outcome without content: %v", err)
+	}
+}
+
+func TestGateNoteAndDecisionsHideSecrets(t *testing.T) {
+	const token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	dir := newRepo(t)
+	s := registered(t, dir)
+	commitSpec(t, dir, 1, "standard")
+	if err := AddDecision(s, "demo-app", "deploy with "+token, decidedAt); err != nil {
+		t.Fatal(err)
+	}
+	c, err := AddChange(s, "demo-app", "rotate "+token, "rotate", decidedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(c.Title, token) || !strings.Contains(c.Title, redact.Mark) {
+		t.Errorf("change title = %q", c.Title)
+	}
+	if _, err := decide(s, GateSpec, "approve", func(o *DecideOptions) { o.Note = "ok, password=hunter2" }); err != nil {
+		t.Fatal(err)
+	}
+	if note := load(t, s).Gates.Spec.Note; note != "ok, password="+redact.Mark {
+		t.Errorf("note = %q", note)
+	}
+	for _, rel := range RenderedPaths {
+		if got := run(t, dir, "show", "HEAD:"+rel); strings.Contains(got, token) || strings.Contains(got, "hunter2") {
+			t.Errorf("%s holds a secret:\n%s", rel, got)
+		}
+	}
+}
+
+func TestRoadmapImportKeepsManualDependenciesAndTheRunningMilestone(t *testing.T) {
+	rec := NewRecord("demo-app")
+	rec.Milestones = []Milestone{{ID: "M0", Title: "Scaffold", Status: MilestoneInProgress, Features: []Feature{{ID: "F0", Title: "Repo"}}}}
+	rec.Dependencies = []Dependency{{ID: "D1", Name: "Payments Sandbox", Owner: "user", Status: DependencyReady, SecretLocation: "1Password: payments"}}
+	b, err := ParseBlock(markdown("milestones:\n  - {id: M0, title: Scaffold v2}\n  - {id: M1, title: Lists}\n"+
+		"dependencies:\n  - {name: payments sandbox, milestone: M1, workaround: fake gateway}\n"), RoadmapProposal, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyRoadmap(&rec, b)
+	if m := rec.Milestones[0]; m.Title != "Scaffold" || len(m.Features) != 1 || m.Status != MilestoneInProgress {
+		t.Errorf("running milestone = %+v", m)
+	}
+	if len(rec.Dependencies) != 1 {
+		t.Fatalf("dependencies = %+v", rec.Dependencies)
+	}
+	want := Dependency{ID: "D1", Name: "Payments Sandbox", Owner: "user", Status: DependencyReady, Milestone: "M1", Workaround: "fake gateway", SecretLocation: "1Password: payments"}
+	if rec.Dependencies[0] != want {
+		t.Errorf("dependency = %+v", rec.Dependencies[0])
+	}
 }

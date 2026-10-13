@@ -157,8 +157,10 @@ func closes(line, fence string) bool {
 }
 
 // ParseBlock reads the first yaml block of a markdown file for consumer c.
-// Decoding is strict, sections c does not accept are refused, and the
-// block is checked against rec, whose done milestones it may not change.
+// Decoding is strict, every text field is flattened to one short line,
+// sections c does not accept are refused, and the block is checked against
+// rec, whose done milestones it may not change and whose done and running
+// milestones it may not remove.
 // Errors name the field at fault.
 func ParseBlock(markdown []byte, c Consumer, rec Record) (Block, error) {
 	raw, err := FindBlock(markdown)
@@ -174,6 +176,7 @@ func ParseBlock(markdown []byte, c Consumer, rec Record) (Block, error) {
 		}
 		return Block{}, fmt.Errorf("%s: parse the yaml block: %w", c.Name, err)
 	}
+	b.flatten()
 	present := map[string]bool{
 		SectionMilestones: len(b.Milestones) > 0, SectionDependencies: len(b.Dependencies) > 0,
 		SectionNodes: len(b.Nodes) > 0, SectionOpenQuestions: len(b.OpenQuestions) > 0, SectionBacklog: len(b.Backlog) > 0,
@@ -194,6 +197,51 @@ func ParseBlock(markdown []byte, c Consumer, rec Record) (Block, error) {
 	return b, nil
 }
 
+// maxField bounds every text field of a block.
+const maxField = maxNote
+
+// flatten makes every text field of b one line of at most maxField runes,
+// so no field can carry line breaks or long text into the record, the
+// rendered files or a runner's preamble.
+func (b *Block) flatten() {
+	for i := range b.Milestones {
+		m := &b.Milestones[i]
+		flat(&m.ID, &m.Title, &m.Planned)
+		for j := range m.Features {
+			f := &m.Features[j]
+			flat(&f.ID, &f.Title)
+			flatAll(f.DependsOn)
+		}
+	}
+	for i := range b.Dependencies {
+		d := &b.Dependencies[i]
+		flat(&d.Name, &d.Owner, &d.Milestone, &d.Workaround, &d.SecretLocation)
+	}
+	for i := range b.Nodes {
+		n := &b.Nodes[i]
+		flat(&n.ID, &n.Type, &n.Title, &n.Branch)
+		flatAll(n.DependsOn)
+	}
+	for i := range b.OpenQuestions {
+		flat(&b.OpenQuestions[i].Q, &b.OpenQuestions[i].Answer)
+	}
+	for i := range b.Backlog {
+		flat(&b.Backlog[i].ID, &b.Backlog[i].To)
+	}
+}
+
+func flat(fields ...*string) {
+	for _, f := range fields {
+		*f = clip(oneLine(*f), maxField)
+	}
+}
+
+func flatAll(values []string) {
+	for i := range values {
+		flat(&values[i])
+	}
+}
+
 func (b Block) check(rec Record) error {
 	if err := b.checkMilestones(rec); err != nil {
 		return err
@@ -208,10 +256,13 @@ func (b Block) check(rec Record) error {
 		if strings.TrimSpace(d.Name) == "" {
 			return fmt.Errorf("%s.name is empty", field)
 		}
-		if names[d.Name] {
+		if names[strings.ToLower(d.Name)] {
 			return fmt.Errorf("%s.name %q is used twice", field, d.Name)
 		}
-		names[d.Name] = true
+		names[strings.ToLower(d.Name)] = true
+		if d.Owner != "" && !slices.Contains(DependencyOwners, d.Owner) {
+			return fmt.Errorf("%s.owner %q: want one of %s", field, d.Owner, strings.Join(DependencyOwners, ", "))
+		}
 		if d.Milestone != "" && !slices.Contains(milestones, d.Milestone) {
 			return fmt.Errorf("%s.milestone %q is not a milestone of this block", field, d.Milestone)
 		}
@@ -262,8 +313,9 @@ func (b Block) check(rec Record) error {
 	return nil
 }
 
-// checkMilestones checks ids, dates and feature dependencies, and that
-// every done milestone of rec is in the block unchanged.
+// checkMilestones checks ids, dates and feature dependencies, that every
+// done milestone of rec is in the block unchanged, and that the running
+// one is still in it.
 func (b Block) checkMilestones(rec Record) error {
 	ids := map[string][]string{}
 	features := map[string][]string{}
@@ -300,17 +352,17 @@ func (b Block) checkMilestones(rec Record) error {
 	if len(b.Milestones) == 0 {
 		return nil
 	}
-	for _, done := range rec.Milestones {
-		if done.Status != MilestoneDone {
+	for _, kept := range rec.Milestones {
+		if kept.Status != MilestoneDone && kept.Status != MilestoneInProgress {
 			continue
 		}
-		i := slices.IndexFunc(b.Milestones, func(m BlockMilestone) bool { return m.ID == done.ID })
+		i := slices.IndexFunc(b.Milestones, func(m BlockMilestone) bool { return m.ID == kept.ID })
 		if i < 0 {
-			return fmt.Errorf("milestones: %s is done and cannot be removed", done.ID)
+			return fmt.Errorf("milestones: %s is %s and cannot be removed", kept.ID, kept.Status)
 		}
 		m := b.Milestones[i]
-		if m.Title != done.Title || m.Planned != dateOrEmpty(done.Planned) || !sameFeatures(m.Features, done.Features) {
-			return fmt.Errorf("milestones[%d]: %s is done and cannot be changed", i, done.ID)
+		if kept.Status == MilestoneDone && (m.Title != kept.Title || m.Planned != dateOrEmpty(kept.Planned) || !sameFeatures(m.Features, kept.Features)) {
+			return fmt.Errorf("milestones[%d]: %s is done and cannot be changed", i, kept.ID)
 		}
 	}
 	return nil

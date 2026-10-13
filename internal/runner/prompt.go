@@ -22,8 +22,8 @@ When you finish, report once with one of these commands. A later message from th
 Rules:
 - HRK_TASK=%[1]s is already set in your environment, so the command knows which task you are.
 - Write files meant for the main session under %[4]s and pass each one with --output.
-- Use needs-human only for decisions you cannot make yourself. Ask one question, or one round of up to 5 questions with one --question each; the main session sees them numbered 1 to 5. Each lists its options and says which one you recommend. Then stop. The answers arrive in this session; continue the work and report again.
-- When you settle an open question yourself with the recommended option, pass it to report done as --decision "<question> -> <choice>" (up to 7), so the main session sees what you decided.
+- Use needs-human only for decisions you cannot make yourself. Ask one question, or one round of up to 5 questions with one --question each, each under 400 characters; the main session sees them numbered 1 to 5. Each lists its options and says which one you recommend. Then stop. The answers arrive in this session; continue the work and report again.
+- When you settle an open question yourself with the recommended option, pass it to report done as --decision "<question> -> <choice>" (up to 7, each under 200 characters), so the main session sees what you decided.
 - Never ask for, type or echo a secret value (password, token, key) in a question, summary or file. Ask where it is stored instead.
 - If you hand work to background shells or subagents, wait for them before reporting done.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Never add files under plans/ or agent folders such as .claude/, .codex/ or .agents/. Do not push and do not open pull requests.

@@ -15,6 +15,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 )
 
@@ -24,6 +25,10 @@ const (
 	GateApproved         = "approved"
 	GateChangesRequested = "changes-requested"
 	GateRejected         = "rejected"
+	// GateChanged is the status of an approved version whose committed
+	// content is no longer the content that was approved. It is derived,
+	// never recorded.
+	GateChanged = "changed-since-approval"
 )
 
 // Milestone statuses. A milestone in progress is the running milestone,
@@ -155,6 +160,9 @@ type GateState struct {
 	Track string
 	// Outcome is the last outcome recorded for the gate.
 	Outcome Gate
+	// Changed is set when the content committed for the outcome's version
+	// is not the content the outcome was recorded for.
+	Changed bool
 }
 
 // ReadGate reads gate name of rec's project in root. Openness is derived
@@ -178,15 +186,57 @@ func ReadGate(ctx context.Context, root string, rec Record, name string) (GateSt
 	default:
 		return g, fmt.Errorf("unknown gate %q: want %s or %s", name, GateSpec, GatePack)
 	}
+	// The spec file holds only its latest version, so an older version's
+	// content cannot be checked; each pack version keeps its own folder.
+	if o := g.Outcome; o.Content != "" && (name == GatePack || versionNumber(o.Version) == g.Committed) {
+		id, err := committedID(ctx, root, artifactPath(name, versionNumber(o.Version)))
+		if err != nil {
+			return g, err
+		}
+		g.Changed = id != "" && id != o.Content
+	}
 	return g, nil
 }
 
+// artifactPath returns the committed artifact of version n of gate.
+func artifactPath(gate string, n int) string {
+	if gate == GatePack {
+		return PackDir(n)
+	}
+	return SpecPath
+}
+
+// committedID returns the git object id of rel at HEAD, the blob of a file
+// or the tree of a folder, or "" when HEAD does not hold rel.
+func committedID(ctx context.Context, root, rel string) (string, error) {
+	out, err := git(ctx, root, "ls-tree", "HEAD", "--", rel)
+	if err != nil {
+		return "", err
+	}
+	meta, entry, ok := strings.Cut(out, "\t")
+	if !ok || entry != rel {
+		return "", nil
+	}
+	f := strings.Fields(meta)
+	if len(f) != 3 {
+		return "", fmt.Errorf("git ls-tree %s: unexpected output %q", rel, out)
+	}
+	return f[2], nil
+}
+
 // Status is the gate's status for its committed version: the recorded
-// outcome when it is for that version, else open. An approval stays in
-// force while a later version waits for its own outcome.
+// outcome when it is for that version and its content, else open. An
+// approval stays in force while a later version waits for its own outcome;
+// an approved version whose content changed is GateChanged.
 func (g GateState) Status() string {
 	if g.Outcome.Status != "" && versionNumber(g.Outcome.Version) == g.Committed {
-		return g.Outcome.Status
+		switch {
+		case !g.Changed:
+			return g.Outcome.Status
+		case g.Outcome.Status == GateApproved:
+			return GateChanged
+		}
+		return GateOpen
 	}
 	if g.Passed() {
 		return GateApproved
@@ -195,10 +245,10 @@ func (g GateState) Status() string {
 }
 
 // Passed reports whether work behind the gate may start: an approved
-// version is committed at HEAD, or, for the pack only, the user waived it
+// version is committed at HEAD with the content that was approved, or, for the pack only, the user waived it
 // at spec approval and the committed spec is still on the lite track.
 func (g GateState) Passed() bool {
-	if g.Outcome.Status == GateApproved {
+	if g.Outcome.Status == GateApproved && !g.Changed {
 		if n := versionNumber(g.Outcome.Version); n > 0 && n <= g.Committed {
 			return true
 		}
@@ -218,6 +268,10 @@ func RequireGate(ctx context.Context, root string, rec Record, name string) erro
 	if o := g.Outcome; o.Status == GateApproved && versionNumber(o.Version) > g.Committed {
 		return fmt.Errorf("the record says the %s gate approved %s, but HEAD of %s holds %s; commit the approved version or record a new outcome",
 			name, o.Version, root, committedLabel(name, g.Committed))
+	}
+	if o := g.Outcome; o.Status == GateApproved && g.Changed {
+		return fmt.Errorf("%s %s changed since its approval: HEAD of %s holds other content under the same version; ask the user to approve it again (herdr-runner-kit project approve %s)",
+			name, o.Version, root, name)
 	}
 	if g.Outcome.Waived && g.Track != "lite" {
 		return fmt.Errorf("the pack gate was waived for the lite track, but the committed spec is on the %s track; approve a pack (herdr-runner-kit project approve pack)", orDash(g.Track))
@@ -265,14 +319,18 @@ type Decided struct {
 	Milestones, Dependencies int
 	// NoPDF is set when the approved pack holds no PDF.
 	NoPDF bool
+	// Replaced is the earlier outcome of the same version, which this one
+	// replaces because the version's content changed since; "" when none.
+	Replaced string
 	// Commit is the commit that holds the records.
 	Commit string
 }
 
-// Decide records a gate outcome for the committed version of its artifact
-// and commits every pending record in one commit. It refuses an artifact
-// that is not committed or has uncommitted changes, and a version that
-// already has an outcome. Approving the pack imports the roadmap block of
+// Decide records a gate outcome for the committed version of its artifact,
+// bound to that version's committed content, and commits every pending
+// record in one commit. It refuses an artifact that is not committed or
+// has uncommitted changes, and a version that already has an outcome for
+// the same content. --waive-pack is refused once the pack has an outcome. Approving the pack imports the roadmap block of
 // the committed roadmap proposal and clears the re-approval flag.
 func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (Decided, error) {
 	status, ok := outcomeOf[o.Outcome]
@@ -285,7 +343,7 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 	if o.WaivePack && (o.Gate != GateSpec || status != GateApproved) {
 		return Decided{}, errors.New("--waive-pack goes only with approve spec")
 	}
-	o.By, o.Note = oneLine(o.By), clip(oneLine(o.Note), maxNote)
+	o.By, o.Note = oneLine(o.By), clip(redact.Secrets(oneLine(o.Note)), maxNote)
 	if o.By == "" {
 		return Decided{}, errors.New("name who decided with --by")
 	}
@@ -309,12 +367,15 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 	if err := checkOrder(ctx, p.Path, rec, o.Gate); err != nil {
 		return Decided{}, err
 	}
-	spec, n, err := committedArtifact(ctx, p.Path, o.Gate)
+	spec, n, content, err := committedArtifact(ctx, p.Path, o.Gate)
 	if err != nil {
 		return Decided{}, err
 	}
 	d := Decided{Gate: o.Gate, Status: status, Version: Version(n), Waived: o.WaivePack}
-	if err := checkNew(rec, o.Gate, n); err != nil {
+	if err := checkNew(rec, o.Gate, n, content); err != nil {
+		return Decided{}, err
+	}
+	if err := checkWaiver(rec, o.WaivePack); err != nil {
 		return Decided{}, err
 	}
 	if o.WaivePack && spec.Track != "lite" {
@@ -343,15 +404,25 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 		if err := checkOrder(ctx, p.Path, *rec, o.Gate); err != nil {
 			return err
 		}
-		if err := checkNew(*rec, o.Gate, n); err != nil {
+		if err := checkNew(*rec, o.Gate, n, content); err != nil {
+			return err
+		}
+		if err := checkWaiver(*rec, o.WaivePack); err != nil {
 			return err
 		}
 		gate := &rec.Gates.Spec
 		if o.Gate == GatePack {
 			gate = &rec.Gates.Pack
 		}
-		*gate = Gate{Status: status, Version: d.Version, By: o.By, At: o.Now.UTC(), Note: o.Note, Waived: gate.Waived}
+		d.Replaced = ""
+		if gate.Status != "" && gate.Version == d.Version {
+			d.Replaced = gate.Status
+		}
+		*gate = Gate{Status: status, Version: d.Version, By: o.By, At: o.Now.UTC(), Note: o.Note, Waived: gate.Waived, Content: content}
 		text := fmt.Sprintf("%s %s %s by %s", o.Gate, d.Version, strings.ReplaceAll(status, "-", " "), o.By)
+		if d.Replaced != "" {
+			text += fmt.Sprintf("; its content changed since it was %s, which this outcome replaces", strings.ReplaceAll(d.Replaced, "-", " "))
+		}
 		if o.Gate == GateSpec && status == GateApproved {
 			if spec.Type != "" {
 				rec.Type = spec.Type
@@ -400,16 +471,31 @@ func checkOrder(ctx context.Context, root string, rec Record, gate string) error
 	return nil
 }
 
-// checkNew refuses an outcome for a version that already has one, or for
-// an older version.
-func checkNew(rec Record, gate string, n int) error {
+// checkNew refuses an outcome for a version that already has one for the
+// same content, or for an older version. content is the committed object
+// id of version n; an outcome recorded before content was kept is taken
+// as being for the same content.
+func checkNew(rec Record, gate string, n int, content string) error {
 	g := rec.Gates.Spec
 	if gate == GatePack {
 		g = rec.Gates.Pack
 	}
-	if g.Status != "" && n <= versionNumber(g.Version) {
-		return fmt.Errorf("%s %s already has an outcome (%s %s); the runner revises it as a new version first",
-			gate, Version(n), g.Status, g.Version)
+	if g.Status == "" || n > versionNumber(g.Version) {
+		return nil
+	}
+	if n == versionNumber(g.Version) && g.Content != "" && g.Content != content {
+		return nil
+	}
+	return fmt.Errorf("%s %s already has an outcome (%s %s); the runner revises it as a new version first",
+		gate, Version(n), g.Status, g.Version)
+}
+
+// checkWaiver refuses to waive a pack gate that already has an outcome,
+// which the waiver would overwrite.
+func checkWaiver(rec Record, waive bool) error {
+	if g := rec.Gates.Pack; waive && g.Status != "" {
+		return fmt.Errorf("the pack gate already has an outcome (%s %s); --waive-pack is only for a pack not yet decided",
+			g.Status, g.Version)
 	}
 	return nil
 }
@@ -434,46 +520,48 @@ var commitVerb = map[string]string{
 }
 
 // committedArtifact returns the version of gate's artifact committed at
-// HEAD, refusing one that is missing or has uncommitted changes. It also
-// returns the committed spec, which every gate reads.
-func committedArtifact(ctx context.Context, root, gate string) (SpecInfo, int, error) {
+// HEAD and its git object id, refusing one that is missing or has
+// uncommitted changes. It also returns the committed spec, which every
+// gate reads.
+func committedArtifact(ctx context.Context, root, gate string) (SpecInfo, int, string, error) {
 	spec, ok, err := CommittedSpec(ctx, root)
 	if err != nil {
-		return SpecInfo{}, 0, err
+		return SpecInfo{}, 0, "", err
 	}
+	n := spec.Version
 	if gate == GateSpec {
 		if !ok {
-			return SpecInfo{}, 0, fmt.Errorf("HEAD holds no %s; the spec runner commits it before it reports done", SpecPath)
+			return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no %s; the spec runner commits it before it reports done", SpecPath)
 		}
-		dirty, err := uncommitted(ctx, root, SpecPath)
-		if err != nil {
-			return SpecInfo{}, 0, err
+	} else {
+		if n, err = CommittedPackVersion(ctx, root); err != nil {
+			return SpecInfo{}, 0, "", err
 		}
-		if dirty {
-			return SpecInfo{}, 0, fmt.Errorf("%s has changes not committed; decide on a committed version", SpecPath)
+		if n == 0 {
+			return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no pack under %s/; run the pack stage first", ApprovalDir)
 		}
-		return spec, spec.Version, nil
+		if gone, err := missing(ctx, root, PackDir(n)+"/"+PackHTML); err != nil {
+			return SpecInfo{}, 0, "", err
+		} else if gone {
+			return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no %s/%s", PackDir(n), PackHTML)
+		}
 	}
-	n, err := CommittedPackVersion(ctx, root)
+	rel := artifactPath(gate, n)
+	dirty, err := uncommitted(ctx, root, rel)
 	if err != nil {
-		return SpecInfo{}, 0, err
-	}
-	if n == 0 {
-		return SpecInfo{}, 0, fmt.Errorf("HEAD holds no pack under %s/; run the pack stage first", ApprovalDir)
-	}
-	if gone, err := missing(ctx, root, PackDir(n)+"/"+PackHTML); err != nil {
-		return SpecInfo{}, 0, err
-	} else if gone {
-		return SpecInfo{}, 0, fmt.Errorf("HEAD holds no %s/%s", PackDir(n), PackHTML)
-	}
-	dirty, err := uncommitted(ctx, root, PackDir(n))
-	if err != nil {
-		return SpecInfo{}, 0, err
+		return SpecInfo{}, 0, "", err
 	}
 	if dirty {
-		return SpecInfo{}, 0, fmt.Errorf("%s has changes not committed; decide on a committed version", PackDir(n))
+		return SpecInfo{}, 0, "", fmt.Errorf("%s has changes not committed; decide on a committed version", rel)
 	}
-	return spec, n, nil
+	id, err := committedID(ctx, root, rel)
+	if err != nil {
+		return SpecInfo{}, 0, "", err
+	}
+	if id == "" {
+		return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no %s", rel)
+	}
+	return spec, n, id, nil
 }
 
 // missing reports whether HEAD lacks the file rel.
@@ -483,8 +571,11 @@ func missing(ctx context.Context, root, rel string) (bool, error) {
 }
 
 // applyRoadmap replaces the record's milestones with the block's, keeping
-// what the kit recorded about each one, and adds or updates dependencies
-// by name. It returns how many of each the block held.
+// what the kit recorded about each one and the scope of the done and the
+// running milestones, and adds or updates dependencies by name, ignoring
+// case. An update sets only the fields the block gives, so an entry added
+// by hand keeps its owner and secret location. It returns how many of each
+// the block held.
 func applyRoadmap(rec *Record, b Block) (milestones, dependencies int) {
 	old := map[string]Milestone{}
 	for _, m := range rec.Milestones {
@@ -493,7 +584,7 @@ func applyRoadmap(rec *Record, b Block) (milestones, dependencies int) {
 	next := make([]Milestone, 0, len(b.Milestones))
 	for _, bm := range b.Milestones {
 		m := old[bm.ID]
-		if m.Status != MilestoneDone {
+		if m.Status != MilestoneDone && m.Status != MilestoneInProgress {
 			m.ID, m.Title, m.Features = bm.ID, bm.Title, bm.Features
 			m.Planned = time.Time{}
 			if bm.Planned != "" {
@@ -507,13 +598,22 @@ func applyRoadmap(rec *Record, b Block) (milestones, dependencies int) {
 	}
 	rec.Milestones = next
 	for _, bd := range b.Dependencies {
-		i := slices.IndexFunc(rec.Dependencies, func(d Dependency) bool { return d.Name == bd.Name })
+		i := slices.IndexFunc(rec.Dependencies, func(d Dependency) bool { return strings.EqualFold(d.Name, bd.Name) })
 		if i < 0 {
-			rec.Dependencies = append(rec.Dependencies, Dependency{ID: nextID("D", depIDs(rec.Dependencies)), Name: bd.Name, Status: "needed"})
+			rec.Dependencies = append(rec.Dependencies, Dependency{ID: nextID("D", depIDs(rec.Dependencies)), Name: bd.Name, Status: DependencyNeeded})
 			i = len(rec.Dependencies) - 1
 		}
 		d := &rec.Dependencies[i]
-		d.Owner, d.Milestone, d.Workaround, d.SecretLocation = bd.Owner, bd.Milestone, bd.Workaround, bd.SecretLocation
+		for _, f := range []struct {
+			to   *string
+			from string
+		}{
+			{&d.Owner, bd.Owner}, {&d.Milestone, bd.Milestone}, {&d.Workaround, bd.Workaround}, {&d.SecretLocation, bd.SecretLocation},
+		} {
+			if f.from != "" {
+				*f.to = f.from
+			}
+		}
 	}
 	return len(b.Milestones), len(b.Dependencies)
 }
@@ -549,10 +649,11 @@ func Approver(ctx context.Context, root string) string {
 	return strings.TrimSpace(name)
 }
 
-// AddDecision keeps a decision of the user in the record. It is committed
-// with the next gate outcome or milestone.
+// AddDecision keeps a decision of the user in the record, with values that
+// look like secrets hidden. It is committed with the next gate outcome or
+// milestone.
 func AddDecision(s *state.Store, name, text string, now time.Time) error {
-	text = strings.TrimSpace(text)
+	text = redact.Secrets(strings.TrimSpace(text))
 	if text == "" {
 		return errors.New("the decision is empty")
 	}

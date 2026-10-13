@@ -43,6 +43,7 @@ func Render(rec Record, path string) ([]byte, error) {
 // renderSnapshot writes the whole record as front matter, which
 // ParseSnapshot reads back, followed by a generated summary.
 func renderSnapshot(rec Record) ([]byte, error) {
+	rec.ManifestVersion = ManifestVersion
 	var b bytes.Buffer
 	b.WriteString("---\n")
 	enc := yaml.NewEncoder(&b)

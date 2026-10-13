@@ -42,7 +42,7 @@ See [roadmap](roadmap.md), [decisions](decisions.md) and [backlog](backlog.md).
 	if body != want {
 		t.Errorf("body:\n%s\nwant:\n%s", body, want)
 	}
-	if !strings.HasPrefix(got, "---\nmanifestVersion: 1\nname: demo-app\n") {
+	if !strings.HasPrefix(got, "---\nmanifestVersion: 2\nname: demo-app\n") {
 		t.Errorf("front matter:\n%s", got)
 	}
 }

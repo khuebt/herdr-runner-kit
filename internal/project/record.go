@@ -20,8 +20,11 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 )
 
-// ManifestVersion is the record schema this binary reads and writes.
-const ManifestVersion = 1
+// ManifestVersion is the record schema this binary writes; it reads every
+// version up to it. Version 2 added the gate's content id and the change
+// request's file, which a version 1 reader refuses as unknown fields, so
+// that reader is told to upgrade instead.
+const ManifestVersion = 2
 
 // Record defaults.
 const (
@@ -83,6 +86,10 @@ type Gate struct {
 	At      time.Time `json:"at,omitzero" yaml:"at,omitempty"`
 	Note    string    `json:"note,omitempty" yaml:"note,omitempty"`
 	Waived  bool      `json:"waived,omitempty" yaml:"waived,omitempty"`
+	// Content is the git object id of the decided version: the blob of
+	// the spec file or the tree of the pack folder. The outcome holds
+	// only while that version's committed content is unchanged.
+	Content string `json:"content,omitempty" yaml:"content,omitempty"`
 }
 
 // Reapproval is set when a change of scope needs the pack approved again.
@@ -120,10 +127,11 @@ type Change struct {
 	Blocking  bool      `json:"blocking,omitempty" yaml:"blocking,omitempty"`
 	Milestone string    `json:"milestone,omitempty" yaml:"milestone,omitempty"`
 	At        time.Time `json:"at,omitzero" yaml:"at,omitempty"`
-	// Path is the CR file, relative to the repository root, and Task the
-	// impact runner that writes it.
+	// Path is the CR file, relative to the repository root.
 	Path string `json:"path,omitempty" yaml:"path,omitempty"`
-	Task string `json:"task,omitempty" yaml:"task,omitempty"`
+	// Task is the impact runner that writes the file. Task ids are local
+	// to this machine, so it lives only in kit state.
+	Task string `json:"task,omitempty" yaml:"-"`
 }
 
 // BacklogItem is an idea kept for later.
@@ -349,6 +357,7 @@ func update(s *state.Store, name string, fn func(*Record) error) (Record, error)
 }
 
 func write(s *state.Store, rec Record) error {
+	rec.ManifestVersion = ManifestVersion
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode project record: %w", err)

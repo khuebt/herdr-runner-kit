@@ -23,7 +23,7 @@ The command path is the absolute path of the binary that spawned the runner. `re
 
 ### Question rounds
 
-`needs-human` takes one `--question`, or a round of up to 5 (each at most 400 characters). A round is stored as one question, numbered one per line, so `answer`, Telegram replies and `status` treat it like any other question. `wait` prints it as a header and one indented line per question:
+`needs-human` takes one `--question`, or a round of up to 5 (each at most 400 characters). A single question longer than that is cut with `…`, so a version 1 report is never refused; a round with a longer question is. A round is stored as one question, numbered one per line, so `answer`, Telegram replies and `status` treat it like any other question. `wait` prints it as a header and one indented line per question:
 
 ```text
 t4 needs-human · pick a store · 2 questions
@@ -47,7 +47,7 @@ Rules the runner follows:
 - Files meant for the main session go under `tasks/<id>/out/` and are passed with `--output`.
 - `needs-human` is only for decisions the runner cannot make. It asks one question or one round of up to 5, lists the options for each, recommends one, and stops. The answer arrives in the same session with `send`; the runner continues and reports again.
 - Every open question it settles itself with the recommended option is passed to `done` as `--decision`.
-- It never asks for, types or echoes a secret value in a question, summary or file; it asks where the secret is stored instead. The `answered` event of `answer` hides anything that looks like a secret (token-like strings, values of `password=`-style keys, credentials in URLs).
+- It never asks for, types or echoes a secret value in a question, summary or file; it asks where the secret is stored instead. `report` hides anything that looks like a secret (token-like strings, values of `password=`-style keys, credentials in URLs) in its summary, questions and decisions before it stores them or sends them to Telegram, and the `answered` event of `answer` and the `sent` event of `send` do the same.
 - Background shells and subagents finish before `done` is reported.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Files under `plans/` and agent folders (`.claude/`, `.codex/`, `.agents/`) are never committed. The runner never pushes and never opens a pull request.
 - It commits on the branch it starts on, and never creates, switches or deletes branches. If its prompt names another branch, it stays on its own and says so in its summary.

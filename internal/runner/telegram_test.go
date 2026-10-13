@@ -244,6 +244,17 @@ func TestRouteTelegram(t *testing.T) {
 			t.Errorf("note: %q", got.Prompt)
 		}
 	})
+	t.Run("a dependency hold leaves the only question unambiguous", func(t *testing.T) {
+		r, _, dir := setup(t)
+		h := spawnStarting(t, r, SpawnOptions{Prompt: "cook", Cwd: dir, Gate: task.GateHuman, Reason: "needs D2"})
+		a := ask(t, r, dir)
+		if line, err := r.RouteTelegram(ctx, "B"); err != nil || !strings.HasPrefix(line, a.ID+" got the answer") {
+			t.Fatalf("%q %v", line, err)
+		}
+		if got, _ := r.Store.Get(h.ID); got.Status != task.Held {
+			t.Errorf("the answer reached the held task: %+v", got)
+		}
+	})
 	t.Run("held with a reason needs a tag", func(t *testing.T) {
 		r, _, dir := setup(t)
 		h := spawnStarting(t, r, SpawnOptions{Prompt: "cook", Title: "checkout", Cwd: dir, Gate: task.GateHuman, Reason: "needs D2"})
