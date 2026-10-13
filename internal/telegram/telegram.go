@@ -87,6 +87,11 @@ func Message(ev state.Event, t *task.Task) string {
 	var lines []string
 	switch ev.Type {
 	case "needs-human":
+		if round := task.QuestionRound(ev.Question); round != nil {
+			lines = append([]string{fmt.Sprintf("%s needs %d decisions%s", tag, len(round), title)}, strings.Split(ev.Question, "\n")...)
+			lines = append(lines, "Reply: "+tag+" "+roundReply(len(round)))
+			break
+		}
 		lines = []string{tag + " needs a decision" + title, ev.Question, "Reply: " + tag + " <answer>"}
 	case "held":
 		lines = []string{tag + " is waiting for your go" + title, "Reply: " + tag + " ok, or " + tag + " <note> to start it with a note"}
@@ -99,7 +104,11 @@ func Message(ev state.Event, t *task.Task) string {
 	case "usage-limit":
 		lines = []string{tag + " is out of usage" + title, ev.Summary, "Check its herdr tab, or reply: " + tag + " <instruction>"}
 	case "done":
-		lines = []string{tag + " done" + title, ev.Summary, gitLine(ev)}
+		lines = []string{tag + " done" + title}
+		for _, d := range ev.Decisions {
+			lines = append(lines, "Decided: "+d)
+		}
+		lines = append(lines, ev.Summary, gitLine(ev))
 		if len(ev.Outputs) > 0 {
 			lines = append(lines, "Output: "+strings.Join(ev.Outputs, ", "))
 		}
@@ -117,6 +126,16 @@ func Message(ev state.Event, t *task.Task) string {
 		text = string(r[:maxText-1]) + "…"
 	}
 	return text
+}
+
+// roundReply shows the reply format for a round of n questions: each
+// question's number followed by the chosen option, such as "1a 2b".
+func roundReply(n int) string {
+	answers := make([]string, n)
+	for i := range answers {
+		answers[i] = fmt.Sprintf("%d<option>", i+1)
+	}
+	return strings.Join(answers, " ") + ", such as 1a 2b"
 }
 
 // gitLine shows the git snapshot of a report, or nothing without one.

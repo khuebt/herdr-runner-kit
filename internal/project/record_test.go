@@ -27,14 +27,17 @@ func fullRecord() Record {
 	rec := NewRecord("demo-app")
 	rec.Type, rec.Track, rec.ReferenceRepo = "ui", "lite", "../reference-app"
 	rec.Share = Share{Stitch: true}
-	rec.Gates.Spec = Gate{Status: "approved", Version: "v2", By: "Lan", At: at, Note: "ok"}
-	rec.Gates.Pack = Gate{Status: "waived", At: at, Waived: true}
+	rec.Gates.Spec = Gate{Status: "approved", Version: "v2", By: "Lan", At: at, Note: "ok", Content: "3b18e512dba79e4c8300dd08aeb37f8e728b8dad"}
+	rec.Gates.Pack = Gate{At: at, Waived: true}
 	rec.Reapproval = Reapproval{Needed: true, Reason: "scope grew"}
 	rec.Milestones = []Milestone{{
 		ID: "M1", Title: "Reading lists", Status: "active", Planned: at, Started: at, Branch: "release/M1",
 		Features: []Feature{{ID: "F1", Title: "Add a list"}, {ID: "F2", Title: "Share a list", DependsOn: []string{"F1"}}},
 	}}
-	rec.Changes = []Change{{ID: "CR1", Title: "Export to CSV", Class: "scope", Status: "open", Blocking: true, Milestone: "M1", At: at}}
+	rec.Changes = []Change{{
+		ID: "CR-1", Title: "Export to CSV", Class: "scope", Status: "open", Blocking: true, Milestone: "M1", At: at,
+		Path: "handbook/product/changes/CR-1-export-to-csv.md", Task: "t7",
+	}}
 	rec.Backlog = []BacklogItem{{ID: "B1", Text: "Dark mode", At: at, Status: "moved", To: "M2"}}
 	rec.Dependencies = []Dependency{{
 		ID: "D1", Name: "Mail API key", Owner: "ops", Status: "waiting", Milestone: "M1",
@@ -55,11 +58,15 @@ func TestRecordSnapshotRoundTrip(t *testing.T) {
 	if strings.Contains(string(data), "pending") {
 		t.Errorf("snapshot leaks the pending count:\n%s", data)
 	}
+	// Task ids are local to this machine and never committed.
+	if strings.Contains(string(data), "t7") {
+		t.Errorf("snapshot holds the local task id:\n%s", data)
+	}
 	got, err := ParseSnapshot(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec.Pending = 0
+	rec.Pending, rec.Changes[0].Task = 0, ""
 	if !reflect.DeepEqual(got, rec) {
 		t.Fatalf("round trip:\n got %+v\nwant %+v", got, rec)
 	}
@@ -72,7 +79,7 @@ func TestRecordStrictParse(t *testing.T) {
 	}
 	for _, c := range []struct{ name, doc, want string }{
 		{"unknown field", strings.Replace(valid, "track: standard\n", "track: standard\nextra: 1\n", 1), "field extra not found"},
-		{"newer manifest", strings.Replace(valid, "manifestVersion: 1\n", "manifestVersion: 2\nfuture: x\n", 1), "upgrade herdr-runner-kit"},
+		{"newer manifest", strings.Replace(valid, "manifestVersion: 1\n", "manifestVersion: 3\nfuture: x\n", 1), "upgrade herdr-runner-kit"},
 		{"no manifest", strings.Replace(valid, "manifestVersion: 1\n", "", 1), "no manifestVersion"},
 		{"bad type", strings.Replace(valid, "type: cli", "type: game", 1), "project type"},
 		{"bad name", strings.Replace(valid, "name: demo-app", "name: Demo", 1), "invalid project name"},
@@ -114,7 +121,19 @@ func TestRecordLoadSaveUpdate(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("record file: %v %v", info, err)
 	}
-	newer := `{"manifestVersion": 2, "name": "demo-app"}`
+	// A record of an older version is read and written back as the
+	// current one, so an older binary refuses it with "upgrade".
+	older := `{"manifestVersion": 1, "name": "demo-app", "type": "cli", "track": "standard", "tagFormat": "v0.{N}.0", "parallelWarning": 3}`
+	if err := os.WriteFile(filepath.Join(s.ProjectDir("demo-app"), "record.json"), []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(s, "demo-app", func(*Record) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := load(t, s); got.ManifestVersion != ManifestVersion || got.Type != "cli" {
+		t.Fatalf("older record after an update: %+v", got)
+	}
+	newer := `{"manifestVersion": 3, "name": "demo-app"}`
 	if err := os.WriteFile(filepath.Join(s.ProjectDir("demo-app"), "record.json"), []byte(newer), 0o600); err != nil {
 		t.Fatal(err)
 	}

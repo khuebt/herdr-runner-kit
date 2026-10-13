@@ -102,7 +102,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	// a start times out.
 	prompt := t.Prompt
 	if t.Inputs != "" {
-		prompt = strings.TrimSpace(prompt + "\n\n" + t.Inputs)
+		prompt = strings.TrimSpace(prompt + "\n\n" + untrustedInputs(t))
 	}
 	if len(t.FallbackFrom) > 0 {
 		prompt = strings.TrimSpace(prompt + "\n\n" + resumeNote)
@@ -181,7 +181,10 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (runner
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return runnerFiles{}, err
 	}
-	contract := Contract(t, r.Bin, outDir)
+	contract, err := r.contract(t, outDir, adapter.Harness())
+	if err != nil {
+		return runnerFiles{}, err
+	}
 	if adapter.Harness() == task.Codex {
 		return runnerFiles{contractText: contract}, nil
 	}

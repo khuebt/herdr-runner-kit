@@ -58,7 +58,7 @@ type Options struct {
 
 // Result is what one wait returns.
 type Result struct {
-	Lines []string // one line per news event
+	Lines []string // one entry per news event; a question round spans several lines
 	// Idle is set when nothing is running and no news is pending.
 	Idle string
 	// TimedOut is set when the safety timeout passed with no news.
@@ -307,13 +307,26 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 }
 
 // Line formats one news event of task t for the main session, at most
-// MaxLine characters. A done or failed line carries the git snapshot of
-// that report, and a done line says when the runner's tab closes, both
-// ahead of the summary so the cut never drops them. t may be nil.
+// MaxLine characters. A done line lists the decisions the runner took
+// itself right after the title; a done or failed line then carries the git
+// snapshot of that report, and a done line says when the runner's tab
+// closes, all ahead of the summary so the cut drops the summary first. A
+// round of questions is a header line followed by one indented line per
+// question, each at most MaxLine characters. t may be nil.
 func Line(ev state.Event, t *task.Task) string {
 	parts := []string{ev.Task + " " + ev.Type}
 	if t != nil && t.Title != "" {
 		parts = append(parts, t.Title)
+	}
+	if round := task.QuestionRound(ev.Question); round != nil {
+		lines := []string{oneLine(append(parts, fmt.Sprintf("%d questions", len(round))))}
+		for i, q := range round {
+			lines = append(lines, "  "+truncate(fmt.Sprintf("%d. %s", i+1, q), MaxLine-2))
+		}
+		return strings.Join(lines, "\n")
+	}
+	if ev.Type == "done" && len(ev.Decisions) > 0 {
+		parts = append(parts, "decided: "+strings.Join(ev.Decisions, "; "))
 	}
 	if (ev.Type == "done" || ev.Type == "failed") && ev.Git != "" {
 		parts = append(parts, "git: "+ev.Git)
@@ -331,6 +344,12 @@ func Line(ev state.Event, t *task.Task) string {
 	if len(ev.Outputs) > 0 {
 		parts = append(parts, "out: "+strings.Join(ev.Outputs, ", "))
 	}
+	return oneLine(parts)
+}
+
+// oneLine joins parts with " · " on a single line of at most MaxLine
+// characters.
+func oneLine(parts []string) string {
 	return truncate(strings.Join(strings.Fields(strings.Join(parts, " · ")), " "), MaxLine)
 }
 

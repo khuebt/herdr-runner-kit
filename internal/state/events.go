@@ -30,6 +30,8 @@ type Event struct {
 	Summary  string      `json:"summary,omitempty"`
 	Outputs  []string    `json:"outputs,omitempty"`
 	Question string      `json:"question,omitempty"`
+	// Decisions are the open questions a done runner settled itself.
+	Decisions []string `json:"decisions,omitempty"`
 	// Git describes the task's checkout when its runner reported, so a
 	// line shows the state of that report, not a later one.
 	Git string `json:"git,omitempty"`

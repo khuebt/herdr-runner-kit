@@ -47,12 +47,14 @@ func fail(detail, fix string) checkResult {
 
 func newDoctorCommand() *cobra.Command {
 	var dirs []string
+	var tools bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check that herdr, the agents, Telegram and the kit's own files are ready",
 		Long: "doctor checks every dependency and setting the kit relies on and prints the fix " +
 			"for each problem. It changes nothing. It exits 1 when a check fails; warnings " +
-			"only point at optional features.",
+			"only point at optional features. --tools also lists the optional tools project " +
+			"stage templates suggest when present; a missing tool is never a failure.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			targets, err := claudeConfigs(dirs)
@@ -99,6 +101,12 @@ func newDoctorCommand() *cobra.Command {
 			for _, dir := range runnerClaudeConfigs(targets) {
 				show("claude config "+claudeConfigLabel(dir), checkClaudeConfig(dir, cwd, repo))
 			}
+			if tools {
+				_, lines := newToolProbe(targets).detect(ctx)
+				for _, l := range lines {
+					show("tool "+l.name, l.result)
+				}
+			}
 			if failed > 0 {
 				return fmt.Errorf("%d check(s) failed", failed)
 			}
@@ -106,6 +114,7 @@ func newDoctorCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVar(&dirs, "claude-config", nil, "Claude config folder to check (repeatable; default $CLAUDE_CONFIG_DIR or ~/.claude)")
+	cmd.Flags().BoolVar(&tools, "tools", false, "also list optional tools: lavish, npx, draw.io, Penpot, a headless PDF browser, soffice, STITCH_API_KEY")
 	return cmd
 }
 

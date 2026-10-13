@@ -147,3 +147,17 @@ func TestMessageDoneWithGit(t *testing.T) {
 		t.Errorf("failed = %q", got)
 	}
 }
+
+func TestMessageRoundAndDecisions(t *testing.T) {
+	tk := &task.Task{ID: "t3", Title: "store"}
+	got := Message(state.Event{Task: "t3", Type: "needs-human", Question: "1. Which database? a) Postgres b) SQLite\n2. Which host? a) VPS b) PaaS"}, tk)
+	want := "#t3 needs 2 decisions · store\n1. Which database? a) Postgres b) SQLite\n2. Which host? a) VPS b) PaaS\nReply: #t3 1<option> 2<option>, such as 1a 2b"
+	if got != want {
+		t.Errorf("round = %q", got)
+	}
+	got = Message(state.Event{Task: "t3", Type: "done", Summary: "Stored.", Decisions: []string{"Cache? -> no", "TTL? -> 1h"}, Git: "on b, clean"}, tk)
+	want = "#t3 done · store\nDecided: Cache? -> no\nDecided: TTL? -> 1h\nStored.\nGit: on b, clean"
+	if got != want {
+		t.Errorf("done = %q", got)
+	}
+}

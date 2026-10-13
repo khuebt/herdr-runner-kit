@@ -24,17 +24,25 @@ func TestRenderSnapshot(t *testing.T) {
 - Track: lite
 - Reference: ../reference-app
 - Spec gate: approved v2 by Lan on 2026-10-14
-- Pack gate: waived on 2026-10-14 waived
+- Pack gate: waived on 2026-10-14
 - Re-approval needed: scope grew
 - Milestone: M1 Reading lists (active)
 - Graduated: 2026-10-14 v0.3.0
+
+## Change requests
+
+- CR-1 [open] Export to CSV (scope, blocking, M1), see handbook/product/changes/CR-1-export-to-csv.md
+
+## Dependencies
+
+- D1 [waiting] Mail API key, owner ops, needed by M1; workaround: log mails
 
 See [roadmap](roadmap.md), [decisions](decisions.md) and [backlog](backlog.md).
 `
 	if body != want {
 		t.Errorf("body:\n%s\nwant:\n%s", body, want)
 	}
-	if !strings.HasPrefix(got, "---\nmanifestVersion: 1\nname: demo-app\n") {
+	if !strings.HasPrefix(got, "---\nmanifestVersion: 2\nname: demo-app\n") {
 		t.Errorf("front matter:\n%s", got)
 	}
 }
@@ -49,20 +57,12 @@ func TestRenderDecisionsBacklogRoadmap(t *testing.T) {
 # Backlog
 
 - B1 [moved] Dark mode (to M2)
-
-## Change requests
-
-- CR1 [open] Export to CSV (scope, blocking, M1)
-
-## Dependencies
-
-- D1 [waiting] Mail API key, owner ops, needed by M1; workaround: log mails
 `
 	if got := render(t, rec, BacklogPath); got != wantBacklog {
 		t.Errorf("backlog:\n%s", got)
 	}
-	if strings.Contains(render(t, rec, BacklogPath), "team vault") {
-		t.Error("the backlog names where a secret is kept")
+	if _, body, _ := strings.Cut(render(t, rec, SnapshotPath), "\n---\n"); strings.Contains(body, "team vault") {
+		t.Error("the snapshot's summary names where a secret is kept")
 	}
 	wantRoadmap := header + `
 # Roadmap
@@ -90,7 +90,7 @@ func TestRenderEmptyRecord(t *testing.T) {
 		DecisionsPath: "None yet.",
 		BacklogPath:   "Empty.",
 		RoadmapPath:   "No milestones yet.",
-		SnapshotPath:  "- Spec gate: pending\n- Pack gate: pending\n",
+		SnapshotPath:  "- Spec gate: open\n- Pack gate: open\n",
 	} {
 		if got := render(t, rec, path); !strings.Contains(got, want) || !strings.Contains(got, "written by herdr-runner-kit") {
 			t.Errorf("%s:\n%s", path, got)

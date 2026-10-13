@@ -26,7 +26,9 @@ func newReportCommand() *cobra.Command {
 			"session's wait, and starts tasks that waited for this one. The task id " +
 			"comes from $HRK_TASK, which spawn sets in the runner's tab.",
 		Example: `  herdr-runner-kit report done --summary "Login fixed; tests pass" --output out/notes.md
+  herdr-runner-kit report done --summary "Export added" --decision "CSV or JSON? -> CSV"
   herdr-runner-kit report needs-human --question "Drop the legacy endpoint? (recommended: yes)"
+  herdr-runner-kit report needs-human --question "Which database? a) Postgres (recommended) b) SQLite" --question "Host? a) VPS (recommended) b) PaaS"
   herdr-runner-kit report failed --summary "Build needs Go 1.27; only 1.25 is installed"`,
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: []string{"done", "needs-human", "failed"},
@@ -58,7 +60,10 @@ func newReportCommand() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&o.Summary, "summary", "", "one or two sentences: what was done, or what failed and why")
-	f.StringVar(&o.Question, "question", "", "for needs-human: one question with the options and your recommendation")
+	f.StringArrayVar(&o.Questions, "question", nil,
+		"for needs-human: one question with the options and your recommendation (repeatable: a round of up to 5)")
+	f.StringArrayVar(&o.Decisions, "decision", nil,
+		`for done: an open question you settled with the recommended option, as "<question> -> <choice>" (repeatable, up to 7)`)
 	f.StringArrayVar(&o.Outputs, "output", nil, "file for the main session (repeatable)")
 	f.StringVar(&id, "task", "", "task id, for manual recovery outside a runner")
 	return cmd

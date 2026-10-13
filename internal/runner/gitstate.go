@@ -46,8 +46,33 @@ func gitState(t *task.Task) *task.GitState {
 		}
 		g.AheadOfBase = n
 	}
+	if g.Worktree && g.Base != "" {
+		g.Stacked = stackedBranches(ctx, dir, g.Base, g.Branch)
+	}
 	g.CheckedAt = time.Now().UTC()
 	return g
+}
+
+// maxStacked is the most stacked branches a snapshot lists.
+const maxStacked = 10
+
+// stackedBranches lists the local branches that HEAD in dir builds on: merged
+// into HEAD but not into base, other than the current branch. It returns
+// nil when git fails.
+func stackedBranches(ctx context.Context, dir, base, current string) []string {
+	out := gitOut(ctx, dir, "for-each-ref", "--format=%(refname:short)",
+		"--merged=HEAD", "--no-merged="+base, "refs/heads")
+	var stacked []string
+	for b := range strings.FieldsSeq(out) {
+		if b == current {
+			continue
+		}
+		if len(stacked) == maxStacked {
+			break
+		}
+		stacked = append(stacked, b)
+	}
+	return stacked
 }
 
 // gitStatus is one read of a checkout's branch and working tree.

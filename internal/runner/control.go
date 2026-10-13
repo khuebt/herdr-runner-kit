@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -53,7 +54,9 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	} else if err != nil {
 		return false, err
 	}
-	r.emit(t, "sent", firstLine(text, 120), "")
+	// The message may name where a secret lives, never the secret itself;
+	// hide anything that looks like one before it reaches the log.
+	r.emit(t, "sent", firstLine(redact.Secrets(text), 120), "")
 	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
 	return err == nil, nil
 }
@@ -81,7 +84,9 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	if changed {
-		r.emit(nt, "answered", firstLine(text, 120), "")
+		// The answer may name where a secret lives, never the secret itself;
+		// hide anything that looks like one before it reaches the log.
+		r.emit(nt, "answered", firstLine(redact.Secrets(text), 120), "")
 	}
 	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
 	return err == nil, nil

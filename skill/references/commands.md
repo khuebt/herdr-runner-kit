@@ -30,6 +30,16 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `project status [name]` | Where a project stands and the next step. Reads only the kit's record and tasks. |
 | `project register <path> [--name NAME]` | Register an existing git repository as a project. |
 | `project forget <name> [--yes]` | Drop a project from the registry; the repository is left alone. |
+| `project run <stage> [--stdin] [--after t1]` | Start a discovery stage runner from the kit's template. Refuses a stage whose gate is not approved yet. |
+| `project approve <spec\|pack> --by NAME [--note TEXT] [--waive-pack]` | Record the user's approval of the committed version and commit the project's records. |
+| `project changes <spec\|pack> --by NAME --stdin` | Record that changes were requested and send the feedback to the stage's runner. |
+| `project reject <spec\|pack> --by NAME --note WHY` | Record a rejection. |
+| `project decide --stdin` | Keep one decision of the user's in the decision log. |
+| `project cr decide <n> <now\|next\|backlog\|reject> [--blocking] [--note TEXT]` | Record the user's decision on a change request. |
+| `project backlog add --stdin` | Keep an idea for later; no runner starts. |
+| `project dep add <name> --owner user\|vendor\|runner [--milestone M2] [--secret-location WHERE] [--workaround TEXT]` | Record something the project waits on outside itself. |
+| `project dep set <Dn> --status needed\|requested\|ready` | Change its status; `ready` lists the held tasks that wait for it. |
+| `project share <stitch\|lavish-hosted> <on\|off>` | The user's opt-in to share work outside this machine. |
 
 A project's runners report to the owner `project:<name>`, and `wait` and `list` include every registered project, so a project's news reaches you from any folder.
 
@@ -53,6 +63,29 @@ A project's runners report to the owner `project:<name>`, and `wait` and `list` 
 
 At the start of a session that touches a project, and when the user asks "where were we?" or "đến đâu rồi?", run `herdr-runner-kit project status <name>` and relay it. It reads only the kit's record and tasks, so it works with herdr down.
 
+### Discovery stages
+
+`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held. Before UX or prototype work, run `herdr-runner-kit doctor --tools` and tell the user which optional tools are missing.
+
+Runners never share work outside this machine (Stitch, hosted Lavish) until the user runs `project share … on` themselves.
+
+### Gates
+
+Two gates stop the project: the spec and the stakeholder pack. Only the user passes them.
+
+1. Spec done: present it and ask. Record the answer with `project approve spec --by <name>`, `project changes spec --by <name> --stdin` with the feedback, or `project reject spec --by <name> --note WHY`.
+2. On a lite-track project, add `--waive-pack` to `approve spec` only when the user chooses to skip the pack; it is refused once the pack has an outcome.
+3. Pack done: point the user to `pack.html` and `pack.pdf` in its output; the user shares them with the stakeholders. Record their outcome the same way with `pack`. Approving the pack imports the roadmap.
+4. A gate that says the spec or pack changed since its approval is open again: present the changed artifact and record the user's new outcome.
+
+### Change control
+
+- A change the user asks for after the spec is approved: `echo "<the change>" | herdr-runner-kit project run change --stdin`. Its runner reports the class as `decided: class -> tweak`, `within-milestone` or `scope`, and the impact file as output.
+- Ask the user, then `project cr decide <n> now|next|backlog|reject`. A tweak goes to the runner building that part with `send` instead. A scope change decided `now` while a milestone runs needs `--blocking`; one decided `now` or `next` after the pack was approved needs a new pack approval (`project run pack`), and the output says so.
+- An idea for later: `project backlog add --stdin`. A decision the user made in chat: `project decide --stdin`.
+- Something outside the project, such as sandbox keys: `project dep add`. Record where a secret is kept with `--secret-location`, never its value. Spawn runners that need it with `--gate human --reason "needs D<n>"`; when `project dep set D<n> --status ready` lists them, `release` each.
+- These records reach the repository with the next gate outcome or milestone commit.
+
 ### Runners of a project
 
 Spawn with `--project <name>`. The task works in the project's folder, its tab opens in the project's herdr workspace, and its news reaches you as `project:<name>`. A spawn whose folder (`--cwd`, else the current one) lies in a project is a project task without the flag. `events --learning --project <name>` shows the project's numbers.
@@ -61,6 +94,8 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 
 - `meta: project status <name>`: the user sent `status <name>`. Run `herdr-runner-kit project status <name>` and reply with its output.
 - `ambiguous: "status <name>" could be an answer for t3; …`: a task is waiting, so ask on Telegram whether the user meant the answer for that task (`#t3 status <name>`) or the project status.
+- `meta: user approves spec of <name>; confirm and run …`: the user sent `approve spec <name>` (or `pack`). Confirm with them, then run the printed command with `--by`.
+- `ambiguous: t3 is held (needs D2); …`: a task held with `--reason` starts only on a tagged reply such as `#t3 ok`.
 
 ## spawn flags
 
@@ -74,6 +109,7 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--skill NAME` | Skill to invoke first, such as `ak:cook`. |
 | `--after t1,t2` | Start when every listed task is `done`. |
 | `--gate auto\|human` | `human` holds the task for `release`. |
+| `--reason TEXT` | With `--gate human`: why it waits, such as `needs D2`. A bare Telegram `ok` does not release it. |
 | `--title TEXT` | Short title; by default it comes from the prompt. |
 | `--language NAME` | Language of the runner's report summaries and questions, such as `Vietnamese`. Default: the config's `language`. |
 | `--claude-config DIR` | Claude config folder (account) of a Claude runner: a path, or a name such as `claude2` for `~/.claude2`. Default: the main session's. |
@@ -88,9 +124,9 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 
 | Line starts with | Meaning | What you do |
 |---|---|---|
-| `tN done` | Finished; `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay it; remind about uncommitted or unpushed work; offer `keep <id>`. |
-| `tN needs-human` | The runner asks a question | Ask the user, then `answer`. |
-| `tN held` | A `--gate human` task waits | Ask the user, then `release`. |
+| `tN done` | Finished; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. |
+| `tN needs-human` | The runner asks a question, or a round: `N questions` and one numbered line each | Ask the user, all of a round in one message, then `answer` once, such as `1a 2b`. |
+| `tN held` | A `--gate human` task waits; `(reason)` when held with `--reason` | Ask the user, then `release`. |
 | `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. |
 | `tN stalled` | The agent waits on a prompt in its pane | Tell the user to look at it (`focus`). |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |

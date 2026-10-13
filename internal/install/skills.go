@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/skill"
@@ -31,7 +32,7 @@ func SkillDir(claudeConfig string) string {
 func WriteSkill(claudeConfig, version string, force bool) ([]Change, error) {
 	var changes []Change
 	err := fs.WalkDir(skill.Files, ".", func(rel string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(rel) != ".md" {
+		if err != nil || d.IsDir() || !installed(rel) {
 			return err
 		}
 		src, err := skill.Files.ReadFile(rel)
@@ -77,7 +78,7 @@ func RemoveSkill(claudeConfig string) ([]Change, error) {
 	var changes []Change
 	dir := SkillDir(claudeConfig)
 	err := fs.WalkDir(skill.Files, ".", func(rel string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(rel) != ".md" {
+		if err != nil || d.IsDir() || !installed(rel) {
 			return err
 		}
 		path := filepath.Join(dir, rel)
@@ -102,6 +103,13 @@ func RemoveSkill(claudeConfig string) ([]Change, error) {
 	_ = os.Remove(filepath.Join(dir, "references"))
 	_ = os.Remove(dir)
 	return changes, err
+}
+
+// installed reports whether the embedded file rel belongs in the installed
+// skill. Project stage templates and the runner preamble stay in the
+// binary: the kit renders them, and the main agent never reads them.
+func installed(rel string) bool {
+	return filepath.Ext(rel) == ".md" && !strings.HasPrefix(rel, skill.KitOnlyDir+"/")
 }
 
 // SkillVersion reports the version that installed the skill in claudeConfig,

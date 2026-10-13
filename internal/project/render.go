@@ -43,6 +43,7 @@ func Render(rec Record, path string) ([]byte, error) {
 // renderSnapshot writes the whole record as front matter, which
 // ParseSnapshot reads back, followed by a generated summary.
 func renderSnapshot(rec Record) ([]byte, error) {
+	rec.ManifestVersion = ManifestVersion
 	var b bytes.Buffer
 	b.WriteString("---\n")
 	enc := yaml.NewEncoder(&b)
@@ -70,6 +71,8 @@ func renderSnapshot(rec Record) ([]byte, error) {
 	if g := rec.Graduated; g != nil {
 		fmt.Fprintf(&b, "- Graduated: %s %s\n", day(g.At), g.Tag)
 	}
+	writeChanges(&b, rec.Changes)
+	writeDependencies(&b, rec.Dependencies)
 	fmt.Fprintf(&b, "\nSee [roadmap](roadmap.md), [decisions](decisions.md) and [backlog](backlog.md).\n")
 	return b.Bytes(), nil
 }
@@ -101,43 +104,57 @@ func renderBacklog(rec Record) []byte {
 		}
 		b.WriteString("\n")
 	}
-	if len(rec.Changes) > 0 {
-		b.WriteString("\n## Change requests\n\n")
-		for _, c := range rec.Changes {
-			fmt.Fprintf(&b, "- %s [%s] %s", c.ID, orDash(c.Status), oneLine(c.Title))
-			var notes []string
-			if c.Class != "" {
-				notes = append(notes, c.Class)
-			}
-			if c.Blocking {
-				notes = append(notes, "blocking")
-			}
-			if c.Milestone != "" {
-				notes = append(notes, c.Milestone)
-			}
-			if len(notes) > 0 {
-				fmt.Fprintf(&b, " (%s)", strings.Join(notes, ", "))
-			}
-			b.WriteString("\n")
-		}
-	}
-	if len(rec.Dependencies) > 0 {
-		b.WriteString("\n## Dependencies\n\n")
-		for _, d := range rec.Dependencies {
-			fmt.Fprintf(&b, "- %s [%s] %s", d.ID, orDash(d.Status), oneLine(d.Name))
-			if d.Owner != "" {
-				fmt.Fprintf(&b, ", owner %s", oneLine(d.Owner))
-			}
-			if d.Milestone != "" {
-				fmt.Fprintf(&b, ", needed by %s", d.Milestone)
-			}
-			if d.Workaround != "" {
-				fmt.Fprintf(&b, "; workaround: %s", oneLine(d.Workaround))
-			}
-			b.WriteString("\n")
-		}
-	}
 	return b.Bytes()
+}
+
+// writeChanges lists the change requests and their files.
+func writeChanges(b *bytes.Buffer, changes []Change) {
+	if len(changes) == 0 {
+		return
+	}
+	b.WriteString("\n## Change requests\n\n")
+	for _, c := range changes {
+		fmt.Fprintf(b, "- %s [%s] %s", c.ID, orDash(c.Status), oneLine(c.Title))
+		var notes []string
+		if c.Class != "" {
+			notes = append(notes, c.Class)
+		}
+		if c.Blocking {
+			notes = append(notes, "blocking")
+		}
+		if c.Milestone != "" {
+			notes = append(notes, c.Milestone)
+		}
+		if len(notes) > 0 {
+			fmt.Fprintf(b, " (%s)", strings.Join(notes, ", "))
+		}
+		if c.Path != "" {
+			fmt.Fprintf(b, ", see %s", c.Path)
+		}
+		b.WriteString("\n")
+	}
+}
+
+// writeDependencies lists the dependencies. Where a secret is kept stays
+// in the front matter only.
+func writeDependencies(b *bytes.Buffer, deps []Dependency) {
+	if len(deps) == 0 {
+		return
+	}
+	b.WriteString("\n## Dependencies\n\n")
+	for _, d := range deps {
+		fmt.Fprintf(b, "- %s [%s] %s", d.ID, orDash(d.Status), oneLine(d.Name))
+		if d.Owner != "" {
+			fmt.Fprintf(b, ", owner %s", oneLine(d.Owner))
+		}
+		if d.Milestone != "" {
+			fmt.Fprintf(b, ", needed by %s", d.Milestone)
+		}
+		if d.Workaround != "" {
+			fmt.Fprintf(b, "; workaround: %s", oneLine(d.Workaround))
+		}
+		b.WriteString("\n")
+	}
 }
 
 func renderRoadmap(rec Record) []byte {
@@ -192,10 +209,14 @@ func currentMilestone(rec Record) *Milestone {
 }
 
 func gateLine(g Gate) string {
-	if g.Status == "" {
-		return "pending"
+	status := g.Status
+	switch {
+	case status == "" && g.Waived:
+		status = "waived"
+	case status == "":
+		return GateOpen
 	}
-	parts := []string{g.Status}
+	parts := []string{status}
 	if g.Version != "" {
 		parts = append(parts, g.Version)
 	}
@@ -205,8 +226,8 @@ func gateLine(g Gate) string {
 	if !g.At.IsZero() {
 		parts = append(parts, "on "+day(g.At))
 	}
-	if g.Waived {
-		parts = append(parts, "waived")
+	if g.Waived && g.Status != "" {
+		parts = append(parts, "(waived)")
 	}
 	return strings.Join(parts, " ")
 }

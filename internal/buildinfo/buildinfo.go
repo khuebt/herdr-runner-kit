@@ -15,7 +15,7 @@ const (
 	SchemaVersion = 1
 	// ContractVersion is the report contract runners follow. It stays backward
 	// compatible within one major product version.
-	ContractVersion = 1
+	ContractVersion = 2
 )
 
 // Info is the full build identity.

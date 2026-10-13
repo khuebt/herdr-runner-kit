@@ -160,6 +160,18 @@ func events(t *testing.T, r *Runner, id string) []string {
 	return types
 }
 
+func TestSpawnReasonNeedsHumanGate(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	_, err := r.Spawn(context.Background(), SpawnOptions{Prompt: "x", Cwd: plainDir(t), Reason: "needs D1"})
+	if err == nil || err.Error() != "--reason goes only with --gate human" {
+		t.Errorf("reason without the human gate: %v", err)
+	}
+	_, err = r.Spawn(context.Background(), SpawnOptions{Prompt: "x", Cwd: plainDir(t), Gate: task.GateHuman, Reason: strings.Repeat("x", 201)})
+	if err == nil || !strings.Contains(err.Error(), "keep it under 201") {
+		t.Errorf("long reason: %v", err)
+	}
+}
+
 func TestSpawnRefusedInsideRunner(t *testing.T) {
 	r, _, e := newTestRunner(t)
 	e["HRK_TASK"] = "t1"

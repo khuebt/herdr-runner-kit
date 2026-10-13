@@ -10,17 +10,42 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
+// Limits of one report.
+const (
+	// MaxQuestions is the most questions one needs-human round asks, and
+	// MaxQuestionRunes the longest question of a round. A single question
+	// longer than that is cut, so a report written for the first contract
+	// is never refused.
+	MaxQuestions     = 5
+	MaxQuestionRunes = 400
+	// MaxDecisions is the most decisions one done report lists, and
+	// MaxDecisionRunes the longest one.
+	MaxDecisions     = 7
+	MaxDecisionRunes = 200
+)
+
+// answeredInTab is the summary of the answered event a report emits when the
+// runner's question was answered in its tab rather than with answer.
+const answeredInTab = "answered in the runner's tab"
+
 // ReportOptions are the inputs of `report`.
 type ReportOptions struct {
-	Status   task.Status // Done, NeedsHuman or Failed
-	Summary  string
-	Question string
-	Outputs  []string
+	Status  task.Status // Done, NeedsHuman or Failed
+	Summary string
+	// Questions are one question, or a round of up to MaxQuestions, for
+	// needs-human.
+	Questions []string
+	// Decisions are the open questions a done runner settled with the
+	// recommended option, each as "<question> -> <choice>".
+	Decisions []string
+	Outputs   []string
 	// Manual is set when the task id came from --task rather than HRK_TASK.
 	Manual bool
 }
@@ -43,6 +68,13 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	if !cur.Status.Terminal() {
 		git = gitState(cur)
 	}
+	question := ""
+	if len(o.Questions) > 0 {
+		question = task.JoinQuestions(o.Questions)
+	}
+	// A report while the runner's question is still open means the user
+	// answered it in the runner's tab.
+	var answered bool
 	t, err := r.Store.Update(id, func(t *task.Task) error {
 		switch {
 		case t.Status.Terminal():
@@ -50,8 +82,9 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 		case t.Status == task.Queued || t.Status == task.Held:
 			return fmt.Errorf("%s has not started (status %s)", t.ID, t.Status)
 		}
+		answered = t.Status == task.NeedsHuman && t.Question != ""
 		t.Status = o.Status
-		t.Summary, t.Outputs, t.Question = o.Summary, o.Outputs, o.Question
+		t.Summary, t.Outputs, t.Question, t.Decisions = o.Summary, o.Outputs, question, o.Decisions
 		t.Unreported = 0
 		t.Git = git // a failed snapshot clears an older one rather than show it as current
 		if o.Status == task.Failed {
@@ -65,13 +98,16 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	if answered {
+		r.emit(t, "answered", answeredInTab, "")
+	}
 	summary := o.Summary
 	if o.Manual {
 		summary = "[manual] " + summary
 	}
 	ev := state.Event{
 		Task: t.ID, Owner: t.Owner, Type: string(o.Status), Status: t.Status,
-		Summary: summary, Question: o.Question, Outputs: o.Outputs,
+		Summary: summary, Question: question, Outputs: o.Outputs, Decisions: o.Decisions,
 	}
 	if git != nil {
 		ev.Git = git.Short()
@@ -85,23 +121,53 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	return t, nil
 }
 
+// validateReport checks a report and hides values that look like secrets
+// in its text, before the text is stored, logged or sent to Telegram.
 func validateReport(o *ReportOptions) error {
-	o.Summary = strings.TrimSpace(o.Summary)
-	o.Question = strings.TrimSpace(o.Question)
+	o.Summary = redact.Secrets(strings.TrimSpace(o.Summary))
+	o.Questions = redactAll(trimAll(o.Questions))
+	o.Decisions = redactAll(trimAll(o.Decisions))
 	switch o.Status {
 	case task.Done, task.Failed:
 		if o.Summary == "" {
 			return fmt.Errorf("report %s needs --summary", o.Status)
 		}
-		if o.Question != "" {
+		if len(o.Questions) > 0 {
 			return fmt.Errorf("--question is only for needs-human")
 		}
 	case task.NeedsHuman:
-		if o.Question == "" {
+		if len(o.Questions) == 0 {
 			return errors.New("report needs-human needs --question")
 		}
 	default:
 		return fmt.Errorf("unknown report %q: want done, needs-human or failed", o.Status)
+	}
+	if len(o.Decisions) > 0 && o.Status != task.Done {
+		return errors.New("--decision is only for done")
+	}
+	if n := len(o.Questions); n > MaxQuestions {
+		return fmt.Errorf("%d questions: ask at most %d in one round", n, MaxQuestions)
+	}
+	if len(o.Questions) == 1 {
+		if q := []rune(o.Questions[0]); len(q) > MaxQuestionRunes {
+			o.Questions[0] = strings.TrimSpace(string(q[:MaxQuestionRunes-1])) + "…"
+		}
+	}
+	for i, q := range o.Questions {
+		if n := utf8.RuneCountInString(q); n > MaxQuestionRunes {
+			return fmt.Errorf("question %d has %d characters; keep each question of a round under %d", i+1, n, MaxQuestionRunes+1)
+		}
+	}
+	if n := len(o.Decisions); n > MaxDecisions {
+		return fmt.Errorf("%d decisions: list at most %d", n, MaxDecisions)
+	}
+	for i, d := range o.Decisions {
+		if n := utf8.RuneCountInString(d); n > MaxDecisionRunes {
+			return fmt.Errorf("decision %d has %d characters; keep each under %d", i+1, n, MaxDecisionRunes+1)
+		}
+		if q, c, ok := strings.Cut(d, "->"); !ok || strings.TrimSpace(q) == "" || strings.TrimSpace(c) == "" {
+			return fmt.Errorf("decision %d: want \"<question> -> <choice>\", got %q", i+1, d)
+		}
 	}
 	outputs := make([]string, 0, len(o.Outputs))
 	for _, p := range o.Outputs {
@@ -116,6 +182,25 @@ func validateReport(o *ReportOptions) error {
 	}
 	o.Outputs = outputs
 	return nil
+}
+
+func redactAll(values []string) []string {
+	for i, v := range values {
+		values[i] = redact.Secrets(v)
+	}
+	return values
+}
+
+// trimAll trims each value and drops the empty ones, so an empty flag reads
+// as no flag.
+func trimAll(values []string) []string {
+	var out []string
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // After runs the follow-up of a task's latest status: a done task starts or
@@ -171,7 +256,7 @@ func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 			if t, changed, err := r.Store.Transition(q.ID, task.Held, []task.Status{task.Queued}, withInputs); err != nil {
 				errs = append(errs, err)
 			} else if changed {
-				r.emit(t, "held", "held for release: "+t.Title, "")
+				r.emit(t, "held", task.HeldSummary(t), "")
 			}
 			continue
 		}

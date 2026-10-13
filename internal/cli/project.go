@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -13,6 +16,8 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
+	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -26,7 +31,10 @@ func newProjectCommand() *cobra.Command {
 			"from any folder.",
 		Args: cobra.NoArgs,
 	}
-	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand())
+	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand(),
+		newProjectRunCommand(), newProjectShareCommand(),
+		newProjectGateCommand("approve"), newProjectGateCommand("changes"), newProjectGateCommand("reject"),
+		newProjectDecideCommand(), newProjectCRCommand(), newProjectBacklogCommand(), newProjectDepCommand())
 	return cmd
 }
 
@@ -312,6 +320,287 @@ func newProjectForgetCommand() *cobra.Command {
 	return cmd
 }
 
+func newProjectRunCommand() *cobra.Command {
+	var o stageRun
+	var stdin bool
+	cmd := &cobra.Command{
+		Use:   "run <stage> [--stdin]",
+		Short: "Start a project stage runner from the kit's stage template",
+		Long: "run renders the stage's template with the project's record and the agent's skill " +
+			"syntax, adds your notes from stdin as untrusted data, and spawns the runner in the " +
+			"project. It refuses a stage whose gate is not approved yet. A stage that works in " +
+			"the main checkout waits for the project's other main-checkout runners, so only one " +
+			"of them commits there at a time. Stages: " + strings.Join(project.StageNames(), ", ") + ".",
+		Example: `  herdr-runner-kit project run intake
+  echo "Focus on the admin flows first" | herdr-runner-kit project run ux --stdin --after t4
+  echo "Add a CSV export for admins" | herdr-runner-kit project run change --stdin`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			var err error
+			if stdin {
+				if o.Notes, err = promptText(cmd, nil, true); err != nil {
+					return err
+				}
+			}
+			o.Stage = args[0]
+			if o.Cwd, err = os.Getwd(); err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			dirs, err := claudeConfigs(nil)
+			if err != nil {
+				return err
+			}
+			o.Tools, _ = newToolProbe(dirs).detect(cmd.Context())
+			o.Warn = func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }
+			t, err := runStage(cmd.Context(), r, o)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t))
+			return err
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&o.Project, "project", "", "project to run the stage for (default: the project holding the current folder, else the only one)")
+	f.BoolVar(&stdin, "stdin", false, "read notes for the runner from stdin; they reach it as untrusted data")
+	f.StringSliceVar(&o.After, "after", nil, "start only when these tasks are done")
+	f.StringVar(&o.Agent, "agent", "", "agent spec harness[:model[:effort]], overriding the stage kind's default")
+	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of a Claude runner, as a path or a name such as claude2")
+	f.StringVar(&o.Language, "language", "", "language of the runner's report summaries and questions")
+	f.BoolVar(&o.Docx, "docx", false, "pack stage only: export the pack as DOCX too, with LibreOffice")
+	return cmd
+}
+
+// stageRun is the input of one project stage run.
+type stageRun struct {
+	Project      string
+	Stage        string
+	Notes        string
+	After        []string
+	Agent        string
+	ClaudeConfig string
+	Language     string
+	// Docx asks the pack stage for a DOCX export as well.
+	Docx bool
+	// Cwd picks the project when Project is empty.
+	Cwd   string
+	Tools project.Tools
+	Warn  func(string)
+}
+
+// runStage checks the stage's gates, renders its template for the agent
+// that will run it and spawns the runner in the project.
+func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, error) {
+	stage, err := project.LoadStage(o.Stage)
+	if err != nil {
+		return nil, err
+	}
+	p, err := resolveProject(r.Store, o.Project, o.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	if p.Reserved {
+		return nil, fmt.Errorf("project %s is still being set up", p.Name)
+	}
+	rec, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := project.CheckRequires(ctx, p.Path, rec, stage); err != nil {
+		return nil, err
+	}
+	if o.Docx && stage.Name != project.GatePack {
+		return nil, errors.New("--docx goes only with the pack stage")
+	}
+	kind, found := r.Config.Kinds[stage.Kind]
+	if !found {
+		return nil, fmt.Errorf("stage %s runs as kind %q, which the config does not define", stage.Name, stage.Kind)
+	}
+	agent := kind.Agent
+	if o.Agent != "" {
+		agent = o.Agent
+	}
+	spec, err := task.ParseAgentSpec(agent)
+	if err != nil {
+		return nil, err
+	}
+	data := project.NewStageData(rec, p.Path, o.Tools, o.Notes, time.Now())
+	data.Docx = o.Docx
+	title := p.Name + " " + stage.Name + ": " + stage.Title
+	var change project.Change
+	if stage.Name == changeStage {
+		if data.Notes == "" {
+			return nil, errors.New("describe the change on stdin with --stdin")
+		}
+		tasks, err := r.Store.List()
+		if err != nil {
+			return nil, err
+		}
+		// The title and the file name are committed, so neither may carry
+		// a secret from the request.
+		cr := redact.Secrets(runner.TitleFrom(data.Notes))
+		if change, err = project.AddChange(r.Store, p.Name, cr, runner.Slug(cr, 40), time.Now()); err != nil {
+			return nil, err
+		}
+		data.Change, data.ChangePath, data.Tasks = change.ID, change.Path, project.ActiveTasks(tasks, p.Name)
+		title = p.Name + " " + change.ID + ": " + change.Title
+	}
+	t, err := spawnStage(ctx, r, o, p, stage, spec.Harness, data, title)
+	if change.ID == "" {
+		return t, err
+	}
+	if err != nil {
+		if derr := project.DropChange(r.Store, p.Name, change.ID); derr != nil {
+			return nil, fmt.Errorf("%w; %s stays open without a runner: %v", err, change.ID, derr)
+		}
+		return nil, err
+	}
+	if err := project.SetChangeTask(r.Store, p.Name, change.ID, t.ID); err != nil {
+		return t, fmt.Errorf("%s started for %s, but the record does not name it: %w", t.ID, change.ID, err)
+	}
+	return t, nil
+}
+
+// changeStage is the stage that assesses a change request.
+const changeStage = "change"
+
+// spawnStage renders a stage's prompt and spawns its runner in project p.
+func spawnStage(ctx context.Context, r *runner.Runner, o stageRun, p state.Project, stage project.Stage,
+	h task.Harness, data project.StageData, title string,
+) (*task.Task, error) {
+	kind := r.Config.Kinds[stage.Kind]
+	if stage.Name == project.GatePack {
+		n, err := project.CommittedPackVersion(ctx, p.Path)
+		if err != nil {
+			return nil, err
+		}
+		data.PackVersion = n + 1
+	}
+	prompt, err := stage.Render(h, data)
+	if err != nil {
+		return nil, err
+	}
+	after := make([]string, 0, len(o.After))
+	for _, a := range o.After {
+		id, _, err := task.ParseID(a)
+		if err != nil {
+			return nil, err
+		}
+		after = append(after, id)
+	}
+	if !kind.Worktree {
+		busy, err := mainCheckoutTasks(r.Store, p.Name)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range busy {
+			if !slices.Contains(after, id) {
+				after = append(after, id)
+				if o.Warn != nil {
+					o.Warn(fmt.Sprintf("note: %s waits for %s, which works in the main checkout of %s too", stage.Name, id, p.Name))
+				}
+			}
+		}
+	}
+	return r.Spawn(ctx, runner.SpawnOptions{
+		Kind: stage.Kind, Agent: o.Agent, After: after, Title: title,
+		Prompt: prompt, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+		Project: p.Name, Stage: stage.Name, Keep: stage.Keep, Warn: o.Warn,
+	})
+}
+
+// mainCheckoutTasks returns the unfinished tasks of a project that work in
+// its main checkout rather than in a worktree of their own.
+func mainCheckoutTasks(s *state.Store, name string) ([]string, error) {
+	tasks, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, t := range tasks {
+		if t.Project == name && !t.UseWorktree && !t.Status.Terminal() {
+			ids = append(ids, t.ID)
+		}
+	}
+	return ids, nil
+}
+
+// shareTargets maps project share's argument to the record field it sets.
+var shareTargets = map[string]func(*project.Share) *bool{
+	"stitch":        func(s *project.Share) *bool { return &s.Stitch },
+	"lavish-hosted": func(s *project.Share) *bool { return &s.LavishHosted },
+}
+
+func newProjectShareCommand() *cobra.Command {
+	var name string
+	cmd := &cobra.Command{
+		Use:   "share <stitch|lavish-hosted> <on|off>",
+		Short: "Allow or forbid a project's runners to share work outside this machine",
+		Long: "share records your choice in the project's record and decision log. Runners " +
+			"never share outside the machine unless you switched that share on here: " +
+			"environment variables, notes and files cannot switch it on. The record is " +
+			"committed with the next gate outcome.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			field, known := shareTargets[args[0]]
+			if !known {
+				return fmt.Errorf("unknown share %q: want stitch or lavish-hosted", args[0])
+			}
+			if args[1] != "on" && args[1] != "off" {
+				return fmt.Errorf("want on or off, not %q", args[1])
+			}
+			on := args[1] == "on"
+			store, err := openStore()
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			p, err := resolveProject(store, name, cwd)
+			if err != nil {
+				return err
+			}
+			changed := false
+			if _, err := project.Update(store, p.Name, func(rec *project.Record) error {
+				target := field(&rec.Share)
+				if *target == on {
+					return errUnchanged
+				}
+				*target, changed = on, true
+				rec.Decisions = append(rec.Decisions, project.Decision{
+					At: time.Now().UTC(), Text: "share " + args[0] + " switched " + args[1] + " by the user",
+				})
+				return nil
+			}); err != nil && !errors.Is(err, errUnchanged) {
+				return err
+			}
+			if !changed {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s sharing of %s is already %s\n", args[0], p.Name, args[1])
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s sharing of %s is now %s; runners launched from now on follow it\n", args[0], p.Name, args[1])
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&name, "project", "", "project to change (default: the project holding the current folder, else the only one)")
+	return cmd
+}
+
+// errUnchanged stops a record update that would change nothing.
+var errUnchanged = errors.New("unchanged")
+
 // openStore opens the state directory without loading the config.
 func openStore() (*state.Store, error) {
 	dir, err := stateDir()
@@ -319,4 +608,469 @@ func openStore() (*state.Store, error) {
 		return nil, err
 	}
 	return state.Open(dir)
+}
+
+// gateVerbs describes the commands that record a gate outcome.
+var gateVerbs = map[string]struct{ use, short, long string }{
+	"approve": {
+		use:   "approve <spec|pack>",
+		short: "Record that the spec or the stakeholder pack is approved",
+		long: "approve records who approved which version, and when, then commits the project's " +
+			"records in one commit. The version is read from the committed artifact: the spec's " +
+			"version, or the highest committed pack folder. It refuses an artifact that is not " +
+			"committed, has uncommitted changes or already has an outcome. An outcome holds for the " +
+			"committed content: when that content changes under the same version, the gate opens " +
+			"again and a new outcome replaces the old one. Approving the pack " +
+			"imports the roadmap from the committed roadmap proposal. A lite-track project may " +
+			"skip the pack only with --waive-pack at spec approval, before the pack has an outcome; " +
+			"the spec gate is never waived.",
+	},
+	"changes": {
+		use:   "changes <spec|pack> --stdin",
+		short: "Record that changes were requested, and send the feedback to the stage runner",
+		long: "changes records the outcome for the committed version, commits the records, and " +
+			"sends the feedback from stdin to the stage's runner when its tab is open, so it " +
+			"revises in the same session; otherwise it prints the command that starts a revision.",
+	},
+	"reject": {
+		use:   "reject <spec|pack> --note WHY",
+		short: "Record that the spec or the stakeholder pack was rejected",
+		long:  "reject records the outcome and its reason for the committed version, and commits the records.",
+	},
+}
+
+func newProjectGateCommand(verb string) *cobra.Command {
+	v := gateVerbs[verb]
+	o := project.DecideOptions{Outcome: verb}
+	var name string
+	var stdin bool
+	cmd := &cobra.Command{
+		Use: v.use, Short: v.short, Long: v.long,
+		Args:      cobra.ExactArgs(1),
+		ValidArgs: []string{project.GateSpec, project.GatePack},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			o.Gate = args[0]
+			feedback := ""
+			if verb == "changes" {
+				if !stdin {
+					return errors.New("give the feedback on stdin with --stdin")
+				}
+				var err error
+				if feedback, err = promptText(cmd, nil, true); err != nil {
+					return err
+				}
+				if feedback == "" {
+					return errors.New("the feedback on stdin is empty")
+				}
+				o.Note = feedback
+			}
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			p, err := resolveProject(r.Store, name, cwd)
+			if err != nil {
+				return err
+			}
+			if o.By == "" {
+				o.By = project.Approver(cmd.Context(), p.Path)
+			}
+			return decideGate(cmd, r, p, o, feedback)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&name, "project", "", "project of the gate (default: the project holding the current folder, else the only one)")
+	f.StringVar(&o.By, "by", "", "who decided (default: git's author name in the project)")
+	switch verb {
+	case "changes":
+		f.BoolVar(&stdin, "stdin", false, "read the feedback from stdin")
+	default:
+		f.StringVar(&o.Note, "note", "", "a short note kept with the outcome")
+	}
+	if verb == "approve" {
+		f.BoolVar(&o.WaivePack, "waive-pack", false, "with approve spec on a lite-track project: skip the stakeholder pack by your explicit choice")
+	}
+	return cmd
+}
+
+// decideGate records a gate outcome, then closes or reaches the stage's
+// runner: an approval or a rejection lets its kept tab close, and changes
+// go to it as a revision request.
+func decideGate(cmd *cobra.Command, r *runner.Runner, p state.Project, o project.DecideOptions, feedback string) error {
+	ctx, out := cmd.Context(), cmd.OutOrStdout()
+	d, err := project.Decide(ctx, r.Store, p.Name, o)
+	if d.Version == "" {
+		return err
+	}
+	fmt.Fprintf(out, "%s %s %s of %s by %s", o.Gate, d.Version, strings.ReplaceAll(d.Status, "-", " "), p.Name, oneLineText(o.By))
+	if d.Commit != "" {
+		fmt.Fprintf(out, "; records committed in %s", d.Commit[:min(12, len(d.Commit))])
+	}
+	fmt.Fprintln(out)
+	if err != nil {
+		return err
+	}
+	if d.Replaced != "" {
+		fmt.Fprintf(out, "note: %s %s changed since it was %s under the same version; this outcome replaces that one\n",
+			d.Gate, d.Version, strings.ReplaceAll(d.Replaced, "-", " "))
+	}
+	if d.Waived {
+		fmt.Fprintln(out, "pack gate: waived for the lite track by your choice; recorded in decisions.md")
+	}
+	if d.Gate == project.GatePack && d.Status == project.GateApproved {
+		fmt.Fprintf(out, "roadmap: imported %d milestone(s) and %d dependency(ies) from %s into %s\n",
+			d.Milestones, d.Dependencies, project.RoadmapProposalPath, project.RoadmapPath)
+	}
+	if d.Gate == project.GatePack && d.NoPDF {
+		fmt.Fprintf(out, "note: %s holds no %s\n", project.PackDir(versionOf(d.Version)), project.PackPDF)
+	}
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	var latest *task.Task
+	for _, t := range tasks {
+		if t.Project != p.Name || t.Stage != o.Gate {
+			continue
+		}
+		latest = t
+		if d.Status != project.GateChangesRequested && t.Keep {
+			if _, err := r.Keep(ctx, t.ID, false); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "note: %s keeps its tab open: %v\n", t.ID, err)
+			}
+		}
+	}
+	if d.Status == project.GateChangesRequested {
+		sendFeedback(cmd, r, p, latest, d, feedback)
+	}
+	rep, err := projectReport(r.Store, p)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "next: %s\n", rep.Next())
+	return err
+}
+
+// sendFeedback asks the stage's open runner to revise, else prints the
+// command that starts a revision.
+func sendFeedback(cmd *cobra.Command, r *runner.Runner, p state.Project, t *task.Task, d project.Decided, feedback string) {
+	out := cmd.OutOrStdout()
+	revise := "Revise " + project.SpecPath + ", raise its version by one, commit and report again."
+	if d.Gate == project.GatePack {
+		revise = fmt.Sprintf("Write the revision as %s/, commit it and report again; leave committed pack folders unchanged.",
+			project.PackDir(versionOf(d.Version)+1))
+	}
+	if t != nil && t.Herdr.PaneID != "" && !t.Herdr.Closed && t.Status != task.Stopped {
+		msg := fmt.Sprintf("The user requested changes to %s %s. Feedback:\n\n%s\n\n%s", d.Gate, d.Version, feedback, revise)
+		working, err := r.Send(cmd.Context(), t.ID, msg)
+		if err == nil {
+			how := "it is revising"
+			if !working {
+				how = "herdr has not seen it start a turn yet"
+			}
+			fmt.Fprintf(out, "feedback: sent to %s; %s\n", t.ID, how)
+			return
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "note: could not send the feedback to %s: %v\n", t.ID, err)
+	}
+	fmt.Fprintf(out, "feedback: no open %s runner; start a revision with the same feedback on stdin: herdr-runner-kit project run %s --project %s --stdin\n",
+		d.Gate, d.Gate, p.Name)
+}
+
+func versionOf(v string) int {
+	n, _ := strconv.Atoi(strings.TrimPrefix(v, "v")) // versions come from project.Version
+	return n
+}
+
+func oneLineText(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func newProjectDecideCommand() *cobra.Command {
+	var name string
+	var stdin bool
+	cmd := &cobra.Command{
+		Use:   "decide --stdin",
+		Short: "Keep a decision of yours in the project's decision log",
+		Long: "decide reads one decision from stdin and keeps it in the kit's record of the " +
+			"project. It reaches decisions.md with the next gate outcome or milestone commit.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			if !stdin {
+				return errors.New("give the decision on stdin with --stdin")
+			}
+			text, err := promptText(cmd, nil, true)
+			if err != nil {
+				return err
+			}
+			store, err := openStore()
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			p, err := resolveProject(store, name, cwd)
+			if err != nil {
+				return err
+			}
+			if err := project.AddDecision(store, p.Name, text, time.Now()); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "recorded the decision for %s; it is committed with the next gate outcome\n", p.Name)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&name, "project", "", "project of the decision (default: the project holding the current folder, else the only one)")
+	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the decision from stdin")
+	return cmd
+}
+
+// openProject opens the state directory and picks the project a command
+// changes: the one named, else the project holding the current folder,
+// else the only one.
+func openProject(name string) (*state.Store, state.Project, error) {
+	store, err := openStore()
+	if err != nil {
+		return nil, state.Project{}, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, state.Project{}, fmt.Errorf("find the current folder: %w", err)
+	}
+	p, err := resolveProject(store, name, cwd)
+	if err != nil {
+		return nil, state.Project{}, err
+	}
+	if p.Reserved {
+		return nil, state.Project{}, fmt.Errorf("project %s is still being set up", p.Name)
+	}
+	return store, p, nil
+}
+
+const projectFlagHelp = "project to change (default: the project holding the current folder, else the only one)"
+
+func newProjectCRCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cr",
+		Short: "Decide on change requests",
+		Long: "A change request (CR) starts with: herdr-runner-kit project run change --stdin. " +
+			"Its impact runner writes the CR file and reports the class; cr decide records your decision.",
+		Args: cobra.NoArgs,
+	}
+	cmd.AddCommand(newProjectCRDecideCommand())
+	return cmd
+}
+
+func newProjectCRDecideCommand() *cobra.Command {
+	var o project.ChangeDecision
+	var name string
+	cmd := &cobra.Command{
+		Use:   "decide <n> <now|next|backlog|reject>",
+		Short: "Record your decision on a change request",
+		Long: "cr decide records whether the change goes into the running milestone (now), the " +
+			"next one (next), the backlog, or is rejected. The class comes from the impact " +
+			"runner's report. The running milestone keeps its scope: a scope change decided now " +
+			"needs --blocking while a milestone is in progress. A scope change decided now or next " +
+			"after the pack was approved needs a new pack approval before the next milestone " +
+			"starts; the running milestone and graduation go on. Nothing is committed: the record " +
+			"reaches the repository with the next gate outcome or milestone.",
+		Example: `  herdr-runner-kit project cr decide 3 next
+  herdr-runner-kit project cr decide CR-4 now --blocking --note "the launch needs it"`,
+		Args:      cobra.ExactArgs(2),
+		ValidArgs: project.ChangeOutcomes,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			id, err := project.ParseChangeID(args[0])
+			if err != nil {
+				return err
+			}
+			o.ID, o.Outcome = id, args[1]
+			store, p, err := openProject(name)
+			if err != nil {
+				return err
+			}
+			if o.By == "" {
+				o.By = project.Approver(cmd.Context(), p.Path)
+			}
+			d, err := project.DecideChange(store, p.Name, o)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			c := d.Change
+			fmt.Fprintf(out, "%s (%s) of %s decided %s", c.ID, c.Class, p.Name, c.Status)
+			if c.Milestone != "" {
+				fmt.Fprintf(out, " for %s", c.Milestone)
+			}
+			fmt.Fprintln(out, "; committed with the next gate outcome or milestone")
+			if d.Backlog != "" {
+				fmt.Fprintf(out, "backlog: kept as %s\n", d.Backlog)
+			}
+			if d.Reapproval {
+				fmt.Fprintf(out, "re-approval: the pack needs a new approval before the next milestone starts: herdr-runner-kit project run pack --project %s\n", p.Name)
+			}
+			if c.Class == project.ClassTweak && c.Status == project.ChangeNow {
+				fmt.Fprintln(out, "next: a tweak goes to the runner building that part: herdr-runner-kit send <id> \"<the change>\"")
+			} else if c.Status == project.ChangeNow && c.Task != "" {
+				fmt.Fprintf(out, "next: ask %s to apply it: herdr-runner-kit send %s \"%s is decided now: raise the spec version, add it to the change log, update the roadmap and the running milestone plan, commit and report again\"\n", c.Task, c.Task, c.ID)
+			}
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&name, "project", "", projectFlagHelp)
+	f.BoolVar(&o.Blocking, "blocking", false, "with now: the change may change the running milestone, which otherwise keeps its scope")
+	f.StringVar(&o.By, "by", "", "who decided (default: git's author name in the project)")
+	f.StringVar(&o.Note, "note", "", "a short note kept with the decision; required with reject")
+	return cmd
+}
+
+func newProjectBacklogCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "backlog",
+		Short: "Keep ideas for later",
+		Args:  cobra.NoArgs,
+	}
+	var name string
+	var stdin bool
+	add := &cobra.Command{
+		Use:   "add --stdin",
+		Short: "Add an idea to the project's backlog",
+		Long: "backlog add keeps the idea read from stdin as the next backlog item. No runner " +
+			"starts and nothing is committed: backlog.md is written with the next gate outcome or milestone.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			if !stdin {
+				return errors.New("give the idea on stdin with --stdin")
+			}
+			text, err := promptText(cmd, nil, true)
+			if err != nil {
+				return err
+			}
+			store, p, err := openProject(name)
+			if err != nil {
+				return err
+			}
+			it, err := project.AddBacklog(store, p.Name, text, time.Now())
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s added to the backlog of %s; committed with the next gate outcome or milestone\n", it.ID, p.Name)
+			return err
+		},
+	}
+	add.Flags().StringVar(&name, "project", "", projectFlagHelp)
+	add.Flags().BoolVar(&stdin, "stdin", false, "read the idea from stdin")
+	cmd.AddCommand(add)
+	return cmd
+}
+
+func newProjectDepCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "dep",
+		Short: "Track what the project waits on outside itself",
+		Long: "A dependency is something outside the project, such as sandbox keys or a vendor " +
+			"contract. Runners that need one are spawned with --gate human --reason \"needs D<n>\" " +
+			"and released when it is ready. Record only where a secret is kept, never its value.",
+		Args: cobra.NoArgs,
+	}
+	cmd.AddCommand(newProjectDepAddCommand(), newProjectDepSetCommand())
+	return cmd
+}
+
+func newProjectDepAddCommand() *cobra.Command {
+	var o project.DependencyOptions
+	var name string
+	cmd := &cobra.Command{
+		Use:   "add <name> --owner user|vendor|runner",
+		Short: "Record a dependency",
+		Long: "dep add records the dependency as needed. --secret-location names where a secret " +
+			"is kept, such as \"1Password: payments sandbox\"; a value that looks like a secret is " +
+			"refused. Nothing is committed until the next gate outcome or milestone.",
+		Example: `  herdr-runner-kit project dep add "Payment sandbox keys" --owner vendor --milestone M2 --secret-location "1Password: payments sandbox"`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			o.Name = args[0]
+			store, p, err := openProject(name)
+			if err != nil {
+				return err
+			}
+			d, err := project.AddDependency(store, p.Name, o)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s recorded for %s as %s; hold runners that need it with: herdr-runner-kit spawn --gate human --reason \"needs %s\" ...\n",
+				d.ID, d.Name, p.Name, d.Status, d.ID)
+			return err
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&name, "project", "", projectFlagHelp)
+	f.StringVar(&o.Owner, "owner", "", "who provides it: "+strings.Join(project.DependencyOwners, ", "))
+	f.StringVar(&o.Milestone, "milestone", "", "milestone that needs it, such as M2")
+	f.StringVar(&o.Workaround, "workaround", "", "how work goes on until it is ready")
+	f.StringVar(&o.SecretLocation, "secret-location", "", "where its secret is kept, never the secret itself")
+	return cmd
+}
+
+func newProjectDepSetCommand() *cobra.Command {
+	var name, status string
+	cmd := &cobra.Command{
+		Use:   "set <D<n>> --status needed|requested|ready",
+		Short: "Change a dependency's status",
+		Long: "dep set records the new status. When a dependency is ready, it lists the held " +
+			"tasks whose reason names it, with the command that releases each.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			id, err := project.ParseDependencyID(args[0])
+			if err != nil {
+				return err
+			}
+			store, p, err := openProject(name)
+			if err != nil {
+				return err
+			}
+			d, err := project.SetDependencyStatus(store, p.Name, id, status)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "%s %s of %s is %s; committed with the next gate outcome or milestone\n", d.ID, d.Name, p.Name, d.Status)
+			if d.Status != project.DependencyReady {
+				return nil
+			}
+			tasks, err := store.List()
+			if err != nil {
+				return err
+			}
+			for _, t := range project.HeldFor(tasks, p.Name, d.ID) {
+				fmt.Fprintf(out, "held: %s %s (%s); release it with: herdr-runner-kit release %s\n", t.ID, t.Title, t.HoldReason, t.ID)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&name, "project", "", projectFlagHelp)
+	cmd.Flags().StringVar(&status, "status", "", "new status: "+strings.Join(project.DependencyStatuses, ", "))
+	return cmd
 }
