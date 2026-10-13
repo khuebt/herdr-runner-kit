@@ -2,6 +2,8 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -148,6 +150,10 @@ func TestDetectDialog(t *testing.T) {
 		{task.Claude, "  Allow external CLAUDE.md file imports?\n", "claude-external-imports", NeedsHuman},
 		{task.Codex, "  Trust this folder? Codex can read, edit, and run files here", "codex-trust", NeedsHuman},
 		{task.Codex, "  Hooks need review\n  24 hooks are new or changed.", "codex-hooks-review", SendKeys},
+		{task.Claude, "is this a project you created or one you trust?", "claude-workspace-trust", NeedsHuman},
+		{task.Claude, "│ Quick safety check: Is this a project you │\n│ created or one you trust? (Like your own  │", "claude-workspace-trust", NeedsHuman},
+		{task.Claude, "Is this a  project you created\tor one  you trust", "claude-workspace-trust", NeedsHuman},
+		{task.Codex, "╭──╮\n│ TRUST THIS\n│ FOLDER? │", "codex-trust", NeedsHuman},
 	}
 	for _, tt := range tests {
 		a, _ := For(tt.h)
@@ -159,6 +165,36 @@ func TestDetectDialog(t *testing.T) {
 	a, _ := For(task.Codex)
 	if _, ok := DetectDialog(a, "› Ask Codex to do anything"); ok {
 		t.Error("ready prompt detected as a dialog")
+	}
+	c, _ := For(task.Claude)
+	if _, ok := DetectDialog(c, "❯ is this a project"); ok {
+		t.Error("a fragment of the trust phrase detected as a dialog")
+	}
+}
+
+func TestNormalize(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                          "",
+		"  ──│ ":                    "",
+		"│ Is this a\n│ project? │": "is this a project",
+		"Trust this folder?":        "trust this folder",
+		"CLAUDE.md  file\timports":  "claude md file imports",
+		"24 hooks are new":          "24 hooks are new",
+	} {
+		if got := Normalize(in); got != want {
+			t.Errorf("Normalize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestShows(t *testing.T) {
+	a, _ := For(task.Claude)
+	d := a.Dialogs()[0]
+	if !Shows("│ IS THIS A PROJECT YOU CREATED │\n│ OR ONE YOU TRUST │", d) {
+		t.Error("wrapped dialog not shown")
+	}
+	if Shows("❯ ", d) || Shows("anything", Dialog{}) {
+		t.Error("dialog shown on a ready screen")
 	}
 }
 
@@ -206,9 +242,9 @@ func TestPrepareClaudeTrust(t *testing.T) {
     "/plain": {"hasTrustDialogAccepted": true}
   }
 }`)
-	set, err := PrepareClaudeTrust(path, "/repo/", "/wt/t3")
-	if err != nil {
-		t.Fatal(err)
+	set, skipped, err := PrepareClaudeTrust(path, "/repo/", "/wt/t3")
+	if err != nil || skipped != "" {
+		t.Fatal(err, skipped)
 	}
 	if !reflect.DeepEqual(set, []string{"hasTrustDialogAccepted", "hasClaudeMdExternalIncludesApproved"}) {
 		t.Fatalf("set = %v", set)
@@ -227,18 +263,48 @@ func TestPrepareClaudeTrust(t *testing.T) {
 		t.Errorf("mode = %o", info.Mode().Perm())
 	}
 
-	// A second run is a no-op.
-	if set, err := PrepareClaudeTrust(path, "/repo", "/wt/t3"); err != nil || set != nil {
-		t.Errorf("second run = %v, %v", set, err)
+	// A second run is a no-op that says why.
+	if set, skipped, err := PrepareClaudeTrust(path, "/repo", "/wt/t3"); err != nil || set != nil || skipped != TrustSkipAlreadyTrusted {
+		t.Errorf("second run = %v, %q, %v", set, skipped, err)
 	}
 	// A folder the user never opened gets workspace trust from spawn, but no
 	// import approval.
-	set, err = PrepareClaudeTrust(path, "/new", "/new")
-	if err != nil || !reflect.DeepEqual(set, []string{"hasTrustDialogAccepted"}) {
-		t.Errorf("new folder = %v, %v", set, err)
+	set, skipped, err = PrepareClaudeTrust(path, "/new", "/new")
+	if err != nil || skipped != "" || !reflect.DeepEqual(set, []string{"hasTrustDialogAccepted"}) {
+		t.Errorf("new folder = %v, %q, %v", set, skipped, err)
 	}
-	if set, err := PrepareClaudeTrust(filepath.Join(t.TempDir(), "missing.json"), "/repo", "/wt"); err != nil || set != nil {
-		t.Errorf("missing file = %v, %v", set, err)
+	// A missing config file is never created.
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if set, skipped, err := PrepareClaudeTrust(missing, "/repo", "/wt"); err != nil || set != nil || skipped != TrustSkipNoConfig {
+		t.Errorf("missing file = %v, %q, %v", set, skipped, err)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing config was created: %v", err)
+	}
+}
+
+func TestClaudeTrusted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	writeFile(t, path, `{"projects":{"/repo":{"hasTrustDialogAccepted":true},"/other":{"hasTrustDialogAccepted":false}}}`)
+	if got, err := ClaudeTrusted(path, []string{"/repo/sub", "/repo/"}); err != nil || got != "/repo" {
+		t.Errorf("got %q, %v", got, err)
+	}
+	if got, err := ClaudeTrusted(path, []string{"/other", "/re"}); err != nil || got != "" {
+		t.Errorf("untrusted = %q, %v", got, err)
+	}
+	if _, err := ClaudeTrusted(filepath.Join(t.TempDir(), "x.json"), []string{"/repo"}); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing file err = %v", err)
+	}
+}
+
+func TestDefaultClaudeConfigDir(t *testing.T) {
+	t.Setenv("HOME", "/h")
+	for in, want := range map[string]string{
+		"": "", "/h/.claude": "", "/h/.claude/": "", "~/.claude": "", "/h/.claude2": "/h/.claude2", "/other/.claude": "/other/.claude",
+	} {
+		if got := DefaultClaudeConfigDir(in); got != want {
+			t.Errorf("DefaultClaudeConfigDir(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

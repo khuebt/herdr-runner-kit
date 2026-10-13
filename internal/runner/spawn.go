@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -206,7 +207,9 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 	if err != nil {
 		return nil, err
 	}
-	configDir := r.Getenv("CLAUDE_CONFIG_DIR")
+	// The main session may run with CLAUDE_CONFIG_DIR=~/.claude; store it as
+	// Claude's default, as --claude-config does.
+	configDir := harness.DefaultClaudeConfigDir(r.Getenv("CLAUDE_CONFIG_DIR"))
 	if o.ClaudeConfig != "" {
 		if spec.Harness != task.Claude {
 			return nil, fmt.Errorf("--claude-config needs a Claude runner, not %s", spec.Harness)
@@ -311,10 +314,7 @@ func ClaudeConfigDir(s string) (string, error) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return "", fmt.Errorf("claude config %s is not a directory", dir)
 	}
-	if dir == filepath.Join(home, ".claude") {
-		return "", nil
-	}
-	return dir, nil
+	return harness.DefaultClaudeConfigDir(dir), nil
 }
 
 // pendingParents returns the --after tasks that are not done yet. A parent

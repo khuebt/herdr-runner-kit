@@ -362,6 +362,19 @@ func TestSpawnPicksClaudeConfig(t *testing.T) {
 	}
 }
 
+func TestSpawnNormalisesDefaultClaudeConfig(t *testing.T) {
+	r, _, e := newTestRunner(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, inherited := range []string{filepath.Join(home, ".claude"), filepath.Join(home, ".claude") + "/", "~/.claude"} {
+		e["CLAUDE_CONFIG_DIR"] = inherited
+		tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+		if tk.ClaudeConfigDir != "" {
+			t.Errorf("inherited CLAUDE_CONFIG_DIR=%s stored as %q, want \"\"", inherited, tk.ClaudeConfigDir)
+		}
+	}
+}
+
 func spawnStarting(t *testing.T, r *Runner, o SpawnOptions) *task.Task {
 	t.Helper()
 	tk, err := r.Spawn(context.Background(), o)
@@ -408,7 +421,7 @@ func TestLaunchClaudeTab(t *testing.T) {
 	if got.Status != task.Running || got.Herdr.PaneID != "w1:p9" || got.Herdr.TabID != "w1:t9" || got.Herdr.AgentName != "hrk-t1" {
 		t.Errorf("task = %+v", got)
 	}
-	if ev := events(t, r, tk.ID); !slices.Equal(ev, []string{"spawned", "started", "prompted"}) {
+	if ev := events(t, r, tk.ID); !slices.Equal(ev, []string{"spawned", "claude-trust-skipped", "started", "prompted"}) {
 		t.Errorf("events = %v", ev)
 	}
 }
@@ -500,7 +513,137 @@ func TestLaunchWaitsForHumanAtTrustDialog(t *testing.T) {
 		t.Errorf("after answer: %+v", got)
 	}
 	ev := events(t, r, tk.ID)
-	if !slices.Equal(ev, []string{"spawned", "needs-human", "started", "prompted"}) {
+	if !slices.Equal(ev, []string{"spawned", "claude-trust-skipped", "needs-human", "started", "prompted"}) {
+		t.Errorf("events = %v", ev)
+	}
+}
+
+// screensThen serves blank screens n times, then the given screens in
+// order, repeating the last one.
+func screensThen(n int, screens ...string) func([]string) (string, error) {
+	var mu sync.Mutex
+	reads := 0
+	return func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		reads++
+		if reads <= n {
+			return "", nil
+		}
+		return screens[min(reads-n, len(screens))-1], nil
+	}
+}
+
+func TestLaunchFindsALateTrustDialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("pane read", screensThen(3, "│ Is this a project you created │\n│ or one you trust? │", "❯ "))
+	var statusDuringWait task.Status
+	fake.on("agent wait", func(args []string) (string, error) {
+		if slices.Contains(args, "idle") && statusDuringWait == "" {
+			got, _ := r.Store.Get("t1")
+			statusDuringWait = got.Status
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if statusDuringWait != task.NeedsHuman {
+		t.Errorf("status while waiting = %s, want needs-human", statusDuringWait)
+	}
+	all, _, _ := r.Store.ReadEventsSince(0)
+	for _, ev := range all {
+		if ev.Type == "needs-human" && ev.Summary != "claude-workspace-trust" {
+			t.Errorf("needs-human for %q, want claude-workspace-trust", ev.Summary)
+		}
+	}
+	if ev := events(t, r, tk.ID); !slices.Contains(ev, "needs-human") {
+		t.Errorf("events = %v", ev)
+	}
+}
+
+func TestLaunchUnknownDialogAfterFallback(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("pane read", ok("  Some new question?\n  1. Yes  2. No"))
+	idleWaits := 0
+	fake.on("agent wait", func(args []string) (string, error) {
+		if !slices.Contains(args, "idle") {
+			return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+		}
+		idleWaits++
+		if idleWaits == 1 {
+			return "", herdrError(herdr.CodeTimeout) // still not ready
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil // the user answered
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := fake.count("pane", "read"); n < 21 {
+		t.Errorf("pane read %d times before the unknown dialog, want at least 21", n)
+	}
+	if idleWaits < 2 {
+		t.Errorf("idle waits = %d, want the fallback wait and the human wait", idleWaits)
+	}
+	all, _, _ := r.Store.ReadEventsSince(0)
+	var question string
+	for _, ev := range all {
+		if ev.Type == "needs-human" {
+			question = ev.Question
+		}
+	}
+	if !strings.Contains(question, "shows the unknown startup dialog") || strings.Contains(question, "dialog dialog") {
+		t.Errorf("question = %q", question)
+	}
+}
+
+func TestLaunchNotReadyThenIdleIsNoDialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("agent wait", ok(`{"result":{"agent":{"agent_status":"idle"}}}`))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "needs-human") {
+		t.Errorf("an agent that turned idle was marked needs-human: %v", ev)
+	}
+}
+
+func TestLaunchNeverPromptsIntoADialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	// Ready at start; the trust dialog opens on the check before the prompt.
+	fake.on("pane read", screensThen(1, " Is this a project you created or one you trust?", "❯ "))
+	promptedDuringDialog := false
+	fake.on("agent prompt", func([]string) (string, error) {
+		if got, _ := r.Store.Get("t1"); got.Status == task.NeedsHuman {
+			promptedDuringDialog = true
+		}
+		return "{}", nil
+	})
+	var callsAtAnswer int
+	fake.on("agent wait", func(args []string) (string, error) {
+		if slices.Contains(args, "idle") {
+			callsAtAnswer = fake.count("agent", "prompt")
+			return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+		}
+		return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if promptedDuringDialog || callsAtAnswer != 0 {
+		t.Errorf("prompt sent before the dialog was answered (%d prompts)", callsAtAnswer)
+	}
+	if fake.count("agent", "prompt") != 1 || fake.count("agent", "send-keys") != 0 {
+		t.Errorf("prompts = %d, send-keys = %d", fake.count("agent", "prompt"), fake.count("agent", "send-keys"))
+	}
+	if ev := events(t, r, tk.ID); !slices.Equal(ev, []string{"spawned", "claude-trust-skipped", "needs-human", "started", "prompted"}) {
 		t.Errorf("events = %v", ev)
 	}
 }
