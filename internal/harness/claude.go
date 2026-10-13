@@ -73,10 +73,11 @@ func ClaudeSettings(bin string) ([]byte, error) {
 	return json.MarshalIndent(settings, "", "  ")
 }
 
-// ClaudeConfigPath returns the file holding Claude's per-project trust:
-// $CLAUDE_CONFIG_DIR/.claude.json, or ~/.claude.json.
-func ClaudeConfigPath() (string, error) {
-	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+// ClaudeConfigPath returns the file holding Claude's per-project trust for
+// the config folder dir: dir/.claude.json, or ~/.claude.json when dir is
+// empty, which is how Claude runs without CLAUDE_CONFIG_DIR.
+func ClaudeConfigPath(dir string) (string, error) {
+	if dir != "" {
 		return filepath.Join(dir, ".claude.json"), nil
 	}
 	home, err := os.UserHomeDir()

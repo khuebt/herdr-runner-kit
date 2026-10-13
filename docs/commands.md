@@ -38,6 +38,8 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 
 With `--gate auto` (the default) the child starts by itself within about a second of the last parent's report. With `--gate human` it moves to `held` and waits for `release`. A parent that fails or is stopped fails its waiting dependents.
 
+A Claude runner uses the main session's Claude config folder, and so its account. `spawn --claude-config DIR` picks another one, as a path or a bare name: `claude2` means `~/.claude2`, and `claude` means Claude's default, `~/.claude`. Run `setup` and `doctor` for that folder too, so its herdr hook and permission prompt are ready.
+
 ## What `wait` reports
 
 The main agent runs `wait` in the background. In the session `main --exec` starts, the auto re-arm hook that `setup` installs also runs it after every turn, so no news is missed when the agent forgets to rerun it.

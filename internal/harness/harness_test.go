@@ -243,13 +243,11 @@ func TestPrepareClaudeTrust(t *testing.T) {
 }
 
 func TestClaudeConfigPath(t *testing.T) {
-	t.Setenv("CLAUDE_CONFIG_DIR", "/h/.claude2")
-	if got, _ := ClaudeConfigPath(); got != "/h/.claude2/.claude.json" {
+	if got, _ := ClaudeConfigPath("/h/.claude2"); got != "/h/.claude2/.claude.json" {
 		t.Errorf("got %q", got)
 	}
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("HOME", "/h")
-	if got, _ := ClaudeConfigPath(); got != "/h/.claude.json" {
+	if got, _ := ClaudeConfigPath(""); got != "/h/.claude.json" {
 		t.Errorf("got %q", got)
 	}
 }

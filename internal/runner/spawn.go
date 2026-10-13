@@ -79,6 +79,9 @@ type SpawnOptions struct {
 	Title    string
 	Owner    string
 	Prompt   string
+	// ClaudeConfig is the Claude config folder of a Claude runner, as a path
+	// or a bare name such as claude2. Empty means the main session's.
+	ClaudeConfig string
 }
 
 // Spawn records a task and, unless it waits on other tasks or on a human,
@@ -197,6 +200,15 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 	if err != nil {
 		return nil, err
 	}
+	configDir := r.Getenv("CLAUDE_CONFIG_DIR")
+	if o.ClaudeConfig != "" {
+		if spec.Harness != task.Claude {
+			return nil, fmt.Errorf("--claude-config needs a Claude runner, not %s", spec.Harness)
+		}
+		if configDir, err = ClaudeConfigDir(o.ClaudeConfig); err != nil {
+			return nil, err
+		}
+	}
 	gate := o.Gate
 	if gate == "" {
 		gate = task.GateAuto
@@ -256,11 +268,39 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 	return &task.Task{
 		Kind: kindName, Agent: spec.String(), Prompt: o.Prompt, Skill: o.Skill, Title: title,
 		Cwd: cwd, Owner: owner, RepoRoot: root, UseWorktree: useWorktree, After: after, Gate: gate,
-		MainWorkspace: workspace, ClaudeConfigDir: r.Getenv("CLAUDE_CONFIG_DIR"),
+		MainWorkspace: workspace, ClaudeConfigDir: configDir,
 		// Queued until spawn decides: a task with no pending parents moves on
 		// to held or starting at once.
 		Status: task.Queued,
 	}, nil
+}
+
+// ClaudeConfigDir resolves a --claude-config value: a path, or a bare name
+// such as claude2 for ~/.claude2. The folder must exist. ~/.claude resolves to
+// "": Claude keeps that default account in ~/.claude.json, and setting
+// CLAUDE_CONFIG_DIR=~/.claude would point it at ~/.claude/.claude.json.
+func ClaudeConfigDir(s string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case strings.HasPrefix(s, "~/"):
+		s = filepath.Join(home, s[2:])
+	case !strings.ContainsRune(s, filepath.Separator):
+		s = filepath.Join(home, "."+strings.TrimPrefix(s, "."))
+	}
+	dir, err := filepath.Abs(s)
+	if err != nil {
+		return "", err
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("claude config %s is not a directory", dir)
+	}
+	if dir == filepath.Join(home, ".claude") {
+		return "", nil
+	}
+	return dir, nil
 }
 
 // pendingParents returns the --after tasks that are not done yet. A parent

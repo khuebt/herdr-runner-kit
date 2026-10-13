@@ -59,6 +59,7 @@ func newSpawnCommand() *cobra.Command {
 	f.StringVar(&o.Skill, "skill", "", "skill to invoke, such as ak:cook; rendered per harness")
 	f.StringSliceVar(&o.After, "after", nil, "start only when these tasks are done")
 	f.StringVar(&gate, "gate", "auto", "auto starts on its own; human waits for `release`")
+	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of a Claude runner, as a path or a name such as claude2 for ~/.claude2 (default: the main session's)")
 	f.StringVar(&o.Cwd, "cwd", "", "folder the task works in (default: current folder)")
 	f.StringVar(&o.Title, "title", "", "short title (default: from the prompt)")
 	f.BoolVar(&stdin, "stdin", false, "read the prompt from stdin")

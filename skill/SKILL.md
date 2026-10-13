@@ -41,7 +41,7 @@ A lookup that grows past a few steps moves to a runner. Do not do runner work yo
 | `research` | claude opus, high | no | investigation and analysis |
 | `report` | claude opus, high | no | written reports and reviews |
 
-The user's config may change these defaults. `--agent harness[:model[:effort]]` overrides the kind, for example `--agent codex::xhigh` or `--agent claude:claude-opus-5-5:max`. `--worktree` and `--no-worktree` override the worktree choice. Follow the user's wording when they name an agent, model or effort.
+The user's config may change these defaults. `--agent harness[:model[:effort]]` overrides the kind, for example `--agent codex::xhigh` or `--agent claude:claude-opus-5-5:max`. `--worktree` and `--no-worktree` override the worktree choice. Follow the user's wording when they name an agent, model or effort. When they name a Claude config folder or account, such as "claude2", pass `--claude-config claude2`.
 
 ## Spawn
 
