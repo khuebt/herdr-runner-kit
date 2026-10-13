@@ -11,6 +11,7 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
+	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -276,30 +277,12 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 }
 
 // projectWorkspace returns the herdr workspace of t's project, opening it
-// again when the user closed it. herdr reuses the ids of closed workspaces,
-// so it is found by repository root, never by a remembered id. The
-// project's workspace lock keeps two launches from opening it twice.
+// again when the user closed it.
 func (r *Runner) projectWorkspace(ctx context.Context, t *task.Task) (string, error) {
 	if t.RepoRoot == "" {
 		return "", fmt.Errorf("%s is not in a git repository", t.Cwd)
 	}
-	unlock, err := r.Store.LockProject(t.Project, "ws")
-	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	ws, err := r.Herdr.RepoWorkspace(ctx, t.RepoRoot)
-	if err != nil || ws != "" {
-		return ws, err
-	}
-	loc, err := r.Herdr.WorkspaceCreate(ctx, t.RepoRoot, t.Project)
-	if err != nil {
-		return "", err
-	}
-	if loc.WorkspaceID == "" {
-		return "", errors.New("herdr workspace create returned no workspace id")
-	}
-	return loc.WorkspaceID, nil
+	return project.OpenWorkspace(ctx, r.Store, r.Herdr, t.Project, t.RepoRoot)
 }
 
 // exportEnv sets the runner's environment in the shell of pane. With reset,

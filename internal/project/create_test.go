@@ -23,6 +23,10 @@ type fakeWorkspaces struct {
 	err     error
 }
 
+func (f *fakeWorkspaces) WorkspaceLabel(context.Context, string) (string, bool, error) {
+	return "", false, f.err
+}
+
 func (f *fakeWorkspaces) RepoWorkspace(context.Context, string) (string, error) {
 	return f.open, f.err
 }
@@ -95,7 +99,7 @@ func TestCreateFreshProject(t *testing.T) {
 		t.Errorf("work tree not clean: %q", st)
 	}
 	p, err := s.ProjectByName("demo-app")
-	if err != nil || p.Reserved || p.Path != path {
+	if err != nil || p.Reserved || p.Path != path || p.WorkspaceID != "w9" {
 		t.Errorf("registry %+v %v", p, err)
 	}
 	rec, err := Load(s, "demo-app")
@@ -126,6 +130,9 @@ func TestCreateBriefFileBranchAndReference(t *testing.T) {
 	}
 	if c.Branch != "trunk" || c.Workspace != "w2" || c.Remote != "" {
 		t.Fatalf("created %+v", c)
+	}
+	if p, err := s.ProjectByName("reading"); err != nil || p.WorkspaceID != "w2" {
+		t.Errorf("registry %+v %v", p, err)
 	}
 	if got := run(t, path, "branch", "--show-current"); got != "trunk" {
 		t.Errorf("branch %q", got)

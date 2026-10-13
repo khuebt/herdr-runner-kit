@@ -100,6 +100,26 @@ func TestWorkspaceCheckout(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLabel(t *testing.T) {
+	var got []string
+	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		got = args
+		return []byte(`{"result":{"workspace":{"workspace_id":"w2","label":"demo-app","tab_count":1}}}`), nil, nil
+	}}
+	label, found, err := c.WorkspaceLabel(context.Background(), "w2")
+	if err != nil || !found || label != "demo-app" || strings.Join(got, " ") != "workspace get w2" {
+		t.Fatalf("label %q found %v err %v argv %q", label, found, err, got)
+	}
+	c.Exec = fakeExec("", `{"error":{"code":"workspace_not_found","message":"no such workspace"}}`, errors.New("exit status 1"))
+	if _, found, err := c.WorkspaceLabel(context.Background(), "w4"); err != nil || found {
+		t.Errorf("closed workspace: found %v, %v", found, err)
+	}
+	c.Exec = fakeExec("", "herdr is not running", errors.New("exit status 1"))
+	if _, _, err := c.WorkspaceLabel(context.Background(), "w4"); err == nil {
+		t.Error("a herdr failure was taken for a closed workspace")
+	}
+}
+
 func TestRepoWorkspaceSkipsLinkedWorktrees(t *testing.T) {
 	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
 		switch strings.Join(args, " ") {

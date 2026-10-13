@@ -15,6 +15,7 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
+	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -1583,5 +1584,118 @@ func TestConcurrentProjectLaunchesOpenOneWorkspace(t *testing.T) {
 	}
 	if n := fake.count("workspace", "create"); n != 1 {
 		t.Errorf("workspace create ran %d times, want 1", n)
+	}
+}
+
+// labelOnlyHerdr makes the fake herdr report workspaces as herdr does for
+// one made with workspace create: an id and a label, no folder. A workspace
+// create opens the next free id from w3 under its label.
+func labelOnlyHerdr(fake *fakeHerdr, labels map[string]string) {
+	var mu sync.Mutex
+	next := 3
+	fake.on("workspace list", func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		var items []string
+		for id, label := range labels {
+			items = append(items, fmt.Sprintf(`{"workspace_id":%q,"label":%q}`, id, label))
+		}
+		return `{"result":{"workspaces":[` + strings.Join(items, ",") + `]}}`, nil
+	})
+	fake.on("workspace get", func(args []string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		label, found := labels[args[2]]
+		if !found {
+			return "", herdrError(herdr.CodeNoWorkspace)
+		}
+		return fmt.Sprintf(`{"result":{"workspace":{"workspace_id":%q,"label":%q}}}`, args[2], label), nil
+	})
+	fake.on("workspace create", func(args []string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		id := fmt.Sprintf("w%d", next)
+		for ; labels[id] != ""; id = fmt.Sprintf("w%d", next) {
+			next++
+		}
+		labels[id] = args[slices.Index(args, "--label")+1]
+		return fmt.Sprintf(`{"result":{"root_pane":{"pane_id":"%s:p1","tab_id":"%s:t1","workspace_id":%q}}}`, id, id, id), nil
+	})
+}
+
+func TestNewProjectWorkspaceIsJoinedByItsRunners(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(k, "t")
+	}
+	labels := map[string]string{"w1": "main"}
+	labelOnlyHerdr(fake, labels)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := project.Create(context.Background(), r.Store, r.Herdr, project.CreateOptions{
+		Path: filepath.Join(root, "demo-app"), Idea: "A small tool.", Home: "/nonexistent-home",
+	})
+	if err != nil || c.Workspace != "w3" || c.WorkspaceErr != "" {
+		t.Fatalf("created %+v, %v", c, err)
+	}
+
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w3 ") {
+		t.Errorf("tab create = %q", tab)
+	}
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "code", Skill: "ak:cook", Prompt: "plan.md", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if wt := strings.Join(fake.call("worktree", "create"), " "); !strings.HasPrefix(wt, "worktree create --workspace w3 --branch ") {
+		t.Errorf("worktree create = %q", wt)
+	}
+	if n := fake.count("workspace", "create"); n != 1 {
+		t.Errorf("workspace create ran %d times, want 1", n)
+	}
+}
+
+func TestRememberedProjectWorkspaceIsChecked(t *testing.T) {
+	cases := []struct {
+		name  string
+		label string // of the remembered w3; "" when herdr has no w3
+	}{
+		{"closed", ""},
+		{"id reused by another workspace", "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fake, _ := projectRunner(t)
+			labels := map[string]string{"w1": "main"}
+			if tc.label != "" {
+				labels["w3"] = tc.label
+			}
+			labelOnlyHerdr(fake, labels)
+			if err := r.Store.SetProjectWorkspace("demo-app", "w3"); err != nil {
+				t.Fatal(err)
+			}
+			tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+			if err := r.Launch(context.Background(), tk.ID); err != nil {
+				t.Fatal(err)
+			}
+			want := "w3"
+			if tc.label != "" {
+				want = "w4"
+			}
+			if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace "+want+" ") {
+				t.Errorf("tab create = %q, want workspace %s", tab, want)
+			}
+			if p, err := r.Store.ProjectByName("demo-app"); err != nil || p.WorkspaceID != want {
+				t.Errorf("registry %+v %v, want workspace %s", p, err, want)
+			}
+			if n := fake.count("workspace", "create"); n != 1 {
+				t.Errorf("workspace create ran %d times, want 1", n)
+			}
+		})
 	}
 }

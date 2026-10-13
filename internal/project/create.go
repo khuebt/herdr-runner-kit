@@ -47,6 +47,7 @@ var errCredentials = errors.New("the URL holds credentials; use SSH or a credent
 
 // Workspaces opens herdr workspaces. *herdr.Client implements it.
 type Workspaces interface {
+	WorkspaceLabel(ctx context.Context, id string) (string, bool, error)
 	RepoWorkspace(ctx context.Context, root string) (string, error)
 	WorkspaceCreate(ctx context.Context, cwd, label string) (herdr.Location, error)
 }
@@ -653,28 +654,60 @@ func firstCommit(ctx context.Context, s *state.Store, p plan) (string, error) {
 }
 
 // openWorkspace returns the project's open herdr workspace, opening one
-// when there is none, under the same lock the launcher takes.
+// when there is none.
 func openWorkspace(ctx context.Context, s *state.Store, ws Workspaces, p plan) (string, error) {
 	if ws == nil {
 		return "", errors.New("herdr is not available")
 	}
-	unlock, err := s.LockProject(p.name, "ws")
+	return OpenWorkspace(ctx, s, ws, p.name, p.path)
+}
+
+// OpenWorkspace returns the herdr workspace of project name, whose
+// repository is at root, and remembers it in the registry. herdr does not
+// report the folder of a workspace made with workspace create, so the
+// remembered id is tried first; it counts only while herdr still has it
+// under the project's label, since herdr reuses ids. Next comes the
+// repository's open workspace, and last a new one. The project's workspace
+// lock keeps two callers from opening it twice.
+func OpenWorkspace(ctx context.Context, s *state.Store, ws Workspaces, name, root string) (string, error) {
+	unlock, err := s.LockProject(name, "ws")
 	if err != nil {
 		return "", err
 	}
 	defer unlock()
-	id, err := ws.RepoWorkspace(ctx, p.path)
-	if err != nil || id != "" {
-		return id, err
-	}
-	loc, err := ws.WorkspaceCreate(ctx, p.path, p.name)
+	p, err := s.ProjectByName(name)
 	if err != nil {
 		return "", err
 	}
-	if loc.WorkspaceID == "" {
-		return "", errors.New("herdr workspace create returned no workspace id")
+	if p.WorkspaceID != "" {
+		label, found, err := ws.WorkspaceLabel(ctx, p.WorkspaceID)
+		if err != nil {
+			return "", err
+		}
+		if found && label == name {
+			return p.WorkspaceID, nil
+		}
 	}
-	return loc.WorkspaceID, nil
+	id, err := ws.RepoWorkspace(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		loc, err := ws.WorkspaceCreate(ctx, root, name)
+		if err != nil {
+			return "", err
+		}
+		if loc.WorkspaceID == "" {
+			return "", errors.New("herdr workspace create returned no workspace id")
+		}
+		id = loc.WorkspaceID
+	}
+	if id != p.WorkspaceID {
+		if err := s.SetProjectWorkspace(name, id); err != nil {
+			return "", fmt.Errorf("remember workspace %s of project %s: %w", id, name, err)
+		}
+	}
+	return id, nil
 }
 
 var _ Workspaces = (*herdr.Client)(nil)

@@ -33,12 +33,15 @@ func CheckProjectName(name string) error {
 }
 
 // Project is one registry entry. Reserved is set between Reserve and
-// Commit, while the project is being set up.
+// Commit, while the project is being set up. WorkspaceID is the herdr
+// workspace last opened for the project; herdr reuses ids, so it is a hint
+// to check, not a fact.
 type Project struct {
 	Name         string    `json:"name"`
 	Path         string    `json:"path"`
 	Reserved     bool      `json:"reserved,omitempty"`
 	RegisteredAt time.Time `json:"registeredAt"`
+	WorkspaceID  string    `json:"workspaceId,omitempty"`
 }
 
 type projectsFile struct {
@@ -101,6 +104,18 @@ func (s *Store) CommitProject(name string) error {
 			return nil, fmt.Errorf("%s: %w", name, ErrUnknownProject)
 		}
 		list[i].Reserved = false
+		return list, nil
+	})
+}
+
+// SetProjectWorkspace remembers id as the herdr workspace of project name.
+func (s *Store) SetProjectWorkspace(name, id string) error {
+	return s.updateProjects(func(list []Project) ([]Project, error) {
+		i := slices.IndexFunc(list, func(p Project) bool { return p.Name == name })
+		if i < 0 {
+			return nil, fmt.Errorf("%s: %w", name, ErrUnknownProject)
+		}
+		list[i].WorkspaceID = id
 		return list, nil
 	})
 }

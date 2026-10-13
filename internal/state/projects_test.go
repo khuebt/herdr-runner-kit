@@ -61,11 +61,17 @@ func TestProjectReserveCommitForget(t *testing.T) {
 	if _, found, _ := s.ProjectFor(root); found {
 		t.Fatal("parent folder matched the project")
 	}
+	if err := s.SetProjectWorkspace("demo-app", "w3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetProjectWorkspace("other", "w3"); !errors.Is(err, ErrUnknownProject) {
+		t.Fatalf("workspace of an unknown project: %v", err)
+	}
 	if err := s.ReleaseProject("demo-app"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ProjectByName("demo-app"); err != nil {
-		t.Fatalf("release dropped a committed project: %v", err)
+	if got, err := s.ProjectByName("demo-app"); err != nil || got.WorkspaceID != "w3" {
+		t.Fatalf("after release: %+v %v", got, err)
 	}
 	unlock, err := s.LockProject("demo-app", "record")
 	if err != nil {
