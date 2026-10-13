@@ -40,7 +40,17 @@ type Report struct {
 	// Decide is the first open change request whose impact runner is done,
 	// so it waits for the user's decision.
 	Decide *Change
-	Now    time.Time
+	// Running is the milestone in progress, if any; Nodes are the latest
+	// tasks of its plan nodes, in the order they were first spawned.
+	Running *Milestone
+	Nodes   []*task.Task
+	// PlanDone is set when the running milestone's plan runner is done.
+	// The caller then reads the committed plan into Unanswered, or the
+	// reason it cannot be read into PlanErr.
+	PlanDone   bool
+	Unanswered []string
+	PlanErr    string
+	Now        time.Time
 }
 
 // Status builds the report of a registered project from its record (nil
@@ -78,8 +88,33 @@ func Status(rec *Record, reg state.Project, tasks []*task.Task, now time.Time) R
 				break
 			}
 		}
+		r.milestoneTasks(*rec, tasks)
 	}
 	return r
+}
+
+// milestoneTasks fills the running milestone and the latest task of each
+// of its plan nodes.
+func (r *Report) milestoneTasks(rec Record, tasks []*task.Task) {
+	if r.Running = RunningMilestone(rec); r.Running == nil {
+		return
+	}
+	first := FirstStage(r.Running.ID)
+	if t := r.Latest[first]; t != nil && t.Status == task.Done && r.Running.ID != ScaffoldMilestone {
+		r.PlanDone = true
+	}
+	at := map[string]int{}
+	for _, t := range tasks {
+		if t.Project != r.Name || t.Stage == first || !strings.HasPrefix(t.Stage, r.Running.ID+"/") {
+			continue
+		}
+		if i, seen := at[t.Stage]; seen {
+			r.Nodes[i] = t
+			continue
+		}
+		at[t.Stage] = len(r.Nodes)
+		r.Nodes = append(r.Nodes, t)
+	}
 }
 
 // Text renders the report: a header, one line per fact and one
@@ -119,6 +154,13 @@ func (r Report) Text() string {
 		fmt.Fprintf(&b, "re-approval needed before the next milestone: %s\n", orDash(oneLine(rec.Reapproval.Reason)))
 	}
 	b.WriteString("milestone: " + r.Milestone() + "\n")
+	if r.Running != nil && len(r.Nodes) > 0 {
+		parts := make([]string, 0, len(r.Nodes))
+		for _, t := range r.Nodes {
+			parts = append(parts, fmt.Sprintf("%s %s (%s)", strings.TrimPrefix(t.Stage, r.Running.ID+"/"), t.Status, t.ID))
+		}
+		b.WriteString("features: " + strings.Join(parts, " · ") + "\n")
+	}
 	b.WriteString("changes: " + changesLine(rec.Changes) + "\n")
 	b.WriteString("blockers: " + blockersLine(rec.Dependencies) + "\n")
 	r.writeTasks(&b, "runners", r.Runners)
@@ -278,7 +320,57 @@ func (r Report) Next() string {
 	case rec.Gates.Pack.Status != GateApproved && !rec.Gates.Pack.Waived:
 		return r.packNext()
 	}
+	if next := r.milestoneNext(); next != "" {
+		return next
+	}
 	return fmt.Sprintf("spawn a runner for the next piece of work: herdr-runner-kit spawn --project %s --stdin", r.Name)
+}
+
+// milestoneNext is the next step once the pack is approved or waived, or
+// "" when the roadmap holds nothing to do.
+func (r Report) milestoneNext() string {
+	rec := r.Record
+	m := r.Running
+	if m == nil {
+		for _, next := range rec.Milestones {
+			if next.Status == MilestoneDone {
+				continue
+			}
+			if rec.Reapproval.Needed {
+				return fmt.Sprintf("the pack needs a new approval before %s starts: %s, then approve it", next.ID, r.command("run pack", ""))
+			}
+			return fmt.Sprintf("start %s %s: %s", next.ID, oneLine(next.Title), r.command("milestone start "+next.ID, ""))
+		}
+		return ""
+	}
+	first := r.Latest[FirstStage(m.ID)]
+	switch {
+	case first == nil:
+		return fmt.Sprintf("%s is in progress without a runner; start it: %s", m.ID, r.command("milestone start "+m.ID, ""))
+	case first.Status != task.Done:
+		return fmt.Sprintf("%s's runner %s %s; run it again: %s", m.ID, first.ID, first.Status, r.command("milestone start "+m.ID, ""))
+	case m.ID == ScaffoldMilestone:
+		branch := "its branch"
+		if first.Worktree != nil {
+			branch = first.Worktree.Branch
+		}
+		return fmt.Sprintf("%s's scaffold is done in %s: review %s", m.ID, first.ID, branch)
+	case r.PlanErr != "":
+		return fmt.Sprintf("the plan of %s cannot be chained (%s); ask %s to fix it: herdr-runner-kit send %s \"<what to fix>\"",
+			m.ID, oneLine(r.PlanErr), first.ID, first.ID)
+	case len(r.Unanswered) > 0:
+		return fmt.Sprintf("the plan of %s leaves %d open question(s) unanswered; ask %s to answer each with the recommended option: herdr-runner-kit send %s \"answer every open question in %s with its recommended option, commit and report again\"",
+			m.ID, len(r.Unanswered), first.ID, first.ID, MilestonePlanPath(m.ID))
+	case len(r.Nodes) == 0:
+		return fmt.Sprintf("plan of %s done: read its decisions in %s, then chain its features: %s",
+			m.ID, MilestonePlanPath(m.ID), r.command("milestone chain "+m.ID, ""))
+	}
+	for _, t := range r.Nodes {
+		if t.Status == task.Failed || t.Status == task.Stopped {
+			return fmt.Sprintf("%s of %s %s; fix the cause, then run the chain again: %s", t.ID, t.Stage, t.Status, r.command("milestone chain "+m.ID, ""))
+		}
+	}
+	return fmt.Sprintf("every feature runner of %s is done", m.ID)
 }
 
 // laterStages run between the spec and the pack, in the order status

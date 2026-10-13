@@ -59,6 +59,10 @@ func TestProjectGuard(t *testing.T) {
 		{"project", "dep", "add", "Payments sandbox", "--owner", "vendor"},
 		{"project", "dep", "add", "Domain", "--owner", "user", "--secret-location", "registrar account", "--project", "demo-app"},
 		{"project", "dep", "set", "D1", "--status", "ready"},
+		{"project", "milestone", "start", "M0"},
+		{"project", "milestone", "start", "M1", "--project", "demo-app", "--agent", "codex"},
+		{"project", "milestone", "chain", "M1"},
+		{"project", "milestone", "chain", "M2", "--project", "demo-app", "--language", "vi"},
 	} {
 		if _, err := runCLI(args...); !errors.Is(err, project.ErrInsideRunner) {
 			t.Errorf("%v inside a runner: err = %v", args, err)

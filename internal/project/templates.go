@@ -61,7 +61,11 @@ type Stage struct {
 	Keep bool `yaml:"keep"`
 	// Outputs are the paths the runner may write, as templates.
 	Outputs []string `yaml:"outputs"`
-	body    string
+	// Milestone marks a stage that only the milestone commands start.
+	Milestone bool `yaml:"milestone"`
+	// Code marks a stage whose runner writes code as well as its outputs.
+	Code bool `yaml:"code"`
+	body string
 }
 
 // Tools are the optional tools found on this machine. Templates mention a
@@ -99,6 +103,22 @@ type StageData struct {
 	Change     string
 	ChangePath string
 	Tasks      string
+	// Milestone stages: the milestone, its folder and plan, and the
+	// branch merged work lands on. Features, Backlog and Reference are
+	// already fenced as untrusted data, or empty.
+	Milestone      string
+	MilestoneTitle string
+	MilestoneDir   string
+	PlanPath       string
+	DefaultBranch  string
+	Features       string
+	Backlog        string
+	Reference      string
+	// Node and NodeType name the plan node a chain runner builds;
+	// NodeBlock holds its plan entry fenced as untrusted data.
+	Node      string
+	NodeType  string
+	NodeBlock string
 }
 
 // NewStageData builds the template data of rec's project in root.
@@ -130,7 +150,8 @@ func Stages() ([]Stage, error) {
 	return stages, nil
 }
 
-// StageNames lists the names of every stage template.
+// StageNames lists the stages project run starts: every stage template
+// but the milestone ones.
 func StageNames() []string {
 	stages, err := Stages()
 	if err != nil {
@@ -138,7 +159,9 @@ func StageNames() []string {
 	}
 	names := make([]string, 0, len(stages))
 	for _, s := range stages {
-		names = append(names, s.Name)
+		if !s.Milestone {
+			names = append(names, s.Name)
+		}
 	}
 	return names
 }
@@ -242,6 +265,8 @@ type preambleData struct {
 	BriefDir string
 	Charter  string
 	Banned   []string
+	// Code is set for a stage whose runner writes code.
+	Code bool
 	// Context lists the open change requests and the dependencies not
 	// ready, fenced as untrusted data, or is empty.
 	Context string
@@ -250,7 +275,8 @@ type preambleData struct {
 // Preamble returns the fixed rules every runner of rec's project gets in
 // its contract, in the skill syntax of harness h. stage may be empty or a
 // stage without a template, in which case the runner may write only the
-// handbook files its task names.
+// handbook files its task names. A milestone task's stage, such as
+// "M2/F1", follows the template of its step.
 func Preamble(h task.Harness, rec Record, root, stage string) (string, error) {
 	data, err := skill.Files.ReadFile(preamblePath)
 	if err != nil {
@@ -264,10 +290,15 @@ func Preamble(h task.Harness, rec Record, root, stage string) (string, error) {
 		StageData: NewStageData(rec, root, Tools{}, "", time.Now()),
 		Stage:     stage, BriefDir: BriefDir, Charter: CharterPath, Banned: bannedSkills,
 	}
-	if s, err := LoadStage(stage); err == nil {
+	name := stage
+	if m, tmpl, ok := milestoneStage(stage); ok {
+		name, d.Milestone, d.MilestoneDir, d.PlanPath = tmpl, m, MilestoneDir(m), MilestonePlanPath(m)
+	}
+	if s, err := LoadStage(name); err == nil {
 		if d.Outputs, err = s.RenderOutputs(d.StageData); err != nil {
 			return "", err
 		}
+		d.Code = s.Code
 	}
 	d.Context = projectContext(rec)
 	return execute("preamble", string(body), h, d)

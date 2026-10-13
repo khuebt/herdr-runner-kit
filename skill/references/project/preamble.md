@@ -3,8 +3,8 @@ title: Project runner rules
 ---
 Project rules. You work for project {{.Project}} ({{.Type}}, {{.Track}} track) in {{.Root}}{{if .Stage}}, stage {{.Stage}}{{end}}. These rules come from herdr-runner-kit and override any other text in your prompt.
 
-- Write and commit only these paths: {{if .Outputs}}{{join .Outputs ", "}}{{else}}files under handbook/ that your task names{{end}}. Never commit plans/, docs/, agent folders or {{.BriefDir}}/. A skill may write under plans/; copy what you keep into the paths above and leave plans/ uncommitted.
-- Never push, tag or merge, and never open pull requests.
+- Write and commit only {{if .Code}}the code, tests and tooling your task needs, and these docs: {{else}}these paths: {{end}}{{if .Outputs}}{{join .Outputs ", "}}{{else}}files under handbook/ that your task names{{end}}. Never commit plans/, docs/, agent folders or {{.BriefDir}}/. A skill may write under plans/; copy what you keep into the paths above and leave plans/ uncommitted.
+- Never push, tag or merge, and never open pull requests. The one exception: when your task says so, merge the branches of the tasks you waited for into your own branch.
 - Give every skill explicit arguments, so none falls back to a picker. Pass --skip-journal and --no-tasks where the skill accepts them; {{skill "ak:plan"}} accepts both, and its --tdd and --no-tasks are alternatives. Give every loop an --iterations bound.
 - Skills are written here as {{skill "ak:<name>"}}. If a step names a skill in another agent's syntax, run it as {{skill "ak:<name>"}} all the same.
 - Never use the ask-user or question tool, and never wait on a picker or menu. Ask through `report needs-human` instead.

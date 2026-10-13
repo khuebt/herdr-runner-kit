@@ -34,7 +34,8 @@ func newProjectCommand() *cobra.Command {
 	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand(),
 		newProjectRunCommand(), newProjectShareCommand(),
 		newProjectGateCommand("approve"), newProjectGateCommand("changes"), newProjectGateCommand("reject"),
-		newProjectDecideCommand(), newProjectCRCommand(), newProjectBacklogCommand(), newProjectDepCommand())
+		newProjectDecideCommand(), newProjectCRCommand(), newProjectBacklogCommand(), newProjectDepCommand(),
+		newProjectMilestoneCommand())
 	return cmd
 }
 
@@ -148,12 +149,12 @@ func newProjectStatusCommand() *cobra.Command {
 			}
 			p, err := resolveProject(store, name, cwd)
 			if errors.Is(err, errNoProjectResolved) {
-				return printProjectList(cmd.OutOrStdout(), store)
+				return printProjectList(cmd.Context(), cmd.OutOrStdout(), store)
 			}
 			if err != nil {
 				return err
 			}
-			r, err := projectReport(store, p)
+			r, err := projectReport(cmd.Context(), store, p)
 			if err != nil {
 				return err
 			}
@@ -204,8 +205,10 @@ func resolveProject(s *state.Store, name, cwd string) (state.Project, error) {
 }
 
 // projectReport builds the status of p from the kit's record and tasks. A
-// missing record is part of the report, not an error.
-func projectReport(s *state.Store, p state.Project) (project.Report, error) {
+// missing record is part of the report, not an error. Once the running
+// milestone's plan runner is done, it reads the committed plan for the
+// questions it leaves unanswered.
+func projectReport(ctx context.Context, s *state.Store, p state.Project) (project.Report, error) {
 	var rec *project.Record
 	loaded, err := project.Load(s, p.Name)
 	switch {
@@ -219,11 +222,20 @@ func projectReport(s *state.Store, p state.Project) (project.Report, error) {
 	if err != nil {
 		return project.Report{}, err
 	}
-	return project.Status(rec, p, tasks, time.Now()), nil
+	r := project.Status(rec, p, tasks, time.Now())
+	if r.Running != nil && r.PlanDone {
+		b, err := project.ReadPlan(ctx, p.Path, *rec, r.Running.ID)
+		if err != nil {
+			r.PlanErr = err.Error()
+		} else {
+			r.Unanswered = project.Unanswered(b)
+		}
+	}
+	return r, nil
 }
 
 // printProjectList prints one line per registered project.
-func printProjectList(out io.Writer, s *state.Store) error {
+func printProjectList(ctx context.Context, out io.Writer, s *state.Store) error {
 	list, err := s.Projects()
 	if err != nil {
 		return err
@@ -241,7 +253,7 @@ func printProjectList(out io.Writer, s *state.Store) error {
 			reserved = append(reserved, p.Name)
 			continue
 		}
-		r, err := projectReport(s, p)
+		r, err := projectReport(ctx, s, p)
 		if err != nil {
 			return err
 		}
@@ -389,6 +401,12 @@ type stageRun struct {
 	Language     string
 	// Docx asks the pack stage for a DOCX export as well.
 	Docx bool
+	// TaskStage is the stage recorded on the task, such as "M2/F1";
+	// empty means the template's name.
+	TaskStage string
+	// Branch and Base name the worktree branch and its base; empty means
+	// the spawn defaults.
+	Branch, Base string
 	// Cwd picks the project when Project is empty.
 	Cwd   string
 	Tools project.Tools
@@ -401,6 +419,9 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 	stage, err := project.LoadStage(o.Stage)
 	if err != nil {
 		return nil, err
+	}
+	if stage.Milestone {
+		return nil, fmt.Errorf("stage %s belongs to a milestone: start it with herdr-runner-kit project milestone start|chain <M>", stage.Name)
 	}
 	p, err := resolveProject(r.Store, o.Project, o.Cwd)
 	if err != nil {
@@ -419,15 +440,7 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 	if o.Docx && stage.Name != project.GatePack {
 		return nil, errors.New("--docx goes only with the pack stage")
 	}
-	kind, found := r.Config.Kinds[stage.Kind]
-	if !found {
-		return nil, fmt.Errorf("stage %s runs as kind %q, which the config does not define", stage.Name, stage.Kind)
-	}
-	agent := kind.Agent
-	if o.Agent != "" {
-		agent = o.Agent
-	}
-	spec, err := task.ParseAgentSpec(agent)
+	h, err := stageHarness(r, stage, o.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +465,7 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 		data.Change, data.ChangePath, data.Tasks = change.ID, change.Path, project.ActiveTasks(tasks, p.Name)
 		title = p.Name + " " + change.ID + ": " + change.Title
 	}
-	t, err := spawnStage(ctx, r, o, p, stage, spec.Harness, data, title)
+	t, err := spawnStage(ctx, r, o, p, stage, h, data, title)
 	if change.ID == "" {
 		return t, err
 	}
@@ -466,6 +479,23 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 		return t, fmt.Errorf("%s started for %s, but the record does not name it: %w", t.ID, change.ID, err)
 	}
 	return t, nil
+}
+
+// stageHarness returns the harness of the agent that runs stage: the agent
+// override when given, else its kind's agent.
+func stageHarness(r *runner.Runner, stage project.Stage, agent string) (task.Harness, error) {
+	kind, found := r.Config.Kinds[stage.Kind]
+	if !found {
+		return "", fmt.Errorf("stage %s runs as kind %q, which the config does not define", stage.Name, stage.Kind)
+	}
+	if agent == "" {
+		agent = kind.Agent
+	}
+	spec, err := task.ParseAgentSpec(agent)
+	if err != nil {
+		return "", err
+	}
+	return spec.Harness, nil
 }
 
 // changeStage is the stage that assesses a change request.
@@ -509,10 +539,15 @@ func spawnStage(ctx context.Context, r *runner.Runner, o stageRun, p state.Proje
 			}
 		}
 	}
+	taskStage := o.TaskStage
+	if taskStage == "" {
+		taskStage = stage.Name
+	}
 	return r.Spawn(ctx, runner.SpawnOptions{
 		Kind: stage.Kind, Agent: o.Agent, After: after, Title: title,
 		Prompt: prompt, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
-		Project: p.Name, Stage: stage.Name, Keep: stage.Keep, Warn: o.Warn,
+		Project: p.Name, Stage: taskStage, Keep: stage.Keep, Warn: o.Warn,
+		Branch: o.Branch, Base: o.Base,
 	})
 }
 
@@ -750,7 +785,7 @@ func decideGate(cmd *cobra.Command, r *runner.Runner, p state.Project, o project
 	if d.Status == project.GateChangesRequested {
 		sendFeedback(cmd, r, p, latest, d, feedback)
 	}
-	rep, err := projectReport(r.Store, p)
+	rep, err := projectReport(ctx, r.Store, p)
 	if err != nil {
 		return err
 	}
@@ -1073,4 +1108,292 @@ func newProjectDepSetCommand() *cobra.Command {
 	cmd.Flags().StringVar(&name, "project", "", projectFlagHelp)
 	cmd.Flags().StringVar(&status, "status", "", "new status: "+strings.Join(project.DependencyStatuses, ", "))
 	return cmd
+}
+
+func newProjectMilestoneCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "milestone",
+		Short: "Start milestones and chain their features",
+		Long: "A milestone starts after the pack is approved (or waived on the lite track). M0 " +
+			"builds the repository standard and an empty app; every later milestone starts with a " +
+			"plan runner whose plan becomes a chain of feature runners. You merge each milestone " +
+			"through a pull request; the kit never merges into the default branch.",
+		Args: cobra.NoArgs,
+	}
+	cmd.AddCommand(newMilestoneStartCommand(), newMilestoneChainCommand())
+	return cmd
+}
+
+// milestoneRun is the input of milestone start and chain.
+type milestoneRun struct {
+	Project      string
+	Agent        string
+	ClaudeConfig string
+	Language     string
+	// Cwd picks the project when Project is empty.
+	Cwd  string
+	Warn func(string)
+}
+
+// milestoneFlags adds the flags milestone start and chain share.
+func milestoneFlags(cmd *cobra.Command, o *milestoneRun) {
+	f := cmd.Flags()
+	f.StringVar(&o.Project, "project", "", projectFlagHelp)
+	f.StringVar(&o.Agent, "agent", "", "agent spec harness[:model[:effort]] of every runner, overriding the stage kind's default")
+	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of Claude runners, as a path or a name such as claude2")
+	f.StringVar(&o.Language, "language", "", "language of the runners' report summaries and questions")
+}
+
+// runMilestone runs fn for the project of o after the guard, holding the
+// project's milestone lock so two starts or chains never race.
+func runMilestone(cmd *cobra.Command, o *milestoneRun, fn func(*runner.Runner, state.Project) error) error {
+	if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+		return err
+	}
+	var err error
+	if o.Cwd, err = os.Getwd(); err != nil {
+		return fmt.Errorf("find the current folder: %w", err)
+	}
+	o.Warn = func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }
+	r, err := openRunner()
+	if err != nil {
+		return err
+	}
+	p, err := milestoneProject(r, *o)
+	if err != nil {
+		return err
+	}
+	unlock, err := r.Store.LockProject(p.Name, "milestone")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return fn(r, p)
+}
+
+// milestoneProject picks the project of a milestone command.
+func milestoneProject(r *runner.Runner, o milestoneRun) (state.Project, error) {
+	p, err := resolveProject(r.Store, o.Project, o.Cwd)
+	if err != nil {
+		return state.Project{}, err
+	}
+	if p.Reserved {
+		return state.Project{}, fmt.Errorf("project %s is still being set up", p.Name)
+	}
+	return p, nil
+}
+
+func newMilestoneStartCommand() *cobra.Command {
+	var o milestoneRun
+	cmd := &cobra.Command{
+		Use:   "start <M>",
+		Short: "Start a milestone: M0's scaffold runner, or a later milestone's plan runner",
+		Long: "start refuses until the pack is approved (or waived on the lite track), while the pack " +
+			"needs a new approval after a scope change, and until the milestone before it in roadmap " +
+			"order is done; reordering goes through a change request and a new pack approval. It marks " +
+			"the milestone in progress in the record, committed when the milestone is done. M0 spawns " +
+			"the scaffold runner; later milestones spawn the plan runner, whose plan answers its open " +
+			"questions with the recommended options and lists them as decisions. When the first runner " +
+			"of a milestone in progress failed or stopped, start runs it again.",
+		Example: `  herdr-runner-kit project milestone start M0
+  herdr-runner-kit project milestone start M1 --project demo-app`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return startMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], o)
+			})
+		},
+	}
+	milestoneFlags(cmd, &o)
+	return cmd
+}
+
+// startMilestone marks milestone id of p in progress and spawns its first
+// runner, or runs that runner again.
+func startMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) error {
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	m, again, err := project.StartMilestone(ctx, r.Store, p, id, tasks, time.Now())
+	if err != nil {
+		return err
+	}
+	rec, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return err
+	}
+	stage, err := project.LoadStage(project.FirstTemplate(id))
+	if err != nil {
+		return err
+	}
+	h, err := stageHarness(r, stage, o.Agent)
+	if err != nil {
+		return err
+	}
+	def, err := project.DefaultBranch(ctx, p.Path)
+	if err != nil {
+		return err
+	}
+	data := project.NewStageData(rec, p.Path, project.Tools{}, "", time.Now())
+	project.MilestoneData(&data, rec, m, def)
+	so := stageRun{
+		Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+		TaskStage: project.FirstStage(id), Warn: o.Warn,
+	}
+	if r.Config.Kinds[stage.Kind].Worktree {
+		var own []*task.Task
+		for _, t := range tasks {
+			if t.Project == p.Name && t.Stage == so.TaskStage {
+				own = append(own, t)
+			}
+		}
+		exists := func(b string) bool { return runner.BranchExists(ctx, p.Path, b) }
+		if so.Branch, so.Base, err = project.PickBranch("feat/"+id+"-scaffold", own, exists); err != nil {
+			return err
+		}
+		if so.Base == "" {
+			so.Base = def
+		}
+	}
+	t, err := spawnStage(ctx, r, so, p, stage, h, data, p.Name+" "+id+": "+stage.Title)
+	if err != nil {
+		return fmt.Errorf("%s is in progress, but its runner did not start: %w; run start again", id, err)
+	}
+	if again != nil {
+		fmt.Fprintf(out, "%s %s: runs %s again after %s %s\n", id, oneLineText(m.Title), stage.Name, again.ID, again.Status)
+	} else {
+		fmt.Fprintf(out, "%s %s is in progress since %s; recorded with the next commit point\n", id, oneLineText(m.Title), m.Started.Format(time.DateOnly))
+	}
+	_, err = fmt.Fprintln(out, spawnLine(t))
+	return err
+}
+
+func newMilestoneChainCommand() *cobra.Command {
+	var o milestoneRun
+	cmd := &cobra.Command{
+		Use:   "chain <M>",
+		Short: "Spawn a milestone's feature runners from its committed plan",
+		Long: "chain reads the yaml block of the milestone's committed plan once its plan runner is " +
+			"done, and refuses while an open question has no answer. A feature has at most one parent " +
+			"and an integrate node any number; a final integrate node over every leaf is added when " +
+			"the plan does not end in one. Runners are spawned in dependency order with --after their " +
+			"parents: root features and integrate nodes start from the default branch, a feature with " +
+			"a parent from its parent's branch. Backlog items the plan takes are marked planned. Run it " +
+			"again after a runner failed: done nodes are kept, a failed node whose runner created its " +
+			"branch continues on <branch>-r<k> from that branch, and any other existing branch is " +
+			"refused before anything is spawned.",
+		Example: `  herdr-runner-kit project milestone chain M1`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return chainMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], o)
+			})
+		},
+	}
+	milestoneFlags(cmd, &o)
+	return cmd
+}
+
+// chainMilestone spawns the runners of milestone id's plan in dependency
+// order. Every check runs before the first spawn.
+func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) error {
+	rec, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return err
+	}
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	if err := project.CheckChainable(rec, p.Name, id, tasks); err != nil {
+		return err
+	}
+	plan, err := project.ReadPlan(ctx, p.Path, rec, id)
+	if err != nil {
+		return err
+	}
+	if qs := project.Unanswered(plan); len(qs) > 0 {
+		return fmt.Errorf("the plan of %s leaves %d open question(s) unanswered:\n- %s\nask its plan runner to answer each with the recommended option, commit and report again",
+			id, len(qs), strings.Join(qs, "\n- "))
+	}
+	if err := project.CheckBacklogMoves(rec, id, plan.Backlog); err != nil {
+		return err
+	}
+	def, err := project.DefaultBranch(ctx, p.Path)
+	if err != nil {
+		return err
+	}
+	steps, err := project.PlanChain(project.ChainInput{
+		Project: p.Name, Milestone: id, Plan: plan, Tasks: tasks, DefaultBranch: def, Slug: runner.Slug,
+		BranchExists: func(b string) bool { return runner.BranchExists(ctx, p.Path, b) },
+	})
+	if err != nil {
+		return err
+	}
+	stages := map[string]project.Stage{}
+	harnesses := map[string]task.Harness{}
+	for _, st := range steps {
+		name := project.NodeTemplate(st.Node)
+		if _, loaded := stages[name]; loaded {
+			continue
+		}
+		if stages[name], err = project.LoadStage(name); err != nil {
+			return err
+		}
+		if harnesses[name], err = stageHarness(r, stages[name], o.Agent); err != nil {
+			return err
+		}
+	}
+	m := rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })]
+	moved, err := project.ApplyBacklogMoves(r.Store, p.Name, id, plan.Backlog)
+	if err != nil {
+		return err
+	}
+	if moved > 0 {
+		fmt.Fprintf(out, "backlog: %d item(s) planned into %s; recorded with the next commit point\n", moved, id)
+	}
+	ids := map[string]string{}
+	spawned := 0
+	for _, st := range steps {
+		if st.Done != nil {
+			ids[st.Node.ID] = st.Done.ID
+			fmt.Fprintf(out, "kept %s: %s is done\n", st.Stage, st.Done.ID)
+			continue
+		}
+		if st.Added {
+			fmt.Fprintf(out, "added %s: the plan does not end in one integrate node, so one integrates %s\n",
+				st.Stage, strings.Join(st.Node.DependsOn, ", "))
+		}
+		stage := stages[project.NodeTemplate(st.Node)]
+		data := project.NewStageData(rec, p.Path, project.Tools{}, "", time.Now())
+		project.MilestoneData(&data, rec, m, def)
+		project.NodeData(&data, st)
+		so := stageRun{
+			Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+			TaskStage: st.Stage, Warn: o.Warn,
+		}
+		for _, parent := range st.Node.DependsOn {
+			so.After = append(so.After, ids[parent])
+		}
+		if r.Config.Kinds[stage.Kind].Worktree {
+			so.Branch, so.Base = st.Branch, st.Base
+		}
+		title := p.Name + " " + st.Stage + ": " + runner.TitleFrom(st.Node.Title)
+		t, err := spawnStage(ctx, r, so, p, stage, harnesses[stage.Name], data, title)
+		if err != nil {
+			if spawned > 0 {
+				return fmt.Errorf("spawn %s: %w; the %d runner(s) above were spawned: once they finish, run the chain again", st.Stage, err, spawned)
+			}
+			return fmt.Errorf("spawn %s: %w", st.Stage, err)
+		}
+		ids[st.Node.ID] = t.ID
+		spawned++
+		fmt.Fprintln(out, spawnLine(t))
+	}
+	if spawned == 0 {
+		_, err := fmt.Fprintf(out, "every node of %s is done\n", id)
+		return err
+	}
+	return nil
 }

@@ -192,3 +192,59 @@ func TestStatusOfAnUnfinishedSetup(t *testing.T) {
 		t.Errorf("status:\n%s", got)
 	}
 }
+
+func TestStatusMilestoneSteps(t *testing.T) {
+	reg := state.Project{Name: "demo-app", Path: "/work/demo-app"}
+	approved := Gate{Status: GateApproved, Version: "v1", At: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)}
+	record := func(m0, m1 string, reapproval bool) *Record {
+		rec := NewRecord("demo-app")
+		rec.Gates.Spec, rec.Gates.Pack = approved, approved
+		rec.Reapproval.Needed = reapproval
+		rec.Milestones = []Milestone{{ID: "M0", Title: "Scaffold", Status: m0}, {ID: "M1", Title: "Lists", Status: m1}}
+		return &rec
+	}
+	tk := func(id, stage string, status task.Status) *task.Task {
+		t := &task.Task{ID: id, Project: "demo-app", Stage: stage, Status: status}
+		if stage == "M0/scaffold" {
+			t.Worktree = &task.Worktree{Branch: "feat/M0-scaffold"}
+		}
+		return t
+	}
+	plan := tk("t3", "M1/plan", task.Done)
+	for _, c := range []struct {
+		name       string
+		rec        *Record
+		tasks      []*task.Task
+		unanswered []string
+		planErr    string
+		want       string
+	}{
+		{"start M0", record(MilestonePlanned, MilestonePlanned, false), nil, nil, "", "start M0 Scaffold: herdr-runner-kit project milestone start M0 --project demo-app"},
+		{"re-approval", record(MilestoneDone, MilestonePlanned, true), nil, nil, "", "the pack needs a new approval before M1 starts: herdr-runner-kit project run pack --project demo-app"},
+		{"no runner", record(MilestoneInProgress, MilestonePlanned, false), nil, nil, "", "M0 is in progress without a runner"},
+		{"scaffold failed", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Failed)}, nil, "", "M0's runner t1 failed; run it again: herdr-runner-kit project milestone start M0"},
+		{"scaffold done", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Done)}, nil, "", "M0's scaffold is done in t1: review feat/M0-scaffold"},
+		{"start M1", record(MilestoneDone, MilestonePlanned, false), nil, nil, "", "milestone start M1"},
+		{"unanswered", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan}, []string{"Sort order?"}, "", "the plan of M1 leaves 1 open question(s) unanswered; ask t3"},
+		{"bad plan", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan}, nil, "no yaml block", "the plan of M1 cannot be chained (no yaml block); ask t3"},
+		{"chain", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan}, nil, "", "plan of M1 done: read its decisions in handbook/product/milestones/M1/plan.md, then chain its features: herdr-runner-kit project milestone chain M1 --project demo-app"},
+		{"node failed", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/F2", task.Failed)}, nil, "", "t5 of M1/F2 failed; fix the cause, then run the chain again: herdr-runner-kit project milestone chain M1"},
+		{"nodes done", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done)}, nil, "", "every feature runner of M1 is done"},
+	} {
+		r := Status(c.rec, reg, c.tasks, time.Now())
+		r.Unanswered, r.PlanErr = c.unanswered, c.planErr
+		if got := r.Next(); !strings.Contains(got, c.want) {
+			t.Errorf("%s: next = %q, want %q", c.name, got, c.want)
+		}
+	}
+
+	// The running milestone's nodes show with their latest task.
+	tasks := []*task.Task{plan, tk("t4", "M1/F1", task.Failed), tk("t5", "M1/F2", task.Running), tk("t6", "M1/F1", task.Queued)}
+	r := Status(record(MilestoneDone, MilestoneInProgress, false), reg, tasks, time.Now())
+	if !r.PlanDone || r.Running == nil || r.Running.ID != "M1" {
+		t.Fatalf("report = %+v", r)
+	}
+	if text := r.Text(); !strings.Contains(text, "features: F1 queued (t6) · F2 running (t5)\n") {
+		t.Errorf("status:\n%s", text)
+	}
+}
