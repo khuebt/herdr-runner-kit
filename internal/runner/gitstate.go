@@ -14,6 +14,10 @@ import (
 // gitStateTimeout caps the git snapshot a report takes.
 const gitStateTimeout = 2 * time.Second
 
+// gitWaitDelay is how long a git command may hold its output open after it
+// exits or is cancelled, so a child it left behind cannot block the caller.
+const gitWaitDelay = 500 * time.Millisecond
+
 // gitState snapshots the checkout t works in: its own worktree, or else the
 // repository it was spawned in. It returns nil outside git or when git
 // fails or takes longer than gitStateTimeout; parts it cannot read stay
@@ -65,8 +69,10 @@ type gitStatus struct {
 // readStatus reads dir's git status without taking the index lock, so it
 // never blocks or disturbs a runner working in the checkout.
 func readStatus(ctx context.Context, dir string) (gitStatus, error) {
-	out, err := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", dir, "status",
-		"--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignored=matching").Output()
+	cmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", dir, "status",
+		"--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignored=matching")
+	cmd.WaitDelay = gitWaitDelay
+	out, err := cmd.Output()
 	if err != nil {
 		return gitStatus{}, fmt.Errorf("git status in %s: %w", dir, err)
 	}

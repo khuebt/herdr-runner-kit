@@ -9,7 +9,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `spawn [flags] --stdin` | Record a task and open its runner. Returns at once. |
 | `list [--all]` | Your tasks with stored status, herdr's live state, and TAB: `open` (with when `gc` closes it), `kept`, `closed` or `-`. `--all` shows every owner. |
 | `show <id>` | One task in full: prompt, summary, question, outputs, branch. |
-| `send <id> --stdin` | Type a new prompt into a live runner. A finished task runs again. |
+| `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one refuses. |
 | `answer <id> --stdin` | Answer a `needs-human` question. |
 | `answer --from-telegram --stdin` | Route a Telegram reply by its `#id` tag. |
 | `release <id> [--note TEXT]` | Start a `held` task. |

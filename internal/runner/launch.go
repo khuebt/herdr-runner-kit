@@ -101,8 +101,10 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	}
 	text := adapter.FirstPrompt(t.Skill, prompt, files.contractText)
 	// A dialog can open after the screen looked ready. Look once more, so
-	// the prompt and its Enter never land in one.
-	if err := r.settleDialogs(ctx, t, adapter, loc.PaneID, false); err != nil {
+	// the prompt and its Enter never land in one. An agent herdr sees as
+	// blocked shows a dialog even when no known one matches.
+	a, err := r.Herdr.AgentGet(ctx, loc.PaneID)
+	if err := r.settleDialogs(ctx, t, adapter, loc.PaneID, err == nil && a.Status == "blocked"); err != nil {
 		return err
 	}
 	if err := r.Herdr.AgentPrompt(ctx, loc.PaneID, text); err != nil {
@@ -273,21 +275,24 @@ func (r *Runner) prepareTrust(t *task.Task, h task.Harness) error {
 // settleStartup turns the agent start result into a ready agent, or into a
 // recorded needs-human or failed state.
 func (r *Runner) settleStartup(ctx context.Context, t *task.Task, a harness.Adapter, pane string, startErr error) error {
+	notReady := herdr.HasCode(startErr, herdr.CodeAgentNotReady)
 	switch {
-	case startErr == nil, herdr.HasCode(startErr, herdr.CodeAgentNotReady):
+	case startErr == nil, notReady:
 	case herdr.HasCode(startErr, herdr.CodeTimeout):
 		screen, _ := r.Herdr.PaneRead(ctx, pane, 40)
 		if line := errorLine(screen); line != "" {
 			return fmt.Errorf("agent exited during start: %s", line)
 		}
-		if _, err := r.Herdr.AgentWait(ctx, pane, agentStartTimeout, "idle", "done", "blocked"); err != nil {
+		state, err := r.Herdr.AgentWait(ctx, pane, agentStartTimeout, "idle", "done", "blocked")
+		if err != nil {
 			return fmt.Errorf("agent did not become ready: %w", err)
 		}
+		notReady = state == "blocked"
 	default:
 		return fmt.Errorf("start agent: %w", startErr)
 	}
 
-	return r.settleDialogs(ctx, t, a, pane, herdr.HasCode(startErr, herdr.CodeAgentNotReady))
+	return r.settleDialogs(ctx, t, a, pane, notReady)
 }
 
 // settleDialogs answers or waits out the startup dialogs on screen until

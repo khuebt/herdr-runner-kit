@@ -3,10 +3,14 @@ package runner
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
 func TestParseStatus(t *testing.T) {
@@ -94,5 +98,23 @@ func writeFile(t *testing.T, path string) {
 	}
 	if err := os.WriteFile(path, []byte("x\n"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGitStateIgnoresAChildHoldingOutput(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	bin := t.TempDir()
+	// git exits at once, but leaves a child holding its stdout open.
+	script := "#!/bin/sh\nsleep 10 &\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	start := time.Now()
+	_ = gitState(&task.Task{Cwd: t.TempDir(), RepoRoot: "/repo"})
+	if d := time.Since(start); d > gitStateTimeout+2*time.Second {
+		t.Errorf("gitState took %v", d)
 	}
 }

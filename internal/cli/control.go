@@ -168,7 +168,7 @@ func newCleanupCommand() *cobra.Command {
 		Use:   "cleanup [id]...",
 		Short: "List finished worktrees and branches left behind, and remove the merged ones with --yes",
 		Long: "cleanup fetches origin, then lists this main session's finished worktree tasks whose " +
-			"worktree or branch is still there: merged (safe to remove), unmerged or dirty. With --yes " +
+			"worktree or branch is still there: merged (safe to remove), unmerged, dirty or kept. With --yes " +
 			"it removes the worktree and deletes the local branch of each merged one, or of the given " +
 			"ids. Unmerged branches and worktrees with changes are never removed.",
 		RunE: func(cmd *cobra.Command, args []string) error {

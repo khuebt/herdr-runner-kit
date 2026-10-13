@@ -896,7 +896,7 @@ func finishAgo(t *testing.T, r *Runner, id string, d time.Duration) {
 }
 
 func gcCheck() closeCheck {
-	return closeCheck{gc: true, cutoff: time.Now().Add(-GCAge), keep: true}
+	return closeCheck{idle: true, cutoff: time.Now().Add(-GCAge), keep: true}
 }
 
 func TestGCSkipsATaskReopenedBySend(t *testing.T) {
@@ -967,7 +967,8 @@ func TestSendDuringPromptSeesTheClaim(t *testing.T) {
 	tk := finishedRunner(t, r, fake)
 	// gc claims the runner while the prompt is being typed.
 	fake.on("agent prompt", func([]string) (string, error) {
-		return "{}", r.claimClose(tk.ID, gcCheck())
+		_, err := r.claimClose(tk.ID, gcCheck())
+		return "{}", err
 	})
 	if _, err := r.Send(context.Background(), tk.ID, "late"); err == nil || !strings.Contains(err.Error(), "was closing while the prompt was sent") {
 		t.Fatalf("send = %v", err)
@@ -1159,5 +1160,205 @@ func TestCloseAt(t *testing.T) {
 		if at, ok := CloseAt(&c); ok {
 			t.Errorf("%s: closes at %v", name, at)
 		}
+	}
+}
+
+func TestEndClaimOnlyEndsItsOwnClaim(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	since, err := r.claimClose(tk.ID, gcCheck())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The claim expired mid-quit and another close took the runner.
+	newer := since.Add(2 * time.Minute)
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.ClosingSince = newer; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.endClaim(tk.ID, since, false); err != nil {
+		t.Fatalf("drop of a replaced claim = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); !got.Herdr.ClosingSince.Equal(newer) {
+		t.Errorf("newer claim wiped: %v", got.Herdr.ClosingSince)
+	}
+	if err := r.endClaim(tk.ID, since, true); !errors.Is(err, errReopened) {
+		t.Fatalf("close under a replaced claim = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Herdr.Closed || !got.Herdr.ClosingSince.Equal(newer) {
+		t.Errorf("closed %v claim %v", got.Herdr.Closed, got.Herdr.ClosingSince)
+	}
+
+	// The claim is still ours, but the task runs again.
+	finishAgo(t, r, tk.ID, time.Hour)
+	if since, err = r.claimClose(tk.ID, gcCheck()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Status = task.Running; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.endClaim(tk.ID, since, true); !errors.Is(err, errReopened) {
+		t.Fatalf("close of a running task = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Herdr.Closed || !got.Herdr.ClosingSince.IsZero() {
+		t.Errorf("closed %v claim %v", got.Herdr.Closed, got.Herdr.ClosingSince)
+	}
+}
+
+func TestCloseQuitIsBounded(t *testing.T) {
+	if quitBudget >= closeClaimTTL {
+		t.Fatalf("quitBudget %v must be shorter than closeClaimTTL %v", quitBudget, closeClaimTTL)
+	}
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	defer func(d time.Duration) { quitBudget = d }(quitBudget)
+	quitBudget = 50 * time.Millisecond
+	// herdr hangs while the agent quits.
+	r.Herdr.Exec = func(ctx context.Context, bin string, args ...string) ([]byte, []byte, error) {
+		if len(args) > 1 && args[0] == "agent" && args[1] == "get" {
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}
+		return fake.exec(ctx, bin, args...)
+	}
+	start := time.Now()
+	if _, err := r.Stop(context.Background(), tk.ID, false); err == nil {
+		t.Fatal("stop of a hung agent succeeded")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("stop took %v", d)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Herdr.Closed || !got.Herdr.ClosingSince.IsZero() {
+		t.Errorf("closed %v claim %v", got.Herdr.Closed, got.Herdr.ClosingSince)
+	}
+}
+
+func TestLaunchTimeoutBlockedIsADialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeTimeout))
+	fake.on("pane read", ok("  Some new question?\n  1. Yes  2. No"))
+	idleWaits := 0
+	fake.on("agent wait", func(args []string) (string, error) {
+		switch {
+		case slices.Contains(args, "blocked"):
+			return `{"result":{"agent":{"agent_status":"blocked"}}}`, nil
+		case !slices.Contains(args, "idle"):
+			return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+		}
+		idleWaits++
+		if idleWaits == 1 {
+			return "", herdrError(herdr.CodeTimeout) // still not ready
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil // the user answered
+	})
+	promptedAt := 0
+	fake.on("agent prompt", func([]string) (string, error) {
+		promptedAt = idleWaits
+		return "{}", nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(events(t, r, tk.ID), "needs-human") || promptedAt < 2 {
+		t.Errorf("events = %v, prompted after %d idle waits", events(t, r, tk.ID), promptedAt)
+	}
+}
+
+func TestLaunchBlockedBeforePromptIsADialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	// Ready at start; herdr sees it blocked on the check before the prompt.
+	fake.on("pane read", ok("  Some new question?\n  1. Yes  2. No"))
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"blocked"}}}`))
+	idleWaits := 0
+	fake.on("agent wait", func(args []string) (string, error) {
+		if !slices.Contains(args, "idle") {
+			return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+		}
+		idleWaits++
+		if idleWaits == 1 {
+			return "", herdrError(herdr.CodeTimeout)
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+	})
+	promptedAt := 0
+	fake.on("agent prompt", func([]string) (string, error) {
+		promptedAt = idleWaits
+		return "{}", nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(events(t, r, tk.ID), "needs-human") || promptedAt < 2 {
+		t.Errorf("events = %v, prompted after %d idle waits", events(t, r, tk.ID), promptedAt)
+	}
+}
+
+func TestKeepRefusesAClosingRunner(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.claimClose(tk.ID, gcCheck()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Keep(context.Background(), tk.ID, true); err == nil || !strings.Contains(err.Error(), "closing") {
+		t.Fatalf("keep of a closing runner = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Keep {
+		t.Error("a closing runner was kept")
+	}
+}
+
+func TestSendNeverReopensAStoppedTask(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	// Stop lands while the prompt is typed, before it claims the runner.
+	fake.on("agent prompt", func([]string) (string, error) {
+		_, _, err := r.Store.SetStatus(tk.ID, task.Stopped)
+		return "{}", err
+	})
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Status = task.Running; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Send(context.Background(), tk.ID, "x"); err == nil || !strings.Contains(err.Error(), "was stopped") {
+		t.Fatalf("send during a stop = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Stopped {
+		t.Errorf("status = %s, want stopped", got.Status)
+	}
+	// A stopped task whose tab failed to close gets no prompt.
+	prompts := fake.count("agent", "prompt")
+	if _, err := r.Send(context.Background(), tk.ID, "x"); err == nil || !strings.Contains(err.Error(), "is stopped") {
+		t.Fatalf("send to a stopped task = %v", err)
+	}
+	if fake.count("agent", "prompt") != prompts {
+		t.Error("a stopped task got the prompt")
+	}
+}
+
+func TestKeepOffClosesOnlyThatRunner(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	other := finishedRunner(t, r, fake)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.Keep(context.Background(), tk.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Keep(context.Background(), tk.ID, false); err != nil || !got.Herdr.Closed {
+		t.Fatalf("keep --off past due: %+v, %v", got, err)
+	}
+	if got, _ := r.Store.Get(other.ID); got.Herdr.Closed {
+		t.Error("keep --off closed another runner")
+	}
+}
+
+func TestKeepOffLeavesAnAgentInUse(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.Keep(context.Background(), tk.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
+	got, err := r.Keep(context.Background(), tk.ID, false)
+	if err != nil || got.Herdr.Closed || got.Keep || fake.count("agent", "send-keys") != 0 {
+		t.Fatalf("keep --off with the agent in use: %+v, %v", got, err)
 	}
 }

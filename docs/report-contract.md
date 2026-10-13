@@ -11,7 +11,7 @@ The first prompt is the rendered skill (if `--skill` was given) followed by your
 
 ## What the runner is told
 
-The runner reports once when it finishes, with one of the commands below. A later message from the main session (`send`) is new work: `send` to a finished task whose tab is still open sets it `running` again, and the runner reports again when that work is done.
+The runner reports once when it finishes, with one of the commands below. A later message from the main session (`send`) is new work: `send` to a `done` or `failed` task whose tab is still open sets it `running` again; a `stopped` task is never reopened, and the runner reports again when that work is done.
 
 ```sh
 herdr-runner-kit report done --summary "<one or two sentences>" [--output <path>]...

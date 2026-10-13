@@ -109,7 +109,7 @@ In the session `herdr-runner-kit main` started, news can also arrive as Stop hoo
 ## Answer and steer
 
 - `needs-human`: ask the user the runner's question. Send the reply with `herdr-runner-kit answer <id> --stdin` and a quoted heredoc. The runner continues in the same session.
-- The user wants to steer a runner, or give a finished one more work while its tab is open: `herdr-runner-kit send <id> --stdin`. A finished task runs again and reports again.
+- The user wants to steer a runner, or give a done or failed one more work while its tab is open: `herdr-runner-kit send <id> --stdin`. It runs again and reports again; a stopped task cannot be reopened.
 - Reuse a runner: before spawning a follow-up on the same topic, check `list`. If a recent runner's TAB is open, propose `send <id>` in the brief instead of a new runner.
 - The user can also type into the runner's tab; `herdr-runner-kit focus <id>` switches to it.
 - `stop <id>` only when the user asks. Branches stay local; merge or open a PR only when asked.

@@ -22,6 +22,8 @@ const (
 	Merged   = "merged"
 	Unmerged = "unmerged"
 	Dirty    = "dirty"
+	// Kept means the runner is kept open; keep --off comes first.
+	Kept = "kept"
 )
 
 // CleanupCheckEvery is how often wait looks for merged worktrees to offer.
@@ -84,7 +86,11 @@ func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]Cle
 			bases[t.RepoRoot] = base
 		}
 		it.base = base
-		it.Verdict, it.Detail = verdict(ctx, t, base, &it)
+		if t.Keep && !t.Herdr.Closed {
+			it.Verdict, it.Detail = Kept, "the runner is kept open; run keep --off "+t.ID+" first"
+		} else {
+			it.Verdict, it.Detail = verdict(ctx, t, base, &it)
+		}
 		items = append(items, it)
 	}
 	return items, nil
@@ -179,7 +185,8 @@ func (r *Runner) Cleanup(ctx context.Context, items []CleanupItem) ([]string, er
 func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 	t := it.Task
 	// A runner closed before is fine: only its worktree and branch are left.
-	if err := r.closeRunner(ctx, t, false, closeCheck{}); errors.Is(err, errReopened) {
+	// One kept or in use since the check stays open, and is not cleaned.
+	if err := r.closeRunner(ctx, t, false, closeCheck{idle: true, keep: true}); errors.Is(err, errReopened) {
 		return fmt.Errorf("%w; not cleaned", err)
 	} else if err != nil {
 		return err

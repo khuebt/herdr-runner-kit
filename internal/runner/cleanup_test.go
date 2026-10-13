@@ -416,3 +416,49 @@ func TestCleanupSkipsAReopenedRunner(t *testing.T) {
 		t.Error("the reopened runner was closed or its worktree removed")
 	}
 }
+
+func TestCleanupLeavesAKeptRunner(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "fix/CSD-10-a")
+	herdrOwnsWorktree(fake, repo, tk.Worktree.Path)
+	git(t, repo, "push", "-q", "origin", "fix/CSD-10-a:main")
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.Closed = false; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	it := cleanable(t, r, repo)
+	if it.Verdict != Merged {
+		t.Fatalf("item = %+v", it)
+	}
+	// The user keeps the runner after the check.
+	if _, err := r.Keep(context.Background(), tk.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if kept := cleanable(t, r, repo); kept.Verdict != Kept || !strings.Contains(kept.Detail, "keep --off") {
+		t.Errorf("kept item = %+v", kept)
+	}
+	cleaned, err := r.Cleanup(context.Background(), []CleanupItem{it})
+	if len(cleaned) != 0 || err == nil || !strings.Contains(err.Error(), "kept open") {
+		t.Fatalf("Cleanup = %v, %v", cleaned, err)
+	}
+	if !isDir(tk.Worktree.Path) || fake.count("agent", "send-keys") != 0 {
+		t.Error("the kept runner was closed or its worktree removed")
+	}
+}
+
+func TestCleanupLeavesAnAgentInUse(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "fix/CSD-11-a")
+	herdrOwnsWorktree(fake, repo, tk.Worktree.Path)
+	git(t, repo, "push", "-q", "origin", "fix/CSD-11-a:main")
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.Closed = false; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"codex","agent_status":"working"}}}`))
+	cleaned, err := r.Cleanup(context.Background(), []CleanupItem{cleanable(t, r, repo)})
+	if len(cleaned) != 0 || err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("Cleanup = %v, %v", cleaned, err)
+	}
+	if !isDir(tk.Worktree.Path) || fake.count("agent", "send-keys") != 0 {
+		t.Error("the busy runner was closed or its worktree removed")
+	}
+}

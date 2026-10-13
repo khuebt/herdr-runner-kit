@@ -12,7 +12,9 @@ import (
 
 // gitOut runs git in dir and returns trimmed stdout, or "" on any failure.
 func gitOut(ctx context.Context, dir string, args ...string) string {
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.WaitDelay = gitWaitDelay
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
