@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -460,5 +461,32 @@ func TestCleanupLeavesAnAgentInUse(t *testing.T) {
 	}
 	if !isDir(tk.Worktree.Path) || fake.count("agent", "send-keys") != 0 {
 		t.Error("the busy runner was closed or its worktree removed")
+	}
+}
+
+// Listing is the report-only sweep: an old unmerged worktree is named, and
+// nothing is removed until cleanup --yes, which removes merged ones only.
+func TestCleanupListsOldUnmergedWithoutRemoving(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "fix/old-a")
+	herdrOwnsWorktree(fake, repo, tk.Worktree.Path)
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.FinishedAt = time.Now().Add(-72 * time.Hour).UTC()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	it := cleanable(t, r, repo)
+	if it.Verdict != Unmerged || it.Detail != "1 commit on fix/old-a not in origin/main" {
+		t.Fatalf("old unmerged worktree: %+v", it)
+	}
+	if !isDir(tk.Worktree.Path) || !BranchExists(context.Background(), repo, "fix/old-a") {
+		t.Error("listing removed the worktree or branch")
+	}
+	if fake.count("worktree", "remove") != 0 || fake.count("agent", "send-keys") != 0 {
+		t.Error("listing touched the runner or its worktree")
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Worktree.Removed || got.Worktree.BranchDeleted {
+		t.Errorf("task = %+v", got.Worktree)
 	}
 }

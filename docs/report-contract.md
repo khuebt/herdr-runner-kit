@@ -33,7 +33,7 @@ Rules the runner follows:
 
 ## A runner that forgets to report
 
-Each runner's turn-end hook (Claude's Stop hook, Codex's `notify`) checks whether the task reported:
+Each runner's turn-end hook (Claude's Stop hook, Codex's `notify`) checks whether the task reported. Claude's `StopFailure` hook, for a turn that ended in an API error, only looks for a usage limit (see [commands.md](commands.md#usage-limits)):
 
 - The first turn that ends without a report is nudged: Claude's Stop hook keeps it working with a reminder, and Codex gets the reminder as a new prompt.
 - The second becomes `turn-ended-unreported` news for the main session.

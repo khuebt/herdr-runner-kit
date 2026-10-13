@@ -25,7 +25,8 @@ type LaunchOptions struct {
 	// Bin is the absolute path of the herdr-runner-kit binary, called by the
 	// turn-end hook.
 	Bin string
-	// SettingsPath is the per-task Claude settings file holding the Stop hook.
+	// SettingsPath is the per-task Claude settings file holding the turn-end
+	// hooks.
 	SettingsPath string
 	// ContractPath is a file holding the report contract. Claude appends it
 	// to its system prompt, which survives compaction. Codex receives the
@@ -69,6 +70,10 @@ type Adapter interface {
 	FirstPrompt(skill, prompt, contract string) string
 	// Dialogs lists the known startup dialogs.
 	Dialogs() []Dialog
+	// ShowsUsageLimit reports whether the last lines of screen hold the
+	// error line the agent itself draws when its account hit a usage limit.
+	// Conversation text and tool output never count.
+	ShowsUsageLimit(screen string) bool
 }
 
 // For returns the adapter for harness h.
@@ -96,6 +101,55 @@ func DetectDialog(a Adapter, screen string) (Dialog, bool) {
 // Shows reports whether dialog d is on screen.
 func Shows(screen string, d Dialog) bool {
 	return d.Match != "" && strings.Contains(Normalize(screen), Normalize(d.Match))
+}
+
+// usageLimitLines is how many of the pane's last lines are searched for an
+// agent's usage-limit line. The agent draws it under the turn it stopped.
+const usageLimitLines = 12
+
+// limitLine describes the error line an agent draws under a turn that its
+// account's usage limit stopped.
+type limitLine struct {
+	marker string // the glyph that starts the line
+	indent int    // the most spaces the marker may follow
+	// afterBlank requires a blank line above, as for a message of its own
+	// rather than the first line of a tool's output.
+	afterBlank bool
+	phrases    []string // one must appear in the line or the lines wrapped under it
+	context    []string // when set, one of these must appear as well
+}
+
+// shown reports whether the last usageLimitLines lines of screen hold l.
+func (l limitLine) shown(screen string) bool {
+	lines := strings.Split(strings.TrimRight(screen, " \t\r\n"), "\n")
+	for i := max(0, len(lines)-usageLimitLines); i < len(lines); i++ {
+		body := strings.TrimLeft(lines[i], " ")
+		if !strings.HasPrefix(body, l.marker) || len(lines[i])-len(body) > l.indent {
+			continue
+		}
+		if l.afterBlank && i > 0 && strings.TrimSpace(lines[i-1]) != "" {
+			continue
+		}
+		block := []string{body}
+		for j := i + 1; j < len(lines) && strings.TrimSpace(lines[j]) != ""; j++ {
+			block = append(block, lines[j])
+		}
+		text := Normalize(strings.Join(block, "\n"))
+		if containsAny(text, l.phrases) && (len(l.context) == 0 || containsAny(text, l.context)) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAny reports whether normalized text holds one of phrases.
+func containsAny(text string, phrases []string) bool {
+	for _, p := range phrases {
+		if p := Normalize(p); p != "" && strings.Contains(text, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Normalize lowercases s and turns every run of characters that are not

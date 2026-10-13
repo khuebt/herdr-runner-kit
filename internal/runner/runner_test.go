@@ -616,8 +616,9 @@ func TestLaunchNotReadyThenIdleIsNoDialog(t *testing.T) {
 
 func TestLaunchNeverPromptsIntoADialog(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
-	// Ready at start; the trust dialog opens on the check before the prompt.
-	fake.on("pane read", screensThen(1, " Is this a project you created or one you trust?", "❯ "))
+	// Ready at start and at the usage-limit check; the trust dialog opens
+	// on the check before the prompt.
+	fake.on("pane read", screensThen(2, " Is this a project you created or one you trust?", "❯ "))
 	promptedDuringDialog := false
 	fake.on("agent prompt", func([]string) (string, error) {
 		if got, _ := r.Store.Get("t1"); got.Status == task.NeedsHuman {

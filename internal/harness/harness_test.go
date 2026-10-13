@@ -205,7 +205,7 @@ func TestClaudeSettings(t *testing.T) {
 	}
 	var s struct {
 		Hooks struct {
-			Stop []struct {
+			Stop, StopFailure []struct {
 				Hooks []struct{ Type, Command string }
 			}
 		}
@@ -213,9 +213,16 @@ func TestClaudeSettings(t *testing.T) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		t.Fatal(err)
 	}
-	h := s.Hooks.Stop[0].Hooks[0]
-	if h.Type != "command" || h.Command != "/home/u/bin/herdr-runner-kit __turn-end --harness claude" {
-		t.Errorf("hook = %+v", h)
+	for _, hooks := range [][]struct {
+		Hooks []struct{ Type, Command string }
+	}{s.Hooks.Stop, s.Hooks.StopFailure} {
+		if len(hooks) != 1 || len(hooks[0].Hooks) != 1 {
+			t.Fatalf("hooks = %s", data)
+		}
+		h := hooks[0].Hooks[0]
+		if h.Type != "command" || h.Command != "/home/u/bin/herdr-runner-kit __turn-end --harness claude" {
+			t.Errorf("hook = %+v", h)
+		}
 	}
 	data, _ = ClaudeSettings("/opt/it's here/hrk")
 	if !strings.Contains(string(data), `'/opt/it'\\''s here/hrk' __turn-end`) {
@@ -388,5 +395,71 @@ func TestCodexConfigPath(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/c")
 	if got, _ := CodexConfigPath(); got != "/c/config.toml" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func readFixture(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestShowsUsageLimit(t *testing.T) {
+	claude, codex := claude{}, codex{}
+	if !claude.ShowsUsageLimit(readFixture(t, "usage-limit-claude.txt")) {
+		t.Error("claude usage-limit screen not detected")
+	}
+	if !codex.ShowsUsageLimit(readFixture(t, "usage-limit-codex.txt")) {
+		t.Error("codex usage-limit screen not detected")
+	}
+	// Trailing blank rows below the agent's output do not push it out.
+	if !claude.ShowsUsageLimit(readFixture(t, "usage-limit-claude.txt") + strings.Repeat("   \n", 30)) {
+		t.Error("claude screen with blank rows below not detected")
+	}
+	// The phrases in assistant text, or in a tool's output near the bottom
+	// of the screen, are not the agent's own limit line.
+	for _, name := range []string{"usage-limit-negative.txt", "usage-limit-claude-tool-output.txt", "usage-limit-codex-tool-output.txt"} {
+		screen := readFixture(t, name)
+		if claude.ShowsUsageLimit(screen) || codex.ShowsUsageLimit(screen) {
+			t.Errorf("%s: detected a usage limit", name)
+		}
+	}
+	// Each agent's line only counts for that agent.
+	if codex.ShowsUsageLimit(readFixture(t, "usage-limit-claude.txt")) || claude.ShowsUsageLimit(readFixture(t, "usage-limit-codex.txt")) {
+		t.Error("one agent's limit line matched the other agent")
+	}
+	if claude.ShowsUsageLimit("❯ \n") || codex.ShowsUsageLimit("") {
+		t.Error("an ordinary screen was detected")
+	}
+}
+
+func TestClaudeUsageLimit(t *testing.T) {
+	payload := readFixture(t, "stop-failure-claude.json")
+	msg, stopFailure := ClaudeUsageLimit([]byte(payload))
+	if !stopFailure || msg != "You've hit your session limit · resets 3:10pm (Asia/Bangkok)" {
+		t.Errorf("limit payload = %q, %v", msg, stopFailure)
+	}
+	tests := []struct {
+		name, payload string
+		stopFailure   bool
+	}{
+		{"stop hook", `{"hook_event_name":"Stop","last_assistant_message":"You've hit your session limit"}`, false},
+		{"not json", `You've hit your session limit`, false},
+		{"empty", ``, false},
+		{"server error", `{"hook_event_name":"StopFailure","error":"server_error","last_assistant_message":"API Error: 500"}`, true},
+		{"capacity", `{"hook_event_name":"StopFailure","error":"rate_limit","last_assistant_message":"API Error: Request rejected (429) · this may be a temporary capacity issue."}`, true},
+		{"limit named in another error", `{"hook_event_name":"StopFailure","error":"invalid_request","last_assistant_message":"You've hit your session limit"}`, true},
+	}
+	for _, tt := range tests {
+		msg, stopFailure := ClaudeUsageLimit([]byte(tt.payload))
+		if msg != "" || stopFailure != tt.stopFailure {
+			t.Errorf("%s = %q, %v; want no limit, %v", tt.name, msg, stopFailure, tt.stopFailure)
+		}
+	}
+	if msg, _ := ClaudeUsageLimit([]byte(`{"hook_event_name":"StopFailure","error":"billing_error","last_assistant_message":"You're out of extra usage · resets 3pm"}`)); msg == "" {
+		t.Error("out of extra usage not detected")
 	}
 }

@@ -99,6 +99,8 @@ After you spawn, answer, send or release, run `herdr-runner-kit wait` with the B
 
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail.
 - `git: …` on a `done` or `failed` line: remind the user about uncommitted or untracked work, commits not pushed, or a branch diverged from its upstream. `repo state` means the main checkout, not a worktree.
+- `failed` with `usage limit reached`: the agent reported its usage limit and no configured fallback agent was left. Offer a new `spawn` with another `--agent` or `--claude-config`, and mention the config's `quotaFallback` list. A switch that worked shows as an `agent-switched` event in `show <id>`.
+- `usage-limit`: the runner's screen shows its agent's usage limit and no fallback agent is left; the task is still open. Tell the user, and offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the limit to reset.
 - `tab closes HH:MM` or `tab kept` on a `done` line: mention it, and offer `herdr-runner-kit keep <id>` when the user wants to come back to the tab later.
 - `timeout`: rerun `wait` silently.
 - `already waiting`: another wait already holds the cursor, usually the auto re-arm hook. Do nothing and do not rerun.
@@ -111,6 +113,8 @@ In the session `herdr-runner-kit main` started, news can also arrive as Stop hoo
 - `needs-human`: ask the user the runner's question. Send the reply with `herdr-runner-kit answer <id> --stdin` and a quoted heredoc. The runner continues in the same session.
 - The user wants to steer a runner, or give a done or failed one more work while its tab is open: `herdr-runner-kit send <id> --stdin`. It runs again and reports again; a stopped task cannot be reopened.
 - Reuse a runner: before spawning a follow-up on the same topic, check `list`. If a recent runner's TAB is open, propose `send <id>` in the brief instead of a new runner.
+- The user asks to merge main into a runner's branch, or its branch is behind the default branch: `herdr-runner-kit sync <id>`. On a conflict, offer to `send` the printed text to the runner.
+- The user asks how much steering tasks took: `herdr-runner-kit events --learning`.
 - The user can also type into the runner's tab; `herdr-runner-kit focus <id>` switches to it.
 - `stop <id>` only when the user asks. Branches stay local; merge or open a PR only when asked.
 

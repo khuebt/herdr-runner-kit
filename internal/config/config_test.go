@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,25 @@ func TestParseLanguage(t *testing.T) {
 	}
 }
 
+func TestParseQuotaFallback(t *testing.T) {
+	if cfg, err := Parse(nil); err != nil || cfg.QuotaFallback != nil {
+		t.Fatalf("default quotaFallback = %v, %v", cfg.QuotaFallback, err)
+	}
+	cfg, err := Parse([]byte(`
+quotaFallback:
+  - agent: codex::high
+  - agent: claude:claude-sonnet-5-5
+    claudeConfig: claude2
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Fallback{{Agent: "codex::high"}, {Agent: "claude:claude-sonnet-5-5", ClaudeConfig: "claude2"}}
+	if !slices.Equal(cfg.QuotaFallback, want) {
+		t.Errorf("quotaFallback = %+v", cfg.QuotaFallback)
+	}
+}
+
 func TestParseEmptyFile(t *testing.T) {
 	if _, err := Parse(nil); err != nil {
 		t.Fatal(err)
@@ -85,6 +105,10 @@ func TestParseErrors(t *testing.T) {
 		{"schemaVersion: 2\n", "upgrade herdr-runner-kit"},
 		{"language: \"" + strings.Repeat("x", 41) + "\"\n", "language"},
 		{"language: \"English\\nand more\"\n", "language"},
+		{"quotaFallback:\n  - agent: gemini\n", "quotaFallback[0].agent"},
+		{"quotaFallback:\n  - claudeConfig: claude2\n", "quotaFallback[0].agent is required"},
+		{"quotaFallback:\n  - agent: codex\n    claudeConfig: claude2\n", "needs a Claude agent"},
+		{"quotaFallback:\n  - agent: codex\n    model: x\n", "unknown key model"},
 	}
 	for _, tt := range tests {
 		_, err := Parse([]byte(tt.yaml))

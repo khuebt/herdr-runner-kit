@@ -61,6 +61,17 @@ func (codex) Dialogs() []Dialog {
 	}
 }
 
+// codexLimit is the error codex-cli 0.162.1 draws at the left edge when the
+// account's usage limit stops a turn: "■ You've hit your usage limit. Visit
+// … or try again at 3:05 PM." Its other output is indented or starts with
+// "•", so text an assistant or a tool prints never matches.
+var codexLimit = limitLine{
+	marker:  "■",
+	phrases: []string{"You've hit your usage limit", "You've reached your usage limit"},
+}
+
+func (codex) ShowsUsageLimit(screen string) bool { return codexLimit.shown(screen) }
+
 // CodexConfigPath returns ${CODEX_HOME:-~/.codex}/config.toml.
 func CodexConfigPath() (string, error) {
 	if dir := os.Getenv("CODEX_HOME"); dir != "" {

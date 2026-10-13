@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -16,13 +17,16 @@ import (
 
 func newEventsCommand() *cobra.Command {
 	var since time.Duration
-	var follow, timings bool
+	var follow, timings, learn bool
 	var ids []string
 	cmd := &cobra.Command{
 		Use:   "events",
-		Short: "Show the event log, or the latencies computed from it",
+		Short: "Show the event log, or the latencies and learning numbers computed from it",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if learn && (timings || follow) {
+				return errors.New("--learning cannot be combined with --timings or --follow")
+			}
 			r, err := openRunner()
 			if err != nil {
 				return err
@@ -43,6 +47,13 @@ func newEventsCommand() *cobra.Command {
 				}
 			}
 			out := cmd.OutOrStdout()
+			if learn {
+				tasks, err := r.Store.List()
+				if err != nil {
+					return err
+				}
+				return printLearning(out, events, tasks, ids, time.Now())
+			}
 			if timings {
 				// A task's latencies need its parents' and the main
 				// session's events too, so only the rows are filtered.
@@ -82,6 +93,7 @@ func newEventsCommand() *cobra.Command {
 	f.StringSliceVar(&ids, "task", nil, "only these tasks")
 	f.BoolVar(&follow, "follow", false, "keep printing new events")
 	f.BoolVar(&timings, "timings", false, "print latencies per task, in milliseconds")
+	f.BoolVar(&learn, "learning", false, "print per task the attempts, nudges, sends, answers, switches, duration and time waited on a human")
 	return cmd
 }
 

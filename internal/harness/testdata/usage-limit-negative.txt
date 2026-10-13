@@ -1,0 +1,20 @@
+❯ Add a test for the message shown when the quota runs out
+
+⏺ The CLI prints "You've hit your session limit · resets 3pm" when the
+  account runs out, and Codex prints "You've hit your usage limit." I'll
+  add both strings to the fixture table.
+
+⏺ Update(internal/harness/harness_test.go)
+  ⎿  Updated internal/harness/harness_test.go with 14 additions
+
+⏺ Bash(go test ./internal/harness)
+  ⎿  ok  	github.com/khuebt/herdr-runner-kit/internal/harness	0.208s
+
+⏺ Both messages are covered by the new table test.
+
+✻ Worked for 1m 40s
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

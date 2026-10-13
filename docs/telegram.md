@@ -48,7 +48,7 @@ Drop the v1 endpoint? (recommended: yes)
 Reply: #t3 <answer>
 ```
 
-`telegram.notify` selects the events (default: all of `needs-human`, `failed`, `stalled`, `held`, `turn-ended-unreported` and `done`). A `done` is sent only for a task that no other task waits for, so a chain sends one message at its end.
+`telegram.notify` selects the events (default: all of `needs-human`, `failed`, `stalled`, `held`, `turn-ended-unreported`, `usage-limit` and `done`). A `done` is sent only for a task that no other task waits for, so a chain sends one message at its end.
 
 ## Replying
 

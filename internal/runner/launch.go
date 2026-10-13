@@ -53,43 +53,47 @@ func (r *Runner) Launch(ctx context.Context, id string) error {
 }
 
 func (r *Runner) launch(ctx context.Context, t *task.Task) error {
-	spec, err := task.ParseAgentSpec(t.Agent)
-	if err != nil {
+	// Check the agent before opening anything.
+	if _, err := task.ParseAgentSpec(t.Agent); err != nil {
 		return err
 	}
-	adapter, err := harness.For(spec.Harness)
-	if err != nil {
-		return err
-	}
-	files, err := r.writeRunnerFiles(t, adapter)
-	if err != nil {
-		return err
-	}
-
-	loc, err := r.openLocation(ctx, t)
-	if err != nil {
-		return fmt.Errorf("open runner location: %w", err)
-	}
+	loc := herdr.Location{WorkspaceID: t.Herdr.WorkspaceID, TabID: t.Herdr.TabID, PaneID: t.Herdr.PaneID}
 	name := "hrk-" + t.ID
-	if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
-		t.Herdr = task.Herdr{WorkspaceID: loc.WorkspaceID, TabID: loc.TabID, PaneID: loc.PaneID, AgentName: name}
-		if t.Worktree != nil && loc.Path != "" {
-			t.Worktree.Path = loc.Path
+	if len(t.FallbackFrom) > 0 && t.Herdr.PaneID != "" {
+		// The agent hit its usage limit: its fallback takes over the same
+		// pane and checkout.
+		if err := r.clearPane(ctx, t); err != nil {
+			return err
 		}
-		return nil
-	}); err != nil {
-		return err
+	} else {
+		var err error
+		if loc, err = r.openLocation(ctx, t); err != nil {
+			return fmt.Errorf("open runner location: %w", err)
+		}
+		if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
+			t.Herdr = task.Herdr{WorkspaceID: loc.WorkspaceID, TabID: loc.TabID, PaneID: loc.PaneID, AgentName: name}
+			if t.Worktree != nil && loc.Path != "" {
+				t.Worktree.Path = loc.Path
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 	}
 
-	if err := r.prepareTrust(t, spec.Harness); err != nil {
-		return err
+	spec, adapter, files, err := r.startAgent(ctx, t, name, loc.PaneID)
+	for errors.Is(err, errUsageLimit) {
+		// errUsageLimit comes only while a fallback is left, and each switch
+		// records the agent it leaves, so this ends once they run out.
+		if t, err = r.claimSwitch(t, []task.Status{task.Starting}, false, false); err != nil {
+			return err
+		}
+		if err := r.clearPane(ctx, t); err != nil {
+			return err
+		}
+		spec, adapter, files, err = r.startAgent(ctx, t, name, loc.PaneID)
 	}
-
-	args := adapter.LaunchArgs(harness.LaunchOptions{
-		Spec: spec, Bin: r.Bin, SettingsPath: files.settings, ContractPath: files.contract,
-	})
-	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), loc.PaneID, agentStartTimeout, args)
-	if err := r.settleStartup(ctx, t, adapter, loc.PaneID, err); err != nil {
+	if err != nil {
 		return err
 	}
 
@@ -98,6 +102,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	prompt := t.Prompt
 	if t.Inputs != "" {
 		prompt = strings.TrimSpace(prompt + "\n\n" + t.Inputs)
+	}
+	if len(t.FallbackFrom) > 0 {
+		prompt = strings.TrimSpace(prompt + "\n\n" + resumeNote)
 	}
 	text := adapter.FirstPrompt(t.Skill, prompt, files.contractText)
 	// A dialog can open after the screen looked ready. Look once more, so
@@ -123,6 +130,40 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	}
 	r.emit(t, "prompted", "", "")
 	return nil
+}
+
+// startAgent writes the runner files for t's agent, prepares its trust and
+// starts it in pane until it is ready for the first prompt. It returns
+// errUsageLimit when the agent shows a usage limit at startup and a
+// fallback agent is left; without one the prompt goes in, and the agent's
+// own turn-end reports the limit.
+func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string) (task.AgentSpec, harness.Adapter, runnerFiles, error) {
+	spec, err := task.ParseAgentSpec(t.Agent)
+	if err != nil {
+		return spec, nil, runnerFiles{}, err
+	}
+	adapter, err := harness.For(spec.Harness)
+	if err != nil {
+		return spec, nil, runnerFiles{}, err
+	}
+	files, err := r.writeRunnerFiles(t, adapter)
+	if err != nil {
+		return spec, nil, runnerFiles{}, err
+	}
+	if err := r.prepareTrust(t, spec.Harness); err != nil {
+		return spec, nil, runnerFiles{}, err
+	}
+	args := adapter.LaunchArgs(harness.LaunchOptions{
+		Spec: spec, Bin: r.Bin, SettingsPath: files.settings, ContractPath: files.contract,
+	})
+	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
+	if err := r.settleStartup(ctx, t, adapter, pane, err); err != nil {
+		return spec, nil, runnerFiles{}, err
+	}
+	if screen, err := r.Herdr.PaneRead(ctx, pane, 40); err == nil && adapter.ShowsUsageLimit(screen) && r.switchable(t) {
+		return spec, nil, runnerFiles{}, errUsageLimit
+	}
+	return spec, adapter, files, nil
 }
 
 type runnerFiles struct {
@@ -178,9 +219,8 @@ func (r *Runner) runnerEnv(t *task.Task) []string {
 // openLocation creates the worktree workspace or the tab the agent runs in.
 func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location, error) {
 	label := t.ID + " · " + t.Title
-	env := r.runnerEnv(t)
 	if !t.UseWorktree {
-		return r.Herdr.TabCreate(ctx, t.MainWorkspace, t.Cwd, label, env)
+		return r.Herdr.TabCreate(ctx, t.MainWorkspace, t.Cwd, label, r.runnerEnv(t))
 	}
 	// Reuse the repository's open workspace, so herdr does not open another.
 	repoWS, err := r.Herdr.RepoWorkspace(ctx, t.RepoRoot)
@@ -215,16 +255,27 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 		return loc, err
 	}
 	// worktree create has no --env, so export in the root pane's shell.
+	return loc, r.exportEnv(ctx, loc.PaneID, t, false)
+}
+
+// exportEnv sets the runner's environment in the shell of pane. With reset,
+// a Claude config folder the task no longer uses is unset too.
+func (r *Runner) exportEnv(ctx context.Context, pane string, t *task.Task, reset bool) error {
+	env := r.runnerEnv(t)
 	quoted := make([]string, len(env))
 	for i, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
 		quoted[i] = k + "=" + harness.ShellQuote(v)
 	}
-	if err := r.Herdr.PaneRun(ctx, loc.PaneID, "export "+strings.Join(quoted, " ")+"; clear"); err != nil {
-		return loc, fmt.Errorf("set runner environment: %w", err)
+	cmd := "export " + strings.Join(quoted, " ")
+	if reset && t.ClaudeConfigDir == "" {
+		cmd += "; unset CLAUDE_CONFIG_DIR"
+	}
+	if err := r.Herdr.PaneRun(ctx, pane, cmd+"; clear"); err != nil {
+		return fmt.Errorf("set runner environment: %w", err)
 	}
 	r.Sleep(300 * time.Millisecond) // let the shell return to its prompt
-	return loc, nil
+	return nil
 }
 
 // prepareTrust makes sure the agent trusts the folder spawn ran in, so the
@@ -280,6 +331,9 @@ func (r *Runner) settleStartup(ctx context.Context, t *task.Task, a harness.Adap
 	case startErr == nil, notReady:
 	case herdr.HasCode(startErr, herdr.CodeTimeout):
 		screen, _ := r.Herdr.PaneRead(ctx, pane, 40)
+		if a.ShowsUsageLimit(screen) && r.switchable(t) {
+			return errUsageLimit
+		}
 		if line := errorLine(screen); line != "" {
 			return fmt.Errorf("agent exited during start: %s", line)
 		}
