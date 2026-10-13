@@ -81,7 +81,9 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	if changed {
-		r.emit(nt, "answered", firstLine(text, 120), "")
+		// The answer may name where a secret lives, never the secret itself;
+		// hide anything that looks like one before it reaches the log.
+		r.emit(nt, "answered", firstLine(redactSecrets(text), 120), "")
 	}
 	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
 	return err == nil, nil

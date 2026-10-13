@@ -437,3 +437,28 @@ func TestWaitSeesAProjectStartedAfterIt(t *testing.T) {
 		t.Fatalf("lines = %q, err = %v", got.res.Lines, got.err)
 	}
 }
+
+func TestDoneLineStartsWithDecisions(t *testing.T) {
+	tk := &task.Task{Title: "export", Status: task.Done, Herdr: task.Herdr{PaneID: "w1:p1", Closed: true}}
+	ev := state.Event{
+		Task: "t1", Type: "done", Summary: "Export added.", Git: "on b, clean",
+		Decisions: []string{"CSV or JSON? -> CSV", "Page size? -> 50"},
+	}
+	want := "t1 done · export · decided: CSV or JSON? -> CSV; Page size? -> 50 · git: on b, clean · Export added."
+	if got := Line(ev, tk); got != want {
+		t.Errorf("done line = %q", got)
+	}
+	ev.Summary = strings.Repeat("word ", 200)
+	if got := Line(ev, tk); !strings.HasPrefix(got, "t1 done · export · decided: CSV or JSON? -> CSV; Page size? -> 50 · git: on b, clean · word") {
+		t.Errorf("the cut dropped more than the summary: %q", got)
+	}
+}
+
+func TestQuestionRoundLines(t *testing.T) {
+	ev := state.Event{Task: "t4", Type: "needs-human", Question: "1. Which database? a) Postgres (recommended)\n2. " + strings.Repeat("x", 400)}
+	got := strings.Split(Line(ev, &task.Task{Title: "store"}), "\n")
+	if len(got) != 3 || got[0] != "t4 needs-human · store · 2 questions" || got[1] != "  1. Which database? a) Postgres (recommended)" ||
+		!strings.HasPrefix(got[2], "  2. xxx") || len([]rune(got[2])) > MaxLine {
+		t.Errorf("round lines = %q", got)
+	}
+}

@@ -42,7 +42,7 @@ func TestRecordNotifiesSelectedTypes(t *testing.T) {
 	r.Notify = func(ev state.Event) { sent = append(sent, ev.Type) }
 	r.Config.Telegram.Notify = []string{"needs-human", "failed"}
 	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
-	if _, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Question: "q?"}); err != nil {
+	if _, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Questions: []string{"q?"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "ok"}); err != nil {
@@ -132,7 +132,7 @@ func TestRouteTelegram(t *testing.T) {
 	}
 	ask := func(t *testing.T, r *Runner, dir string) *task.Task {
 		tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: dir})
-		if _, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Question: "A or B?"}); err != nil {
+		if _, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Questions: []string{"A or B?"}}); err != nil {
 			t.Fatal(err)
 		}
 		return tk

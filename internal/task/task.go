@@ -142,10 +142,14 @@ type Task struct {
 	// Error is the reason a task failed or needs a human, when the kit itself
 	// set that status.
 	Error string `json:"error,omitempty"`
-	// Summary, Outputs and Question come from the runner's last report.
-	Summary  string   `json:"summary,omitempty"`
-	Outputs  []string `json:"outputs,omitempty"`
-	Question string   `json:"question,omitempty"`
+	// Summary, Outputs, Question and Decisions come from the runner's last
+	// report. A round of several questions is stored numbered, one per line
+	// (see JoinQuestions). Decisions are the open questions a done runner
+	// settled itself, each as "<question> -> <choice>".
+	Summary   string   `json:"summary,omitempty"`
+	Outputs   []string `json:"outputs,omitempty"`
+	Question  string   `json:"question,omitempty"`
+	Decisions []string `json:"decisions,omitempty"`
 	// Inputs are the results of the --after tasks, added to the first prompt.
 	Inputs string `json:"inputs,omitempty"`
 	// Unreported counts turns that ended without a report since the last
@@ -186,13 +190,17 @@ type GitState struct {
 	Base string `json:"base,omitempty"`
 	// Upstream is empty when the branch tracks nothing; Ahead and Behind
 	// count commits against it.
-	Upstream    string    `json:"upstream,omitempty"`
-	AheadOfBase int       `json:"aheadOfBase,omitempty"`
-	Ahead       int       `json:"ahead,omitempty"`
-	Behind      int       `json:"behind,omitempty"`
-	Uncommitted int       `json:"uncommitted,omitempty"`
-	Untracked   int       `json:"untracked,omitempty"`
-	CheckedAt   time.Time `json:"checkedAt,omitzero"`
+	Upstream    string `json:"upstream,omitempty"`
+	AheadOfBase int    `json:"aheadOfBase,omitempty"`
+	Ahead       int    `json:"ahead,omitempty"`
+	Behind      int    `json:"behind,omitempty"`
+	Uncommitted int    `json:"uncommitted,omitempty"`
+	Untracked   int    `json:"untracked,omitempty"`
+	// Stacked lists the local branches the worktree's branch is built on:
+	// merged into HEAD but not yet into Base. Only worktree snapshots
+	// with a known Base read them.
+	Stacked   []string  `json:"stacked,omitempty"`
+	CheckedAt time.Time `json:"checkedAt,omitzero"`
 }
 
 // Short describes the snapshot in one line, such as "on hrk/t3-fix, 2
@@ -234,7 +242,42 @@ func (g *GitState) Short() string {
 			parts = append(parts, "clean")
 		}
 	}
+	if len(g.Stacked) > 0 {
+		parts = append(parts, "stacked: "+strings.Join(g.Stacked, ", "))
+	}
 	return head + ", " + strings.Join(parts, ", ")
+}
+
+// JoinQuestions stores the questions of one needs-human report as a single
+// question: one question as it is, a round of several numbered one per line,
+// each on a single line, such as "1. Which database?\n2. Which host?".
+func JoinQuestions(qs []string) string {
+	if len(qs) == 1 {
+		return qs[0]
+	}
+	lines := make([]string, len(qs))
+	for i, q := range qs {
+		lines[i] = fmt.Sprintf("%d. %s", i+1, strings.Join(strings.Fields(q), " "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// QuestionRound returns the questions of a round stored by JoinQuestions,
+// without their numbers, or nil for a single question.
+func QuestionRound(q string) []string {
+	lines := strings.Split(q, "\n")
+	if len(lines) < 2 {
+		return nil
+	}
+	qs := make([]string, len(lines))
+	for i, l := range lines {
+		rest, ok := strings.CutPrefix(l, fmt.Sprintf("%d. ", i+1))
+		if !ok {
+			return nil
+		}
+		qs[i] = rest
+	}
+	return qs
 }
 
 func plural(n int, word string) string {

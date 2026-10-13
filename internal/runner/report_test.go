@@ -32,7 +32,7 @@ func TestReportValidationAndState(t *testing.T) {
 	for _, o := range []ReportOptions{
 		{Status: task.Done},
 		{Status: task.NeedsHuman, Summary: "s"},
-		{Status: task.Done, Summary: "s", Question: "q"},
+		{Status: task.Done, Summary: "s", Questions: []string{"q"}},
 		{Status: "maybe", Summary: "s"},
 		{Status: task.Done, Summary: "s", Outputs: []string{filepath.Join(dir, "missing.md")}},
 	} {
@@ -45,7 +45,7 @@ func TestReportValidationAndState(t *testing.T) {
 	if err := os.WriteFile(out, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Question: "Drop it?"})
+	got, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Questions: []string{"Drop it?"}})
 	if err != nil || got.Status != task.NeedsHuman || got.Question != "Drop it?" {
 		t.Fatalf("needs-human: %+v, %v", got, err)
 	}
@@ -205,7 +205,7 @@ func TestAnswerResumesNeedsHuman(t *testing.T) {
 	if _, err := r.Answer(context.Background(), tk.ID, "yes"); err == nil {
 		t.Error("answered a running task")
 	}
-	if _, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Question: "Drop it?"}); err != nil {
+	if _, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Questions: []string{"Drop it?"}}); err != nil {
 		t.Fatal(err)
 	}
 	working, err := r.Answer(context.Background(), tk.ID, "yes, drop it")
@@ -364,7 +364,7 @@ func TestReportLabelsRepoState(t *testing.T) {
 	repo := gitRepo(t)
 	tk := running(t, r, SpawnOptions{Kind: "fix", Prompt: "x", Cwd: repo})
 	writeFile(t, filepath.Join(repo, "notes.txt"))
-	got, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Question: "Which one?"})
+	got, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Questions: []string{"Which one?"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestContractRules(t *testing.T) {
 	if !strings.HasSuffix(c, "\n- Write report summaries and questions in Vietnamese.") {
 		t.Errorf("contract lacks the language rule:\n%s", c)
 	}
-	if !strings.Contains(c, "report contract v1)") {
+	if !strings.Contains(c, "report contract v2)") {
 		t.Errorf("contract version changed:\n%s", c)
 	}
 }

@@ -149,3 +149,31 @@ func TestGitStateShort(t *testing.T) {
 		}
 	}
 }
+
+func TestQuestionRound(t *testing.T) {
+	one := JoinQuestions([]string{"Drop it?\nyes or no"})
+	if one != "Drop it?\nyes or no" || QuestionRound(one) != nil {
+		t.Errorf("single question = %q, round %q", one, QuestionRound(one))
+	}
+	round := JoinQuestions([]string{"Which  database?\na) Postgres", "Which host?"})
+	if round != "1. Which database? a) Postgres\n2. Which host?" {
+		t.Errorf("round = %q", round)
+	}
+	if got := QuestionRound(round); len(got) != 2 || got[0] != "Which database? a) Postgres" || got[1] != "Which host?" {
+		t.Errorf("QuestionRound = %q", got)
+	}
+	if got := QuestionRound("1. a\n3. b"); got != nil {
+		t.Errorf("misnumbered round = %q", got)
+	}
+}
+
+func TestShortListsStacked(t *testing.T) {
+	g := &GitState{Worktree: true, Branch: "b", Base: "origin/main", AheadOfBase: 0}
+	if got := g.Short(); got != "on b, no new commits" {
+		t.Errorf("short = %q", got)
+	}
+	g.Stacked = []string{"feat/a", "feat/b"}
+	if got := g.Short(); got != "on b, no new commits, stacked: feat/a, feat/b" {
+		t.Errorf("short = %q", got)
+	}
+}
