@@ -120,6 +120,10 @@ type Change struct {
 	Blocking  bool      `json:"blocking,omitempty" yaml:"blocking,omitempty"`
 	Milestone string    `json:"milestone,omitempty" yaml:"milestone,omitempty"`
 	At        time.Time `json:"at,omitzero" yaml:"at,omitempty"`
+	// Path is the CR file, relative to the repository root, and Task the
+	// impact runner that writes it.
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+	Task string `json:"task,omitempty" yaml:"task,omitempty"`
 }
 
 // BacklogItem is an idea kept for later.

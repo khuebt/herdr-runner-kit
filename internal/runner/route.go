@@ -17,7 +17,8 @@ var tagPattern = regexp.MustCompile(`(?i)^#(t\d+)\b[\s:,.-]*`)
 // metaMessages are untagged questions for the main agent itself.
 var metaMessages = []string{"?", "status", "status?", "list", "list?", "help"}
 
-// approvals release a held task without a note.
+// approvals release a held task without a note. A task held with a reason
+// is released only by a reply tagged with its id.
 var approvals = []string{"ok", "okay", "yes", "y", "go", "approve", "approved", "release", "duyệt", "đồng ý", "có"}
 
 // RouteTelegram delivers a Telegram reply that reached the main session. A
@@ -30,7 +31,8 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		return "", fmt.Errorf("empty reply")
 	}
 	id, body := "", text
-	if m := tagPattern.FindStringSubmatch(text); m != nil {
+	m := tagPattern.FindStringSubmatch(text)
+	if m != nil {
 		id, body = strings.ToLower(m[1]), strings.TrimSpace(text[len(m[0]):])
 	} else {
 		if slices.Contains(metaMessages, strings.ToLower(text)) {
@@ -67,6 +69,10 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		return "", err
 	}
 	switch {
+	case t.Status == task.Held && t.HoldReason != "" && m == nil:
+		// A task held for a reason, such as a dependency, waits for the
+		// user to name it; a bare "ok" may be meant for something else.
+		return fmt.Sprintf("ambiguous: %s is held (%s); release it with \"#%s ok\" once that is settled", id, t.HoldReason, id), nil
 	case t.Status == task.Held:
 		note := body
 		if isApproval(body) {

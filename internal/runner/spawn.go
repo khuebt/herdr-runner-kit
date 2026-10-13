@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
@@ -24,6 +25,9 @@ import (
 // LaunchBudget is how long a launch may take before the backstop treats a
 // task stuck in "starting" as failed.
 const LaunchBudget = 2 * time.Minute
+
+// maxHoldReason bounds a hold reason, which shows in news lines.
+const maxHoldReason = 200
 
 // ErrInsideRunner is returned when spawn runs inside a runner.
 var ErrInsideRunner = errors.New("runners cannot spawn runners")
@@ -97,6 +101,9 @@ type SpawnOptions struct {
 	// Keep holds the runner's tab open after the task finishes, so gc
 	// leaves it.
 	Keep bool
+	// Reason says why a task with the human gate waits, such as the
+	// dependency it needs. Only a release that names the task opens it.
+	Reason string
 	// Warn, when set, receives a one-line warning that spawn carried on
 	// without the project registry because it could not be read.
 	Warn func(string)
@@ -161,7 +168,7 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 	case t.Gate == task.GateHuman:
 		t, _, err = r.Store.SetStatus(t.ID, task.Held)
 		if err == nil {
-			r.emit(t, "held", "held for release: "+t.Title, "")
+			r.emit(t, "held", task.HeldSummary(t), "")
 		}
 		return t, err
 	}
@@ -243,6 +250,13 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 	}
 	if !gate.Valid() {
 		return nil, "", fmt.Errorf("invalid gate %q: want auto or human", gate)
+	}
+	reason := strings.Join(strings.Fields(o.Reason), " ")
+	if reason != "" && gate != task.GateHuman {
+		return nil, "", errors.New("--reason goes only with --gate human")
+	}
+	if n := utf8.RuneCountInString(reason); n > maxHoldReason {
+		return nil, "", fmt.Errorf("--reason has %d characters; keep it under %d", n, maxHoldReason+1)
 	}
 	workspace := r.Getenv("HERDR_WORKSPACE_ID")
 	if r.Getenv("HERDR_ENV") != "1" || workspace == "" {
@@ -358,7 +372,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 	}
 	return &task.Task{
 		Kind: kindName, Agent: spec.String(), Prompt: o.Prompt, Skill: o.Skill, Title: title,
-		Cwd: cwd, Owner: owner, RepoRoot: root, UseWorktree: useWorktree, After: after, Gate: gate,
+		Cwd: cwd, Owner: owner, RepoRoot: root, UseWorktree: useWorktree, After: after, Gate: gate, HoldReason: reason,
 		MainWorkspace: workspace, ClaudeConfigDir: configDir, Language: language,
 		Project: project.Name, Stage: stage, Keep: o.Keep,
 		// Queued until spawn decides: a task with no pending parents moves on

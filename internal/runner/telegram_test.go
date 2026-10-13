@@ -244,6 +244,25 @@ func TestRouteTelegram(t *testing.T) {
 			t.Errorf("note: %q", got.Prompt)
 		}
 	})
+	t.Run("held with a reason needs a tag", func(t *testing.T) {
+		r, _, dir := setup(t)
+		h := spawnStarting(t, r, SpawnOptions{Prompt: "cook", Title: "checkout", Cwd: dir, Gate: task.GateHuman, Reason: "needs D2"})
+		if ev := lastEvent(t, r); ev.Summary != "held for release: checkout (needs D2)" {
+			t.Errorf("held event = %+v", ev)
+		}
+		for _, text := range []string{"ok", "release it, the keys are in"} {
+			line, err := r.RouteTelegram(ctx, text)
+			if err != nil || line != "ambiguous: "+h.ID+` is held (needs D2); release it with "#`+h.ID+` ok" once that is settled` {
+				t.Errorf("%q: %q %v", text, line, err)
+			}
+		}
+		if got, _ := r.Store.Get(h.ID); got.Status != task.Held || got.Prompt != "cook" {
+			t.Fatalf("an untagged reply released it: %+v", got)
+		}
+		if line, err := r.RouteTelegram(ctx, "#"+h.ID+" ok"); err != nil || line != h.ID+" released" {
+			t.Fatalf("%q %v", line, err)
+		}
+	})
 	t.Run("running gets a message, done refuses", func(t *testing.T) {
 		r, _, dir := setup(t)
 		tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: dir})

@@ -93,12 +93,17 @@ type StageData struct {
 	PackVersion int
 	// Docx asks the pack stage for a DOCX export as well.
 	Docx bool
+	// Change and ChangePath name the change request the change stage
+	// assesses and its file; Tasks lists the project's unfinished tasks.
+	Change     string
+	ChangePath string
+	Tasks      string
 }
 
 // NewStageData builds the template data of rec's project in root.
 func NewStageData(rec Record, root string, tools Tools, notes string, now time.Time) StageData {
 	return StageData{
-		Project: rec.Name, Root: root, Discovery: DiscoveryDir, ChangesDir: ChangesDir,
+		Project: rec.Name, Root: root, Discovery: DiscoveryDir, ChangesDir: ChangesFolder(rec),
 		ApprovalDir: ApprovalDir, Type: rec.Type, Track: rec.Track, Tools: tools, Share: rec.Share,
 		Notes: strings.TrimSpace(notes), Today: now.Format(time.DateOnly),
 	}

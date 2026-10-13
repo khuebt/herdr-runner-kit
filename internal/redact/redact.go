@@ -1,4 +1,6 @@
-package runner
+// Package redact hides values that look like secrets in text the kit
+// records or relays.
+package redact
 
 import (
 	"regexp"
@@ -6,8 +8,8 @@ import (
 	"unicode"
 )
 
-// redacted replaces a secret value in text the kit records or relays.
-const redacted = "<redacted>"
+// Mark replaces a secret value in text the kit records or relays.
+const Mark = "<redacted>"
 
 var (
 	// secretURLUserinfo matches the user:password@ part of a URL.
@@ -35,25 +37,28 @@ var (
 	secretLong = regexp.MustCompile(`[A-Za-z0-9_+/=-]{32,}`)
 )
 
-// redactSecrets replaces values that look like secrets with <redacted>:
+// Secrets replaces values that look like secrets with Mark:
 // token-like strings, the value of key=value pairs whose key names a
 // secret, and the userinfo of URLs. It errs towards hiding: text the kit
 // relays to the main session or Telegram must never carry a secret.
-func redactSecrets(s string) string {
-	s = secretURLUserinfo.ReplaceAllString(s, "${1}"+redacted+"@")
-	s = secretBearer.ReplaceAllString(s, "${1} "+redacted)
+func Secrets(s string) string {
+	s = secretURLUserinfo.ReplaceAllString(s, "${1}"+Mark+"@")
+	s = secretBearer.ReplaceAllString(s, "${1} "+Mark)
 	s = secretKeyValue.ReplaceAllStringFunc(s, func(m string) string {
 		sub := secretKeyValue.FindStringSubmatch(m)
-		if sub[3] == redacted {
+		if sub[3] == Mark || strings.EqualFold(sub[1], "1password") {
 			return m
 		}
-		return sub[1] + sub[2] + redacted
+		return sub[1] + sub[2] + Mark
 	})
-	s = secretToken.ReplaceAllString(s, redacted)
+	s = secretToken.ReplaceAllString(s, Mark)
 	return secretLong.ReplaceAllStringFunc(s, func(m string) string {
 		if strings.ContainsAny(m, "0123456789") && strings.ContainsFunc(m, unicode.IsLetter) {
-			return redacted
+			return Mark
 		}
 		return m
 	})
 }
+
+// Found reports whether s holds a value that looks like a secret.
+func Found(s string) bool { return Secrets(s) != s }

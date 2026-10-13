@@ -138,7 +138,10 @@ type Task struct {
 	Worktree        *Worktree `json:"worktree,omitempty"`
 	After           []string  `json:"after,omitempty"`
 	Gate            Gate      `json:"gate"`
-	Herdr           Herdr     `json:"herdr"`
+	// HoldReason says why a task with the human gate waits, such as a
+	// dependency it needs. Only a release that names the task opens it.
+	HoldReason string `json:"holdReason,omitempty"`
+	Herdr      Herdr  `json:"herdr"`
 	// Error is the reason a task failed or needs a human, when the kit itself
 	// set that status.
 	Error string `json:"error,omitempty"`
@@ -285,4 +288,13 @@ func plural(n int, word string) string {
 		return fmt.Sprintf("%d %s", n, word)
 	}
 	return fmt.Sprintf("%d %ss", n, word)
+}
+
+// HeldSummary is the news line of a task that waits for release.
+func HeldSummary(t *Task) string {
+	s := "held for release: " + t.Title
+	if t.HoldReason != "" {
+		s += " (" + t.HoldReason + ")"
+	}
+	return s
 }

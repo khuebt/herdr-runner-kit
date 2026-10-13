@@ -70,6 +70,8 @@ func renderSnapshot(rec Record) ([]byte, error) {
 	if g := rec.Graduated; g != nil {
 		fmt.Fprintf(&b, "- Graduated: %s %s\n", day(g.At), g.Tag)
 	}
+	writeChanges(&b, rec.Changes)
+	writeDependencies(&b, rec.Dependencies)
 	fmt.Fprintf(&b, "\nSee [roadmap](roadmap.md), [decisions](decisions.md) and [backlog](backlog.md).\n")
 	return b.Bytes(), nil
 }
@@ -101,43 +103,57 @@ func renderBacklog(rec Record) []byte {
 		}
 		b.WriteString("\n")
 	}
-	if len(rec.Changes) > 0 {
-		b.WriteString("\n## Change requests\n\n")
-		for _, c := range rec.Changes {
-			fmt.Fprintf(&b, "- %s [%s] %s", c.ID, orDash(c.Status), oneLine(c.Title))
-			var notes []string
-			if c.Class != "" {
-				notes = append(notes, c.Class)
-			}
-			if c.Blocking {
-				notes = append(notes, "blocking")
-			}
-			if c.Milestone != "" {
-				notes = append(notes, c.Milestone)
-			}
-			if len(notes) > 0 {
-				fmt.Fprintf(&b, " (%s)", strings.Join(notes, ", "))
-			}
-			b.WriteString("\n")
-		}
-	}
-	if len(rec.Dependencies) > 0 {
-		b.WriteString("\n## Dependencies\n\n")
-		for _, d := range rec.Dependencies {
-			fmt.Fprintf(&b, "- %s [%s] %s", d.ID, orDash(d.Status), oneLine(d.Name))
-			if d.Owner != "" {
-				fmt.Fprintf(&b, ", owner %s", oneLine(d.Owner))
-			}
-			if d.Milestone != "" {
-				fmt.Fprintf(&b, ", needed by %s", d.Milestone)
-			}
-			if d.Workaround != "" {
-				fmt.Fprintf(&b, "; workaround: %s", oneLine(d.Workaround))
-			}
-			b.WriteString("\n")
-		}
-	}
 	return b.Bytes()
+}
+
+// writeChanges lists the change requests and their files.
+func writeChanges(b *bytes.Buffer, changes []Change) {
+	if len(changes) == 0 {
+		return
+	}
+	b.WriteString("\n## Change requests\n\n")
+	for _, c := range changes {
+		fmt.Fprintf(b, "- %s [%s] %s", c.ID, orDash(c.Status), oneLine(c.Title))
+		var notes []string
+		if c.Class != "" {
+			notes = append(notes, c.Class)
+		}
+		if c.Blocking {
+			notes = append(notes, "blocking")
+		}
+		if c.Milestone != "" {
+			notes = append(notes, c.Milestone)
+		}
+		if len(notes) > 0 {
+			fmt.Fprintf(b, " (%s)", strings.Join(notes, ", "))
+		}
+		if c.Path != "" {
+			fmt.Fprintf(b, ", see %s", c.Path)
+		}
+		b.WriteString("\n")
+	}
+}
+
+// writeDependencies lists the dependencies. Where a secret is kept stays
+// in the front matter only.
+func writeDependencies(b *bytes.Buffer, deps []Dependency) {
+	if len(deps) == 0 {
+		return
+	}
+	b.WriteString("\n## Dependencies\n\n")
+	for _, d := range deps {
+		fmt.Fprintf(b, "- %s [%s] %s", d.ID, orDash(d.Status), oneLine(d.Name))
+		if d.Owner != "" {
+			fmt.Fprintf(b, ", owner %s", oneLine(d.Owner))
+		}
+		if d.Milestone != "" {
+			fmt.Fprintf(b, ", needed by %s", d.Milestone)
+		}
+		if d.Workaround != "" {
+			fmt.Fprintf(b, "; workaround: %s", oneLine(d.Workaround))
+		}
+		b.WriteString("\n")
+	}
 }
 
 func renderRoadmap(rec Record) []byte {

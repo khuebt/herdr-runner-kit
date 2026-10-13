@@ -1,4 +1,4 @@
-package runner
+package redact
 
 import (
 	"strings"
@@ -18,9 +18,9 @@ func TestRedactSecrets(t *testing.T) {
 		{"random 9f8e7d6c5b4a39281706f5e4d3c2b1a0ffee1234", "9f8e7d6c5b4a39281706f5e4d3c2b1a0ffee1234"},
 		{"bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ", "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawQ"},
 	} {
-		got := redactSecrets(c.in)
-		if strings.Contains(got, c.secret) || !strings.Contains(got, redacted) {
-			t.Errorf("redactSecrets(%q) = %q", c.in, got)
+		got := Secrets(c.in)
+		if strings.Contains(got, c.secret) || !strings.Contains(got, Mark) {
+			t.Errorf("Secrets(%q) = %q", c.in, got)
 		}
 	}
 	for _, plain := range []string{
@@ -29,9 +29,10 @@ func TestRedactSecrets(t *testing.T) {
 		"the key is in the team vault under deploy/prod",
 		"see https://example.com/docs/setup",
 		"internationalization-considerations-everywhere",
+		"1Password: payments sandbox",
 	} {
-		if got := redactSecrets(plain); got != plain {
-			t.Errorf("redactSecrets(%q) = %q", plain, got)
+		if got := Secrets(plain); got != plain {
+			t.Errorf("Secrets(%q) = %q", plain, got)
 		}
 	}
 }

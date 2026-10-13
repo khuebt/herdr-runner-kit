@@ -76,6 +76,10 @@ func TestStatusNextStep(t *testing.T) {
 		return &task.Task{ID: "t9", Project: "demo-app", Stage: name, Status: status, FinishedAt: finished}
 	}
 	before, after := decided.Add(-time.Hour), decided.Add(time.Hour)
+	reasoned := []*task.Task{{ID: "t2", Project: "demo-app", Status: task.Held, HoldReason: "needs D1"}}
+	assessed := packed
+	assessed.Changes = []Change{{ID: "CR-1", Status: ChangeOpen, Path: ChangesDir + "/CR-1-x.md", Task: "t8"}}
+	impact := &task.Task{ID: "t8", Project: "demo-app", Stage: "change", Status: task.Done}
 	intake := stage("intake", task.Done, before)
 	specDone := stage("spec", task.Done, before)
 	for _, c := range []struct {
@@ -112,6 +116,14 @@ func TestStatusNextStep(t *testing.T) {
 		{"pack changes not sent", &packChanges, []*task.Task{stage("pack", task.Done, before)}, false, "revise the pack with the feedback: herdr-runner-kit project run pack --project demo-app --stdin"},
 		{"pack approved", &packed, nil, false, "spawn a runner for the next piece of work"},
 		{"pack waived", &waived, nil, false, "spawn a runner for the next piece of work"},
+		{"held for a dependency", &packed, reasoned, false, "release t2 once this is settled: needs D1; then: herdr-runner-kit release t2"},
+		{
+			"change assessed", &assessed,
+			[]*task.Task{impact},
+			false,
+			"CR-1's impact is in " + ChangesDir + "/CR-1-x.md: ask the user, then record the decision: herdr-runner-kit project cr decide 1 <now|next|backlog|reject> --project demo-app",
+		},
+		{"change being assessed", &assessed, []*task.Task{{ID: "t8", Project: "demo-app", Status: task.Running}}, false, "wait for the 1 runner(s) at work"},
 	} {
 		r := Status(c.rec, reg, c.tasks, time.Now())
 		r.PathMissing = c.missing
@@ -121,6 +133,42 @@ func TestStatusNextStep(t *testing.T) {
 		if got := r.Next(); strings.Contains(got, "spawn --project") && c.rec != nil && c.rec.Gates.Pack.Status == "" && !c.rec.Gates.Pack.Waived {
 			t.Errorf("%s: discovery suggests a plain spawn: %q", c.name, got)
 		}
+	}
+}
+
+func TestStatusChangesAndBlockers(t *testing.T) {
+	rec := NewRecord("demo-app")
+	rec.Reapproval = Reapproval{Needed: true, Reason: "scope changed by CR-2"}
+	rec.Changes = []Change{
+		{ID: "CR-1", Status: ChangeOpen, Task: "t7"},
+		{ID: "CR-2", Class: ClassScope, Status: ChangeNext, Milestone: "M2"},
+		{ID: "CR-3", Class: ClassScope, Status: ChangeNow, Blocking: true, Milestone: "M1"},
+		{ID: "CR-4", Class: ClassScope, Status: ChangeRejected},
+		{ID: "CR-5", Class: ClassTweak, Status: ChangeBacklog},
+	}
+	rec.Dependencies = []Dependency{
+		{ID: "D1", Name: "Payments sandbox", Owner: "vendor", Status: "requested", Milestone: "M2", SecretLocation: "team vault"},
+		{ID: "D2", Name: "Domain", Owner: "user", Status: DependencyReady},
+	}
+	tasks := []*task.Task{{ID: "t5", Project: "demo-app", Title: "checkout", Status: task.Held, HoldReason: "needs D1"}}
+	got := Status(&rec, state.Project{Name: "demo-app", Path: "/work/demo-app"}, tasks, time.Now()).Text()
+	for _, want := range []string{
+		"re-approval needed before the next milestone: scope changed by CR-2\n",
+		"changes: CR-1 open (t7) · CR-2 scope next M2 · CR-3 scope now blocking M1\n",
+		"blockers: D1 Payments sandbox (requested, vendor, needed by M2)\n",
+		"  t5 held · checkout · for: needs D1\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("status lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "team vault") {
+		t.Errorf("status names where a secret is kept:\n%s", got)
+	}
+	empty := NewRecord("demo-app")
+	got = Status(&empty, state.Project{Name: "demo-app", Path: "/work/demo-app"}, nil, time.Now()).Text()
+	if !strings.Contains(got, "changes: none\nblockers: none\n") {
+		t.Errorf("status:\n%s", got)
 	}
 }
 

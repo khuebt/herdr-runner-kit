@@ -29,6 +29,14 @@ func TestRenderSnapshot(t *testing.T) {
 - Milestone: M1 Reading lists (active)
 - Graduated: 2026-10-14 v0.3.0
 
+## Change requests
+
+- CR-1 [open] Export to CSV (scope, blocking, M1), see handbook/product/changes/CR-1-export-to-csv.md
+
+## Dependencies
+
+- D1 [waiting] Mail API key, owner ops, needed by M1; workaround: log mails
+
 See [roadmap](roadmap.md), [decisions](decisions.md) and [backlog](backlog.md).
 `
 	if body != want {
@@ -49,20 +57,12 @@ func TestRenderDecisionsBacklogRoadmap(t *testing.T) {
 # Backlog
 
 - B1 [moved] Dark mode (to M2)
-
-## Change requests
-
-- CR1 [open] Export to CSV (scope, blocking, M1)
-
-## Dependencies
-
-- D1 [waiting] Mail API key, owner ops, needed by M1; workaround: log mails
 `
 	if got := render(t, rec, BacklogPath); got != wantBacklog {
 		t.Errorf("backlog:\n%s", got)
 	}
-	if strings.Contains(render(t, rec, BacklogPath), "team vault") {
-		t.Error("the backlog names where a secret is kept")
+	if _, body, _ := strings.Cut(render(t, rec, SnapshotPath), "\n---\n"); strings.Contains(body, "team vault") {
+		t.Error("the snapshot's summary names where a secret is kept")
 	}
 	wantRoadmap := header + `
 # Roadmap

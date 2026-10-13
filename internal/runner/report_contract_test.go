@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -225,7 +226,7 @@ func TestAnswerEventHidesSecrets(t *testing.T) {
 	if _, err := r.Answer(context.Background(), tk.ID, "use API_KEY="+secret); err != nil {
 		t.Fatal(err)
 	}
-	if ev := lastEvent(t, r); ev.Type != "answered" || strings.Contains(ev.Summary, secret) || !strings.Contains(ev.Summary, redacted) {
+	if ev := lastEvent(t, r); ev.Type != "answered" || strings.Contains(ev.Summary, secret) || !strings.Contains(ev.Summary, redact.Mark) {
 		t.Errorf("answered = %+v", ev)
 	}
 }

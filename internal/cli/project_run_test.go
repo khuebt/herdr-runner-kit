@@ -424,3 +424,107 @@ func TestProjectRunPack(t *testing.T) {
 		t.Errorf("pack task = %+v", pack)
 	}
 }
+
+// runIn runs the CLI with stdin.
+func runIn(stdin string, args ...string) (string, error) {
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetIn(strings.NewReader(stdin))
+	root.SetArgs(args)
+	err := root.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+func TestProjectChangeBacklogAndDependencies(t *testing.T) {
+	r, dir := stageRunner(t)
+	t.Setenv("HRK_STATE_DIR", r.Store.Dir())
+	t.Setenv("HRK_TASK", "")
+	request := "Add CSV export for admins\nThey need it for audits."
+	if _, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "change", Notes: request, Cwd: dir}); err == nil ||
+		!strings.Contains(err.Error(), "spec gate") {
+		t.Fatalf("change before the spec is approved: %v", err)
+	}
+	commitFiles(t, dir, specFile("1"))
+	if _, err := project.Decide(t.Context(), r.Store, "demo-app", project.DecideOptions{Gate: "spec", Outcome: "approve", By: "Lan Pham"}); err != nil {
+		t.Fatal(err)
+	}
+	commits := gitIn(t, dir, "rev-list", "--count", "HEAD")
+	if _, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "change", Cwd: dir}); err == nil || !strings.Contains(err.Error(), "--stdin") {
+		t.Fatalf("change without a request: %v", err)
+	}
+	busy, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "ux", Cwd: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "change", Notes: request, Cwd: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := project.ChangesDir + "/CR-1-add-csv-export-for-admins.md"
+	if impact.Stage != "change" || !impact.Keep || impact.Title != "demo-app CR-1: Add CSV export for admins" ||
+		!strings.Contains(impact.Prompt, "Write "+path) || !strings.Contains(impact.Prompt, "- "+busy.ID+" starting · stage ux") ||
+		!strings.Contains(impact.Prompt, "```untrusted-data\n"+request+"\n```") {
+		t.Errorf("impact task = %+v", impact)
+	}
+	rec, err := project.Load(r.Store, "demo-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Changes) != 1 || rec.Changes[0].Task != impact.ID || rec.Changes[0].Path != path {
+		t.Fatalf("changes = %+v", rec.Changes)
+	}
+
+	if _, err := runIn("", "project", "cr", "decide", "1", "next", "--project", "demo-app"); err == nil || !strings.Contains(err.Error(), "no class yet") {
+		t.Fatalf("decide before the impact report: %v", err)
+	}
+	if _, err := r.Store.Update(impact.ID, func(tk *task.Task) error {
+		tk.Status, tk.Decisions = task.Done, []string{"class -> scope"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runIn("", "project", "cr", "decide", "CR-1", "next", "--project", "demo-app")
+	if err != nil || !strings.HasPrefix(out, "CR-1 (scope) of demo-app decided next; committed with the next gate outcome or milestone\n") {
+		t.Fatalf("cr decide: %q %v", out, err)
+	}
+	out, err = runIn("Dark mode\n", "project", "backlog", "add", "--stdin", "--project", "demo-app")
+	if err != nil || out != "B1 added to the backlog of demo-app; committed with the next gate outcome or milestone\n" {
+		t.Fatalf("backlog add: %q %v", out, err)
+	}
+	out, err = runIn("", "project", "dep", "add", "Payments sandbox", "--owner", "vendor", "--secret-location", "1Password: payments sandbox", "--project", "demo-app")
+	if err != nil || !strings.HasPrefix(out, "D1 Payments sandbox recorded for demo-app as needed;") {
+		t.Fatalf("dep add: %q %v", out, err)
+	}
+	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	out, err = runIn("", "project", "dep", "add", "Repo access", "--owner", "user", "--secret-location", secret, "--project", "demo-app")
+	if err == nil || strings.Contains(out+err.Error(), secret) {
+		t.Fatalf("dep add with a secret: %q %v", out, err)
+	}
+
+	// A runner held for the dependency is named when it is ready.
+	held, err := r.Spawn(t.Context(), runner.SpawnOptions{
+		Prompt: "wire payments", Title: "payments", Project: "demo-app", Gate: task.GateHuman, Reason: "needs D1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = runIn("", "project", "dep", "set", "d1", "--status", "ready", "--project", "demo-app")
+	if err != nil || !strings.Contains(out, "held: "+held.ID+" payments (needs D1); release it with: herdr-runner-kit release "+held.ID+"\n") {
+		t.Fatalf("dep set: %q %v", out, err)
+	}
+
+	if got := gitIn(t, dir, "rev-list", "--count", "HEAD"); got != commits {
+		t.Errorf("records made commits: %s -> %s", commits, got)
+	}
+	out, err = runIn("", "project", "status", "demo-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"changes: CR-1 scope next\n", "blockers: none\n", "records not yet committed: 5\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status lacks %q:\n%s", want, out)
+		}
+	}
+}

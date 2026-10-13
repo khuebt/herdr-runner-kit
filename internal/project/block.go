@@ -215,6 +215,11 @@ func (b Block) check(rec Record) error {
 		if d.Milestone != "" && !slices.Contains(milestones, d.Milestone) {
 			return fmt.Errorf("%s.milestone %q is not a milestone of this block", field, d.Milestone)
 		}
+		if err := checkNoSecrets(map[string]string{
+			field + ".name": d.Name, field + ".workaround": d.Workaround, field + ".secretLocation": d.SecretLocation,
+		}); err != nil {
+			return err
+		}
 	}
 	nodes := map[string][]string{}
 	var order []string

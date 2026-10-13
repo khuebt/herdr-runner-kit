@@ -26,10 +26,12 @@ const (
 	GateRejected         = "rejected"
 )
 
-// Milestone statuses the gates and the roadmap import use.
+// Milestone statuses. A milestone in progress is the running milestone,
+// whose scope change control protects.
 const (
-	MilestonePlanned = "planned"
-	MilestoneDone    = "done"
+	MilestonePlanned    = "planned"
+	MilestoneInProgress = "in-progress"
+	MilestoneDone       = "done"
 )
 
 // Committed artifacts the gates read, relative to the repository root.

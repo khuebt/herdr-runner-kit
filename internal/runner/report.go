@@ -239,7 +239,7 @@ func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 			if t, changed, err := r.Store.Transition(q.ID, task.Held, []task.Status{task.Queued}, withInputs); err != nil {
 				errs = append(errs, err)
 			} else if changed {
-				r.emit(t, "held", "held for release: "+t.Title, "")
+				r.emit(t, "held", task.HeldSummary(t), "")
 			}
 			continue
 		}

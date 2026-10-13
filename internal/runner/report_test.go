@@ -125,7 +125,7 @@ func TestChainHumanGateHoldsChild(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	dir := plainDir(t)
 	p := running(t, r, SpawnOptions{Prompt: "plan", Cwd: dir})
-	child := spawnStarting(t, r, SpawnOptions{Prompt: "cook", Cwd: dir, After: []string{p.ID}, Gate: task.GateHuman})
+	child := spawnStarting(t, r, SpawnOptions{Prompt: "cook", Title: "cook", Cwd: dir, After: []string{p.ID}, Gate: task.GateHuman, Reason: "needs  D2\nkeys"})
 	if _, err := r.Report(p.ID, ReportOptions{Status: task.Done, Summary: "planned"}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,8 +133,11 @@ func TestChainHumanGateHoldsChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := r.Store.Get(child.ID)
-	if got.Status != task.Held || !strings.Contains(got.Inputs, "planned") || fake.count("agent", "start") != 0 {
+	if got.Status != task.Held || !strings.Contains(got.Inputs, "planned") || fake.count("agent", "start") != 0 || got.HoldReason != "needs D2 keys" {
 		t.Fatalf("child = %+v", got)
+	}
+	if ev := lastEvent(t, r); ev.Type != "held" || ev.Summary != "held for release: cook (needs D2 keys)" {
+		t.Errorf("held event = %+v", ev)
 	}
 	var launched []string
 	r.StartLauncher = func(id string) (int, error) { launched = append(launched, id); return 7, nil }

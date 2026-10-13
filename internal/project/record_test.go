@@ -34,7 +34,10 @@ func fullRecord() Record {
 		ID: "M1", Title: "Reading lists", Status: "active", Planned: at, Started: at, Branch: "release/M1",
 		Features: []Feature{{ID: "F1", Title: "Add a list"}, {ID: "F2", Title: "Share a list", DependsOn: []string{"F1"}}},
 	}}
-	rec.Changes = []Change{{ID: "CR1", Title: "Export to CSV", Class: "scope", Status: "open", Blocking: true, Milestone: "M1", At: at}}
+	rec.Changes = []Change{{
+		ID: "CR-1", Title: "Export to CSV", Class: "scope", Status: "open", Blocking: true, Milestone: "M1", At: at,
+		Path: "handbook/product/changes/CR-1-export-to-csv.md", Task: "t7",
+	}}
 	rec.Backlog = []BacklogItem{{ID: "B1", Text: "Dark mode", At: at, Status: "moved", To: "M2"}}
 	rec.Dependencies = []Dependency{{
 		ID: "D1", Name: "Mail API key", Owner: "ops", Status: "waiting", Milestone: "M1",

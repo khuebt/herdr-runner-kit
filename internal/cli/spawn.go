@@ -68,6 +68,7 @@ func newSpawnCommand() *cobra.Command {
 	f.StringVar(&o.Skill, "skill", "", "skill to invoke, such as ak:cook; rendered per harness")
 	f.StringSliceVar(&o.After, "after", nil, "start only when these tasks are done")
 	f.StringVar(&gate, "gate", "auto", "auto starts on its own; human waits for `release`")
+	f.StringVar(&o.Reason, "reason", "", "with --gate human: why the task waits, such as the dependency D2 it needs; only a release that names the task opens it")
 	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of a Claude runner, as a path or a name such as claude2 for ~/.claude2 (default: the main session's)")
 	f.StringVar(&o.Language, "language", "", "language of the runner's report summaries and questions, such as Vietnamese (default: the config's language)")
 	f.StringVar(&o.Cwd, "cwd", "", "folder the task works in (default: current folder)")
@@ -97,6 +98,9 @@ func spawnLine(t *task.Task) string {
 	}
 	if len(t.After) > 0 && t.Status == task.Queued {
 		parts = append(parts, "after "+strings.Join(t.After, ","))
+	}
+	if t.HoldReason != "" {
+		parts = append(parts, "held for: "+t.HoldReason)
 	}
 	parts = append(parts, t.Title)
 	return strings.Join(parts, " · ")
