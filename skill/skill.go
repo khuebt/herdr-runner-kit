@@ -7,7 +7,11 @@ import "embed"
 // Name is the skill's folder name under <claude config>/skills.
 const Name = "herdr-runner-kit"
 
-// Files holds SKILL.md and its references.
+// KitOnlyDir holds the project stage templates and the runner preamble. The
+// kit renders them; setup does not install them with the skill.
+const KitOnlyDir = "references/project"
+
+// Files holds SKILL.md, its references and the kit-only templates.
 //
 //go:embed SKILL.md references
 var Files embed.FS

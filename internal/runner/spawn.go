@@ -94,6 +94,9 @@ type SpawnOptions struct {
 	Project string
 	// Stage is the project stage the task runs; it needs a project.
 	Stage string
+	// Keep holds the runner's tab open after the task finishes, so gc
+	// leaves it.
+	Keep bool
 	// Warn, when set, receives a one-line warning that spawn carried on
 	// without the project registry because it could not be read.
 	Warn func(string)
@@ -357,7 +360,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 		Kind: kindName, Agent: spec.String(), Prompt: o.Prompt, Skill: o.Skill, Title: title,
 		Cwd: cwd, Owner: owner, RepoRoot: root, UseWorktree: useWorktree, After: after, Gate: gate,
 		MainWorkspace: workspace, ClaudeConfigDir: configDir, Language: language,
-		Project: project.Name, Stage: stage,
+		Project: project.Name, Stage: stage, Keep: o.Keep,
 		// Queued until spawn decides: a task with no pending parents moves on
 		// to held or starting at once.
 		Status: task.Queued,

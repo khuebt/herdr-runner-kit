@@ -24,7 +24,7 @@ const (
 	GitignorePath = ".gitignore"
 	// BriefDir holds the original brief. It is git-ignored and never
 	// committed; the intake stage commits a summary instead.
-	BriefDir = "handbook/product/discovery/brief/original"
+	BriefDir = DiscoveryDir + "/brief/original"
 	// IdeaFile is the name of an idea given as text instead of a file.
 	IdeaFile = "idea.md"
 )

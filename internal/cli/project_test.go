@@ -38,6 +38,10 @@ func TestProjectGuard(t *testing.T) {
 		{"project", "forget", "demo-app"},
 		{"project", "forget", "demo-app", "--yes"},
 		{"new", filepath.Join(t.TempDir(), "app"), "--stdin"},
+		{"project", "run", "spec"},
+		{"project", "run", "ux", "--project", "demo-app", "--stdin"},
+		{"project", "share", "stitch", "on"},
+		{"project", "share", "lavish-hosted", "off", "--project", "demo-app"},
 	} {
 		if _, err := runCLI(args...); !errors.Is(err, project.ErrInsideRunner) {
 			t.Errorf("%v inside a runner: err = %v", args, err)

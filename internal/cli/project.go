@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
+	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -26,7 +29,8 @@ func newProjectCommand() *cobra.Command {
 			"from any folder.",
 		Args: cobra.NoArgs,
 	}
-	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand())
+	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand(),
+		newProjectRunCommand(), newProjectShareCommand())
 	return cmd
 }
 
@@ -311,6 +315,228 @@ func newProjectForgetCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&yes, "yes", false, "forget even with unfinished tasks or uncommitted changes")
 	return cmd
 }
+
+func newProjectRunCommand() *cobra.Command {
+	var o stageRun
+	var stdin bool
+	cmd := &cobra.Command{
+		Use:   "run <stage> [--stdin]",
+		Short: "Start a project stage runner from the kit's stage template",
+		Long: "run renders the stage's template with the project's record and the agent's skill " +
+			"syntax, adds your notes from stdin as untrusted data, and spawns the runner in the " +
+			"project. It refuses a stage whose gate is not approved yet. A stage that works in " +
+			"the main checkout waits for the project's other main-checkout runners, so only one " +
+			"of them commits there at a time. Stages: " + strings.Join(project.StageNames(), ", ") + ".",
+		Example: `  herdr-runner-kit project run intake
+  echo "Focus on the admin flows first" | herdr-runner-kit project run ux --stdin --after t4`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			var err error
+			if stdin {
+				if o.Notes, err = promptText(cmd, nil, true); err != nil {
+					return err
+				}
+			}
+			o.Stage = args[0]
+			if o.Cwd, err = os.Getwd(); err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			dirs, err := claudeConfigs(nil)
+			if err != nil {
+				return err
+			}
+			o.Tools, _ = newToolProbe(dirs).detect(cmd.Context())
+			o.Warn = func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }
+			t, err := runStage(cmd.Context(), r, o)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t))
+			return err
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&o.Project, "project", "", "project to run the stage for (default: the project holding the current folder, else the only one)")
+	f.BoolVar(&stdin, "stdin", false, "read notes for the runner from stdin; they reach it as untrusted data")
+	f.StringSliceVar(&o.After, "after", nil, "start only when these tasks are done")
+	f.StringVar(&o.Agent, "agent", "", "agent spec harness[:model[:effort]], overriding the stage kind's default")
+	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of a Claude runner, as a path or a name such as claude2")
+	f.StringVar(&o.Language, "language", "", "language of the runner's report summaries and questions")
+	return cmd
+}
+
+// stageRun is the input of one project stage run.
+type stageRun struct {
+	Project      string
+	Stage        string
+	Notes        string
+	After        []string
+	Agent        string
+	ClaudeConfig string
+	Language     string
+	// Cwd picks the project when Project is empty.
+	Cwd   string
+	Tools project.Tools
+	Warn  func(string)
+}
+
+// runStage checks the stage's gates, renders its template for the agent
+// that will run it and spawns the runner in the project.
+func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, error) {
+	stage, err := project.LoadStage(o.Stage)
+	if err != nil {
+		return nil, err
+	}
+	p, err := resolveProject(r.Store, o.Project, o.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	if p.Reserved {
+		return nil, fmt.Errorf("project %s is still being set up", p.Name)
+	}
+	rec, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := project.CheckRequires(rec, stage); err != nil {
+		return nil, err
+	}
+	kind, found := r.Config.Kinds[stage.Kind]
+	if !found {
+		return nil, fmt.Errorf("stage %s runs as kind %q, which the config does not define", stage.Name, stage.Kind)
+	}
+	agent := kind.Agent
+	if o.Agent != "" {
+		agent = o.Agent
+	}
+	spec, err := task.ParseAgentSpec(agent)
+	if err != nil {
+		return nil, err
+	}
+	prompt, err := stage.Render(spec.Harness, project.NewStageData(rec, p.Path, o.Tools, o.Notes, time.Now()))
+	if err != nil {
+		return nil, err
+	}
+	after := make([]string, 0, len(o.After))
+	for _, a := range o.After {
+		id, _, err := task.ParseID(a)
+		if err != nil {
+			return nil, err
+		}
+		after = append(after, id)
+	}
+	if !kind.Worktree {
+		busy, err := mainCheckoutTasks(r.Store, p.Name)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range busy {
+			if !slices.Contains(after, id) {
+				after = append(after, id)
+				if o.Warn != nil {
+					o.Warn(fmt.Sprintf("note: %s waits for %s, which works in the main checkout of %s too", stage.Name, id, p.Name))
+				}
+			}
+		}
+	}
+	return r.Spawn(ctx, runner.SpawnOptions{
+		Kind: stage.Kind, Agent: o.Agent, After: after, Title: p.Name + " " + stage.Name + ": " + stage.Title,
+		Prompt: prompt, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+		Project: p.Name, Stage: stage.Name, Keep: stage.Keep, Warn: o.Warn,
+	})
+}
+
+// mainCheckoutTasks returns the unfinished tasks of a project that work in
+// its main checkout rather than in a worktree of their own.
+func mainCheckoutTasks(s *state.Store, name string) ([]string, error) {
+	tasks, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, t := range tasks {
+		if t.Project == name && !t.UseWorktree && !t.Status.Terminal() {
+			ids = append(ids, t.ID)
+		}
+	}
+	return ids, nil
+}
+
+// shareTargets maps project share's argument to the record field it sets.
+var shareTargets = map[string]func(*project.Share) *bool{
+	"stitch":        func(s *project.Share) *bool { return &s.Stitch },
+	"lavish-hosted": func(s *project.Share) *bool { return &s.LavishHosted },
+}
+
+func newProjectShareCommand() *cobra.Command {
+	var name string
+	cmd := &cobra.Command{
+		Use:   "share <stitch|lavish-hosted> <on|off>",
+		Short: "Allow or forbid a project's runners to share work outside this machine",
+		Long: "share records your choice in the project's record and decision log. Runners " +
+			"never share outside the machine unless you switched that share on here: " +
+			"environment variables, notes and files cannot switch it on. The record is " +
+			"committed with the next gate outcome.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			field, known := shareTargets[args[0]]
+			if !known {
+				return fmt.Errorf("unknown share %q: want stitch or lavish-hosted", args[0])
+			}
+			if args[1] != "on" && args[1] != "off" {
+				return fmt.Errorf("want on or off, not %q", args[1])
+			}
+			on := args[1] == "on"
+			store, err := openStore()
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			p, err := resolveProject(store, name, cwd)
+			if err != nil {
+				return err
+			}
+			changed := false
+			if _, err := project.Update(store, p.Name, func(rec *project.Record) error {
+				target := field(&rec.Share)
+				if *target == on {
+					return errUnchanged
+				}
+				*target, changed = on, true
+				rec.Decisions = append(rec.Decisions, project.Decision{
+					At: time.Now().UTC(), Text: "share " + args[0] + " switched " + args[1] + " by the user",
+				})
+				return nil
+			}); err != nil && !errors.Is(err, errUnchanged) {
+				return err
+			}
+			if !changed {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s sharing of %s is already %s\n", args[0], p.Name, args[1])
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s sharing of %s is now %s; runners launched from now on follow it\n", args[0], p.Name, args[1])
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&name, "project", "", "project to change (default: the project holding the current folder, else the only one)")
+	return cmd
+}
+
+// errUnchanged stops a record update that would change nothing.
+var errUnchanged = errors.New("unchanged")
 
 // openStore opens the state directory without loading the config.
 func openStore() (*state.Store, error) {

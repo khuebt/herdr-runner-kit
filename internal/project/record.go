@@ -228,21 +228,31 @@ func ParseSnapshot(data []byte) (Record, error) {
 }
 
 // frontMatter returns the YAML between the opening "---" line and the next
-// "---" line.
+// "---" line of a project snapshot.
 func frontMatter(data []byte) ([]byte, error) {
+	front, _, err := splitFrontMatter(data)
+	if err != nil {
+		return nil, fmt.Errorf("project snapshot %w", err)
+	}
+	return front, nil
+}
+
+// splitFrontMatter returns the YAML between the opening "---" line and the
+// next "---" line, and the text after it.
+func splitFrontMatter(data []byte) (front, body []byte, err error) {
 	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	rest, ok := bytes.CutPrefix(data, []byte("---\n"))
 	if !ok {
-		return nil, errors.New("project snapshot has no front matter")
+		return nil, nil, errors.New("has no front matter")
 	}
 	if bytes.HasPrefix(rest, []byte("---\n")) {
-		return nil, errors.New("project snapshot has empty front matter")
+		return nil, nil, errors.New("has empty front matter")
 	}
-	front, _, ok := bytes.Cut(rest, []byte("\n---\n"))
+	front, body, ok = bytes.Cut(rest, []byte("\n---\n"))
 	if !ok {
-		return nil, errors.New("project snapshot front matter is not closed")
+		return nil, nil, errors.New("front matter is not closed")
 	}
-	return append(front, '\n'), nil
+	return append(front, '\n'), body, nil
 }
 
 func recordPath(s *state.Store, name string) string {
