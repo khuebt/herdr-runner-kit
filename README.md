@@ -15,6 +15,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 - **Decisions never stall a runner.** A runner that needs input stays alive in its session, and your answer resumes it in the same context.
 - **Projects keep their own record.** `new` starts a git repository with a project record and a herdr workspace, and `project status` shows where it stands. A project's runners open in its workspace and report to the main session from any folder.
 - **Discovery stops at your gates.** `project run` starts each discovery stage, from the brief to a stakeholder approval pack. Later stages wait until you approve the spec, the pack's outcome is recorded as yours, and later changes go through change requests you decide.
+- **Milestones end in your merge.** After the pack, `project milestone start` plans each milestone and `chain` runs its features, integration and a close runner that prepares `release/<M>`. You merge that branch through a pull request; `milestone done` sees the merge and tags it locally. `project graduate` later moves the discovery folder out of the tree. The kit never merges into the default branch or pushes.
 - **Usage limits need not stop a runner.** With a [`quotaFallback`](docs/config.md#keys) list, a runner whose agent hits its usage limit continues on the next agent in the same tab and checkout.
 
 ## Requirements
@@ -61,6 +62,7 @@ Then talk to it as usual:
 | "Start a new project from this idea" | the main agent asks for the folder and remote, then runs `new` |
 | "Where are we on demo-app?" | the main agent runs `project status demo-app` |
 | "The spec looks good, approve it" | the main agent records it with `project approve spec --by <you>` |
+| "I merged the M1 release" | the main agent runs `project milestone done M1` and relays the local tag |
 
 ## Kinds
 
