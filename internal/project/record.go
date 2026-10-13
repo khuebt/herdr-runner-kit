@@ -109,6 +109,13 @@ type Milestone struct {
 	Tag      string    `json:"tag,omitempty" yaml:"tag,omitempty"`
 	Branch   string    `json:"branch,omitempty" yaml:"branch,omitempty"`
 	Features []Feature `json:"features,omitempty" yaml:"features,omitempty"`
+	// Released holds the git blob id of the release notes each done of
+	// the milestone found merged, oldest first, so the release merged
+	// before a reopen is never taken for a new one.
+	Released []string `json:"released,omitempty" yaml:"released,omitempty"`
+	// RoadmapUpdate is the git blob id of the roadmap update the last
+	// done found, so a later done imports only a new one.
+	RoadmapUpdate string `json:"roadmapUpdate,omitempty" yaml:"roadmapUpdate,omitempty"`
 }
 
 // Feature is one unit of a milestone.

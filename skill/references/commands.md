@@ -40,6 +40,12 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `project dep add <name> --owner user\|vendor\|runner [--milestone M2] [--secret-location WHERE] [--workaround TEXT]` | Record something the project waits on outside itself. |
 | `project dep set <Dn> --status needed\|requested\|ready` | Change its status; `ready` lists the held tasks that wait for it. |
 | `project share <stitch\|lavish-hosted> <on\|off>` | The user's opt-in to share work outside this machine. |
+| `project milestone start <M>` | M0: the scaffold runner, then its close runner. Later milestones: the plan runner. |
+| `project milestone chain <M>` | Spawn the feature, integrate and close runners from the committed plan. Run it again after a failed runner; done nodes are kept. |
+| `project milestone done <M> [--merged-commit SHA]` | After the user merged `release/<M>` and pulled: commit the records and tag the release locally. The notes it finds must be the close branch's, not a release merged before a reopen. |
+| `project milestone reopen <M> --reason WHY` | Put a done milestone back in progress and delete its local tag. |
+| `project milestone close <M>` | A new close runner on `release/<M>-r<k>` after a reopen or a failed close. |
+| `project graduate [--export DIR] [--yes]` | Remove the discovery folder in one commit and tag the commit before it locally. Without `--yes` it only checks. |
 
 A project's runners report to the owner `project:<name>`, and `wait` and `list` include every registered project, so a project's news reaches you from any folder.
 
@@ -74,7 +80,7 @@ Runners never share work outside this machine (Stitch, hosted Lavish) until the 
 Two gates stop the project: the spec and the stakeholder pack. Only the user passes them.
 
 1. Spec done: present it and ask. Record the answer with `project approve spec --by <name>`, `project changes spec --by <name> --stdin` with the feedback, or `project reject spec --by <name> --note WHY`.
-2. On a lite-track project, add `--waive-pack` to `approve spec` only when the user chooses to skip the pack; it is refused once the pack has an outcome.
+2. On a lite-track project, add `--waive-pack` to `approve spec` only when the user chooses to skip the pack; it is refused once the pack has an outcome. With the pack waived, M0 starts without a roadmap; before M1, run `project run roadmap`: the next `milestone start` imports the committed roadmap proposal.
 3. Pack done: point the user to `pack.html` and `pack.pdf` in its output; the user shares them with the stakeholders. Record their outcome the same way with `pack`. Approving the pack imports the roadmap.
 4. A gate that says the spec or pack changed since its approval is open again: present the changed artifact and record the user's new outcome.
 
@@ -85,6 +91,21 @@ Two gates stop the project: the spec and the stakeholder pack. Only the user pas
 - An idea for later: `project backlog add --stdin`. A decision the user made in chat: `project decide --stdin`.
 - Something outside the project, such as sandbox keys: `project dep add`. Record where a secret is kept with `--secret-location`, never its value. Spawn runners that need it with `--gate human --reason "needs D<n>"`; when `project dep set D<n> --status ready` lists them, `release` each.
 - These records reach the repository with the next gate outcome or milestone commit.
+
+### Milestones
+
+1. M0: brief the reference repository, the stack and the user's proposals, then `project milestone start M0`. It is refused until the pack is approved or waived, and while a scope change waits for a new pack approval.
+2. M1 and later: `project milestone start M<n>` spawns the plan runner. Its `done` line lists `decided: …`, the open questions it answered with the recommended option: relay them first and give the user a turn to veto; `send` a change. Then `project milestone chain M<n>`. A chain refused for an open question without an answer: ask those questions in one round and `send` the answers to the plan runner.
+3. A feature runner failed: `send` it the failure, or run `chain` again; done nodes are kept.
+4. The close runner's `done` names `release/M<n>`. The user pushes it and merges it through a pull request; never merge or push for them.
+5. When the user says it is merged: `project milestone done M<n>`, and relay the tag and the release notes. The tag is local; the output prints the push command for the user. After a squash or rebase merge, add `--merged-commit <sha>`.
+6. A done milestone needs fixes: `project milestone reopen M<n> --reason WHY`, fix on the branch the release came from, then `project milestone close M<n>` for a new release branch, and the same merge and `done`. A failed close runner: `project milestone close M<n>` too.
+
+A project spawn prints `note: N runners of <name> are active …` above the project record's `parallelWarning`: mention it once; nothing was blocked.
+
+### Graduate
+
+Suggest it once, after M1 is done. `project run graduate` writes the evergreen requirements and copies the approved pack and open change requests out of the discovery folder. Then run `project graduate`, which only checks, show its output, and add `--yes` on the user's word. Tell the user that graduation does not purge history: every committed discovery file stays reachable through the `discovery-archive` tag. After it, discovery stages are refused; `project run pack` still builds a new pack from the requirements after a scope change, and `approve pack` clears the re-approval.
 
 ### Runners of a project
 

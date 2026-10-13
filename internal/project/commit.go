@@ -59,6 +59,15 @@ func Commit(ctx context.Context, s *state.Store, name, message string, paths ...
 		return "", err
 	}
 	defer unlock()
+	return commitRendered(ctx, s, p, message, paths)
+}
+
+// commitRendered is Commit for a caller that holds the project's checkout
+// lock and checked paths and message. The commit also takes the changes
+// already staged under extra, such as a folder removed with git rm; they
+// are never passed to git add, which refuses a path that no longer exists.
+func commitRendered(ctx context.Context, s *state.Store, p state.Project, message string, paths []string, extra ...string) (string, error) {
+	name := p.Name
 	if err := checkCheckout(ctx, s, p); err != nil {
 		return "", err
 	}
@@ -82,13 +91,14 @@ func Commit(ctx context.Context, s *state.Store, name, message string, paths ...
 	if out, err := gitLocked(ctx, p.Path, append([]string{"add", "-A", "--"}, paths...)...); err != nil {
 		return "", fmt.Errorf("git add: %s", firstLine(out, err))
 	}
-	changed, err := staged(ctx, p.Path, paths)
+	all := append(slices.Clone(paths), extra...)
+	changed, err := staged(ctx, p.Path, all)
 	if err != nil {
 		return "", err
 	}
 	sha := ""
 	if changed {
-		if sha, err = commitPaths(ctx, p.Path, message, paths); err != nil {
+		if sha, err = commitPaths(ctx, p.Path, message, all); err != nil {
 			return "", err
 		}
 	}
@@ -156,10 +166,21 @@ func runnerActive(s task.Status) bool {
 func commitPaths(ctx context.Context, root, message string, paths []string) (string, error) {
 	args := append([]string{"commit", "--only", "-m", message, "--"}, paths...)
 	if out, err := gitLocked(ctx, root, args...); err != nil {
-		return "", fmt.Errorf("commit failed: %s\nthe rendered files are written; commit them with:\n  %s",
-			firstLine(out, err), shellCommand(append([]string{"git", "-C", root}, args...)))
+		return "", &commitError{reason: firstLine(out, err), command: shellCommand(append([]string{"git", "-C", root}, args...))}
 	}
 	return git(ctx, root, "rev-parse", "HEAD")
+}
+
+// commitError is a commit of rendered files that git refused, such as by
+// a failing hook. The rendered files stay written.
+type commitError struct {
+	// reason is the first line git or the hook printed; command commits
+	// the rendered files by hand.
+	reason, command string
+}
+
+func (e *commitError) Error() string {
+	return fmt.Sprintf("commit failed: %s\nthe rendered files are written; commit them with:\n  %s", e.reason, e.command)
 }
 
 // gitLocked runs a git command that takes the index lock, retrying while

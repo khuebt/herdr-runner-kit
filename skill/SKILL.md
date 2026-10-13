@@ -87,8 +87,10 @@ A project is a git repository the kit keeps a record for. Its runners report to 
 - Runners of a project: `spawn --project <name>`; the tab opens in the project's workspace.
 - Discovery runs as stages: `project run <stage>`. The spec and pack gates are the user's: ask, then record their answer with `project approve|changes|reject <spec|pack> --by <name>`; never decide a gate yourself.
 - Change requests, backlog ideas and dependencies go through `project run change`, `project cr decide`, `project backlog add` and `project dep`. Ask where a secret is stored, never its value.
+- Milestones, after the pack: `project milestone start M<n>`; relay the plan runner's `decided:` list first and let the user veto, then `project milestone chain M<n>`. The close runner's `done` names `release/M<n>`: the user pushes and merges it through a pull request, never you. When they say it is merged, run `project milestone done M<n>` and relay the local tag. Fixes after that: `milestone reopen`, then `milestone close`. A spawn's `note: … runners of <name> are active` is soft: mention it; nothing is blocked.
+- Graduate: suggest it once after M1. `project run graduate`, then `project graduate` (a dry run), and `--yes` on the user's word; say that history is not purged.
 
-Stages, gates, change control and Telegram replies: [references/commands.md#projects](references/commands.md#projects).
+Stages, gates, change control, milestones, graduation and Telegram replies: [references/commands.md#projects](references/commands.md#projects).
 
 ## Gates
 

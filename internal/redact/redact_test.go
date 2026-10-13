@@ -36,3 +36,23 @@ func TestRedactSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretsKeepsPathsSlugsAndCommitIDs(t *testing.T) {
+	for _, s := range []string{
+		"worked in /home/user/.herdr/worktrees/greet/feat-m0-scaffold-and-release-notes-v2",
+		"branch feat/m2-export-csv-for-admins-and-managers-2026",
+		"committed 4b3dd7c on main",
+	} {
+		if got := Secrets(s); got != s {
+			t.Errorf("Secrets(%q) = %q, want it unchanged", s, got)
+		}
+	}
+	for _, s := range []string{
+		"key Zx9Qw2Er7Ty4Ui1Op6As3Df8Gh5Jk0Lz",
+		"key 9f3a7c1e5b2d8f4a6c0e9b7d3f1a5c8e2b6d",
+	} {
+		if got := Secrets(s); got == s {
+			t.Errorf("Secrets(%q) kept a random key", s)
+		}
+	}
+}

@@ -32,9 +32,11 @@ var (
 		`|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}` +
 		`|\d{6,12}:[A-Za-z0-9_-]{30,}` +
 		`)`)
-	// secretLong matches long unbroken runs that may be a random key; only
-	// those that mix letters and digits are hidden.
-	secretLong = regexp.MustCompile(`[A-Za-z0-9_+/=-]{32,}`)
+	// secretLong matches long unbroken runs that may be a random key. A
+	// slash ends a run, so file paths are never one run; looksRandom then
+	// keeps slugs. A full commit id is hidden like any hex key: the two
+	// cannot be told apart, and short ids stay readable.
+	secretLong = regexp.MustCompile(`[A-Za-z0-9_+=-]{32,}`)
 )
 
 // Secrets replaces values that look like secrets with Mark:
@@ -53,11 +55,22 @@ func Secrets(s string) string {
 	})
 	s = secretToken.ReplaceAllString(s, Mark)
 	return secretLong.ReplaceAllStringFunc(s, func(m string) string {
-		if strings.ContainsAny(m, "0123456789") && strings.ContainsFunc(m, unicode.IsLetter) {
+		if looksRandom(m) {
 			return Mark
 		}
 		return m
 	})
+}
+
+// looksRandom reports whether a long run looks like a generated key rather
+// than a slug such as feat-m2-export-csv-for-admins: it mixes letters and
+// digits, and either mixes cases or has no word separators.
+func looksRandom(m string) bool {
+	if !strings.ContainsAny(m, "0123456789") || !strings.ContainsFunc(m, unicode.IsLetter) {
+		return false
+	}
+	mixedCase := strings.ContainsFunc(m, unicode.IsUpper) && strings.ContainsFunc(m, unicode.IsLower)
+	return mixedCase || !strings.ContainsAny(m, "-_")
 }
 
 // Found reports whether s holds a value that looks like a secret.

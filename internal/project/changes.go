@@ -85,7 +85,7 @@ func AddChange(s *state.Store, name, title, slug string, now time.Time) (Change,
 		}
 		id := nextID("CR-", ids)
 		c = Change{
-			ID: id, Title: clip(title, maxNote), Status: ChangeOpen, At: now.UTC(),
+			ID: id, Title: clip(title, maxNote), Status: ChangeOpen, At: stamp(now),
 			Path: ChangesFolder(*rec) + "/" + id + "-" + slug + ".md",
 		}
 		rec.Changes = append(rec.Changes, c)
@@ -250,7 +250,7 @@ func DecideChange(s *state.Store, name string, o ChangeDecision) (ChangeDecided,
 				ids = append(ids, it.ID)
 			}
 			d.Backlog = nextID("B", ids)
-			rec.Backlog = append(rec.Backlog, BacklogItem{ID: d.Backlog, Text: c.ID + ": " + c.Title, At: o.Now.UTC(), Status: BacklogOpen})
+			rec.Backlog = append(rec.Backlog, BacklogItem{ID: d.Backlog, Text: c.ID + ": " + c.Title, At: stamp(o.Now), Status: BacklogOpen})
 			text += "; kept as " + d.Backlog
 		}
 		if class == ClassScope && (status == ChangeNow || status == ChangeNext) && rec.Gates.Pack.Status == GateApproved {
@@ -265,7 +265,7 @@ func DecideChange(s *state.Store, name string, o ChangeDecision) (ChangeDecided,
 		if o.Note != "" {
 			text += ": " + o.Note
 		}
-		rec.Decisions = append(rec.Decisions, Decision{At: o.Now.UTC(), Text: text})
+		rec.Decisions = append(rec.Decisions, Decision{At: stamp(o.Now), Text: text})
 		d.Change = *c
 		return nil
 	})
@@ -348,7 +348,7 @@ func AddBacklog(s *state.Store, name, text string, now time.Time) (BacklogItem, 
 		for _, b := range rec.Backlog {
 			ids = append(ids, b.ID)
 		}
-		it = BacklogItem{ID: nextID("B", ids), Text: text, At: now.UTC(), Status: BacklogOpen}
+		it = BacklogItem{ID: nextID("B", ids), Text: text, At: stamp(now), Status: BacklogOpen}
 		rec.Backlog = append(rec.Backlog, it)
 		return nil
 	})

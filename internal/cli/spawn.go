@@ -2,12 +2,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -50,6 +53,9 @@ func newSpawnCommand() *cobra.Command {
 			if _, err := fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t)); err != nil {
 				return err
 			}
+			if t.Project != "" {
+				parallelNote(r.Store, t.Project, o.Warn)
+			}
 			if t.Worktree != nil && o.Branch == "" {
 				recent := runner.RecentBranches(cmd.Context(), t.RepoRoot, r.Config.WorktreeBranchPrefix, t.Worktree.Branch, 5)
 				_, err = fmt.Fprintln(cmd.ErrOrStderr(), branchNote(t.Worktree.Branch, recent))
@@ -89,6 +95,27 @@ func branchNote(branch string, recent []string) string {
 	}
 	return note + "; recent branches here: " + strings.Join(recent, ", ") +
 		". Pass --branch to follow the repository's convention."
+}
+
+// parallelNote tells the main session, through warn, when more runners of
+// project name are active than its record's parallelWarning. It is a note
+// only: nothing is blocked.
+func parallelNote(s *state.Store, name string, warn func(string)) {
+	rec, err := project.Load(s, name)
+	if errors.Is(err, project.ErrNoRecord) {
+		return
+	}
+	var tasks []*task.Task
+	if err == nil {
+		tasks, err = s.List()
+	}
+	if err != nil {
+		warn("note: cannot count the active runners of " + name + ": " + err.Error())
+		return
+	}
+	if note := project.ParallelNote(rec, tasks); note != "" {
+		warn(note)
+	}
 }
 
 func spawnLine(t *task.Task) string {

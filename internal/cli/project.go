@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
@@ -34,7 +35,8 @@ func newProjectCommand() *cobra.Command {
 	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand(),
 		newProjectRunCommand(), newProjectShareCommand(),
 		newProjectGateCommand("approve"), newProjectGateCommand("changes"), newProjectGateCommand("reject"),
-		newProjectDecideCommand(), newProjectCRCommand(), newProjectBacklogCommand(), newProjectDepCommand())
+		newProjectDecideCommand(), newProjectCRCommand(), newProjectBacklogCommand(), newProjectDepCommand(),
+		newProjectMilestoneCommand(), newProjectGraduateCommand())
 	return cmd
 }
 
@@ -148,12 +150,12 @@ func newProjectStatusCommand() *cobra.Command {
 			}
 			p, err := resolveProject(store, name, cwd)
 			if errors.Is(err, errNoProjectResolved) {
-				return printProjectList(cmd.OutOrStdout(), store)
+				return printProjectList(cmd.Context(), cmd.OutOrStdout(), store)
 			}
 			if err != nil {
 				return err
 			}
-			r, err := projectReport(store, p)
+			r, err := projectReport(cmd.Context(), store, p)
 			if err != nil {
 				return err
 			}
@@ -204,8 +206,10 @@ func resolveProject(s *state.Store, name, cwd string) (state.Project, error) {
 }
 
 // projectReport builds the status of p from the kit's record and tasks. A
-// missing record is part of the report, not an error.
-func projectReport(s *state.Store, p state.Project) (project.Report, error) {
+// missing record is part of the report, not an error. Once the running
+// milestone's plan runner is done, it reads the committed plan for the
+// questions it leaves unanswered.
+func projectReport(ctx context.Context, s *state.Store, p state.Project) (project.Report, error) {
 	var rec *project.Record
 	loaded, err := project.Load(s, p.Name)
 	switch {
@@ -219,11 +223,20 @@ func projectReport(s *state.Store, p state.Project) (project.Report, error) {
 	if err != nil {
 		return project.Report{}, err
 	}
-	return project.Status(rec, p, tasks, time.Now()), nil
+	r := project.Status(rec, p, tasks, time.Now())
+	if r.Running != nil && r.PlanDone {
+		b, err := project.ReadPlan(ctx, p.Path, *rec, r.Running.ID)
+		if err != nil {
+			r.PlanErr = err.Error()
+		} else {
+			r.Unanswered = project.Unanswered(b)
+		}
+	}
+	return r, nil
 }
 
 // printProjectList prints one line per registered project.
-func printProjectList(out io.Writer, s *state.Store) error {
+func printProjectList(ctx context.Context, out io.Writer, s *state.Store) error {
 	list, err := s.Projects()
 	if err != nil {
 		return err
@@ -241,7 +254,7 @@ func printProjectList(out io.Writer, s *state.Store) error {
 			reserved = append(reserved, p.Name)
 			continue
 		}
-		r, err := projectReport(s, p)
+		r, err := projectReport(ctx, s, p)
 		if err != nil {
 			return err
 		}
@@ -363,8 +376,11 @@ func newProjectRunCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t))
-			return err
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t)); err != nil {
+				return err
+			}
+			parallelNote(r.Store, t.Project, o.Warn)
+			return nil
 		},
 	}
 	f := cmd.Flags()
@@ -389,6 +405,12 @@ type stageRun struct {
 	Language     string
 	// Docx asks the pack stage for a DOCX export as well.
 	Docx bool
+	// TaskStage is the stage recorded on the task, such as "M2/F1";
+	// empty means the template's name.
+	TaskStage string
+	// Branch and Base name the worktree branch and its base; empty means
+	// the spawn defaults.
+	Branch, Base string
 	// Cwd picks the project when Project is empty.
 	Cwd   string
 	Tools project.Tools
@@ -401,6 +423,9 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 	stage, err := project.LoadStage(o.Stage)
 	if err != nil {
 		return nil, err
+	}
+	if stage.Milestone {
+		return nil, fmt.Errorf("stage %s belongs to a milestone: start it with herdr-runner-kit project milestone start|chain <M>", stage.Name)
 	}
 	p, err := resolveProject(r.Store, o.Project, o.Cwd)
 	if err != nil {
@@ -419,20 +444,17 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 	if o.Docx && stage.Name != project.GatePack {
 		return nil, errors.New("--docx goes only with the pack stage")
 	}
-	kind, found := r.Config.Kinds[stage.Kind]
-	if !found {
-		return nil, fmt.Errorf("stage %s runs as kind %q, which the config does not define", stage.Name, stage.Kind)
-	}
-	agent := kind.Agent
-	if o.Agent != "" {
-		agent = o.Agent
-	}
-	spec, err := task.ParseAgentSpec(agent)
+	h, err := stageHarness(r, stage, o.Agent)
 	if err != nil {
 		return nil, err
 	}
 	data := project.NewStageData(rec, p.Path, o.Tools, o.Notes, time.Now())
 	data.Docx = o.Docx
+	if stage.Name == project.GraduateStage {
+		if err := project.GraduateData(ctx, &data, p.Path, rec); err != nil {
+			return nil, err
+		}
+	}
 	title := p.Name + " " + stage.Name + ": " + stage.Title
 	var change project.Change
 	if stage.Name == changeStage {
@@ -452,7 +474,7 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 		data.Change, data.ChangePath, data.Tasks = change.ID, change.Path, project.ActiveTasks(tasks, p.Name)
 		title = p.Name + " " + change.ID + ": " + change.Title
 	}
-	t, err := spawnStage(ctx, r, o, p, stage, spec.Harness, data, title)
+	t, err := spawnStage(ctx, r, o, p, stage, h, data, title)
 	if change.ID == "" {
 		return t, err
 	}
@@ -468,6 +490,23 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 	return t, nil
 }
 
+// stageHarness returns the harness of the agent that runs stage: the agent
+// override when given, else its kind's agent.
+func stageHarness(r *runner.Runner, stage project.Stage, agent string) (task.Harness, error) {
+	kind, found := r.Config.Kinds[stage.Kind]
+	if !found {
+		return "", fmt.Errorf("stage %s runs as kind %q, which the config does not define", stage.Name, stage.Kind)
+	}
+	if agent == "" {
+		agent = kind.Agent
+	}
+	spec, err := task.ParseAgentSpec(agent)
+	if err != nil {
+		return "", err
+	}
+	return spec.Harness, nil
+}
+
 // changeStage is the stage that assesses a change request.
 const changeStage = "change"
 
@@ -477,7 +516,11 @@ func spawnStage(ctx context.Context, r *runner.Runner, o stageRun, p state.Proje
 ) (*task.Task, error) {
 	kind := r.Config.Kinds[stage.Kind]
 	if stage.Name == project.GatePack {
-		n, err := project.CommittedPackVersion(ctx, p.Path)
+		rec, err := project.Load(r.Store, p.Name)
+		if err != nil {
+			return nil, err
+		}
+		n, err := project.CommittedPackVersion(ctx, p.Path, rec)
 		if err != nil {
 			return nil, err
 		}
@@ -509,10 +552,15 @@ func spawnStage(ctx context.Context, r *runner.Runner, o stageRun, p state.Proje
 			}
 		}
 	}
+	taskStage := o.TaskStage
+	if taskStage == "" {
+		taskStage = stage.Name
+	}
 	return r.Spawn(ctx, runner.SpawnOptions{
 		Kind: stage.Kind, Agent: o.Agent, After: after, Title: title,
 		Prompt: prompt, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
-		Project: p.Name, Stage: stage.Name, Keep: stage.Keep, Warn: o.Warn,
+		Project: p.Name, Stage: taskStage, Keep: stage.Keep, Warn: o.Warn,
+		Branch: o.Branch, Base: o.Base,
 	})
 }
 
@@ -580,7 +628,7 @@ func newProjectShareCommand() *cobra.Command {
 				}
 				*target, changed = on, true
 				rec.Decisions = append(rec.Decisions, project.Decision{
-					At: time.Now().UTC(), Text: "share " + args[0] + " switched " + args[1] + " by the user",
+					At: time.Now(), Text: "share " + args[0] + " switched " + args[1] + " by the user",
 				})
 				return nil
 			}); err != nil && !errors.Is(err, errUnchanged) {
@@ -724,12 +772,12 @@ func decideGate(cmd *cobra.Command, r *runner.Runner, p state.Project, o project
 	if d.Waived {
 		fmt.Fprintln(out, "pack gate: waived for the lite track by your choice; recorded in decisions.md")
 	}
-	if d.Gate == project.GatePack && d.Status == project.GateApproved {
+	if d.Roadmap {
 		fmt.Fprintf(out, "roadmap: imported %d milestone(s) and %d dependency(ies) from %s into %s\n",
 			d.Milestones, d.Dependencies, project.RoadmapProposalPath, project.RoadmapPath)
 	}
 	if d.Gate == project.GatePack && d.NoPDF {
-		fmt.Fprintf(out, "note: %s holds no %s\n", project.PackDir(versionOf(d.Version)), project.PackPDF)
+		fmt.Fprintf(out, "note: %s holds no %s\n", d.Folder, project.PackPDF)
 	}
 	tasks, err := r.Store.List()
 	if err != nil {
@@ -750,7 +798,7 @@ func decideGate(cmd *cobra.Command, r *runner.Runner, p state.Project, o project
 	if d.Status == project.GateChangesRequested {
 		sendFeedback(cmd, r, p, latest, d, feedback)
 	}
-	rep, err := projectReport(r.Store, p)
+	rep, err := projectReport(ctx, r.Store, p)
 	if err != nil {
 		return err
 	}
@@ -1073,4 +1121,649 @@ func newProjectDepSetCommand() *cobra.Command {
 	cmd.Flags().StringVar(&name, "project", "", projectFlagHelp)
 	cmd.Flags().StringVar(&status, "status", "", "new status: "+strings.Join(project.DependencyStatuses, ", "))
 	return cmd
+}
+
+func newProjectMilestoneCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "milestone",
+		Short: "Start, chain, finish, reopen and close milestones",
+		Long: "A milestone starts after the pack is approved (or waived on the lite track). M0 " +
+			"builds the repository standard and an empty app; every later milestone starts with a " +
+			"plan runner whose plan becomes a chain of feature runners, integrate runners and a close " +
+			"runner that prepares the release branch and its notes. You merge that branch through a " +
+			"pull request; done then sees the merge, commits the records and tags the release " +
+			"locally. The kit never merges into the default branch and never pushes.",
+		Args: cobra.NoArgs,
+	}
+	cmd.AddCommand(newMilestoneStartCommand(), newMilestoneChainCommand(), newMilestoneDoneCommand(),
+		newMilestoneReopenCommand(), newMilestoneCloseCommand())
+	return cmd
+}
+
+// milestoneRun is the input of milestone start and chain.
+type milestoneRun struct {
+	Project      string
+	Agent        string
+	ClaudeConfig string
+	Language     string
+	// Cwd picks the project when Project is empty.
+	Cwd  string
+	Warn func(string)
+}
+
+// milestoneFlags adds the flags milestone start and chain share.
+func milestoneFlags(cmd *cobra.Command, o *milestoneRun) {
+	f := cmd.Flags()
+	f.StringVar(&o.Project, "project", "", projectFlagHelp)
+	f.StringVar(&o.Agent, "agent", "", "agent spec harness[:model[:effort]] of every runner, overriding the stage kind's default")
+	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of Claude runners, as a path or a name such as claude2")
+	f.StringVar(&o.Language, "language", "", "language of the runners' report summaries and questions")
+}
+
+// runMilestone runs fn for the project of o after the guard, holding the
+// project's milestone lock so two starts or chains never race.
+func runMilestone(cmd *cobra.Command, o *milestoneRun, fn func(*runner.Runner, state.Project) error) error {
+	if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+		return err
+	}
+	var err error
+	if o.Cwd, err = os.Getwd(); err != nil {
+		return fmt.Errorf("find the current folder: %w", err)
+	}
+	o.Warn = func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }
+	r, err := openRunner()
+	if err != nil {
+		return err
+	}
+	p, err := milestoneProject(r, *o)
+	if err != nil {
+		return err
+	}
+	unlock, err := r.Store.LockProject(p.Name, "milestone")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return fn(r, p)
+}
+
+// milestoneProject picks the project of a milestone command.
+func milestoneProject(r *runner.Runner, o milestoneRun) (state.Project, error) {
+	p, err := resolveProject(r.Store, o.Project, o.Cwd)
+	if err != nil {
+		return state.Project{}, err
+	}
+	if p.Reserved {
+		return state.Project{}, fmt.Errorf("project %s is still being set up", p.Name)
+	}
+	return p, nil
+}
+
+func newMilestoneStartCommand() *cobra.Command {
+	var o milestoneRun
+	cmd := &cobra.Command{
+		Use:   "start <M>",
+		Short: "Start a milestone: M0's scaffold runner, or a later milestone's plan runner",
+		Long: "start refuses until the pack is approved (or waived on the lite track), while the pack " +
+			"needs a new approval after a scope change, and until the milestone before it in roadmap " +
+			"order is done; reordering goes through a change request and a new pack approval. With the pack " +
+			"waived on the lite track, M0 needs no roadmap, and the first start that finds the roadmap " +
+			"proposal committed imports it, as a pack approval would; M1 and later refuse until it is " +
+			"(herdr-runner-kit project run roadmap). It marks " +
+			"the milestone in progress in the record, committed when the milestone is done. M0 spawns " +
+			"the scaffold runner and the close runner after it; later milestones spawn the plan runner, whose plan answers its open " +
+			"questions with the recommended options and lists them as decisions. When the first runner " +
+			"of a milestone in progress failed or stopped, start runs it again.",
+		Example: `  herdr-runner-kit project milestone start M0
+  herdr-runner-kit project milestone start M1 --project demo-app`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return startMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], o)
+			})
+		},
+	}
+	milestoneFlags(cmd, &o)
+	return cmd
+}
+
+// startMilestone marks milestone id of p in progress and spawns its first
+// runner, or runs that runner again.
+func startMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) error {
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	before, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return err
+	}
+	m, again, err := project.StartMilestone(ctx, r.Store, p, id, tasks, time.Now())
+	if err != nil {
+		return err
+	}
+	rec, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return err
+	}
+	if !project.HasRoadmap(before) && project.HasRoadmap(rec) {
+		fmt.Fprintf(out, "imported the roadmap from %s (%d milestones), the pack gate being waived\n", project.RoadmapProposalPath, len(rec.Milestones))
+	}
+	stage, err := project.LoadStage(project.FirstTemplate(id))
+	if err != nil {
+		return err
+	}
+	h, err := stageHarness(r, stage, o.Agent)
+	if err != nil {
+		return err
+	}
+	def, err := project.DefaultBranch(ctx, p.Path)
+	if err != nil {
+		return err
+	}
+	data := project.NewStageData(rec, p.Path, project.Tools{}, "", time.Now())
+	project.MilestoneData(&data, rec, m, def)
+	so := stageRun{
+		Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+		TaskStage: project.FirstStage(id), Warn: o.Warn,
+	}
+	if r.Config.Kinds[stage.Kind].Worktree {
+		var own []*task.Task
+		for _, t := range tasks {
+			if t.Project == p.Name && t.Stage == so.TaskStage {
+				own = append(own, t)
+			}
+		}
+		var note string
+		if so.Branch, so.Base, note, err = project.PickBranch("feat/"+id+"-scaffold", own, branchTaken(ctx, p.Path)); err != nil {
+			return err
+		}
+		if note != "" {
+			o.Warn(note)
+		}
+		if so.Base == "" {
+			so.Base = def
+		}
+	}
+	t, err := spawnStage(ctx, r, so, p, stage, h, data, p.Name+" "+id+": "+stage.Title)
+	if err != nil {
+		return fmt.Errorf("%s is in progress, but its runner did not start: %w; run start again", id, err)
+	}
+	if again != nil {
+		fmt.Fprintf(out, "%s %s: runs %s again after %s %s\n", id, oneLineText(m.Title), stage.Name, again.ID, again.Status)
+	} else {
+		fmt.Fprintf(out, "%s %s is in progress since %s; recorded with the next commit point\n", id, oneLineText(m.Title), m.Started.Format(time.DateOnly))
+	}
+	if _, err := fmt.Fprintln(out, spawnLine(t)); err != nil {
+		return err
+	}
+	if id == project.ScaffoldMilestone && so.Branch != "" {
+		// The scaffold milestone has no plan: its close runner follows the
+		// scaffold runner straight away.
+		if closer := latestStageTask(tasks, p.Name, project.CloseStage(id)); closer == nil || (closer.Status.Terminal() && closer.Status != task.Done) {
+			step, err := project.CloseStep(p.Name, id, "scaffold", so.Branch, m.Branch, tasks, branchTaken(ctx, p.Path))
+			if err != nil {
+				return fmt.Errorf("%s started, but its close runner cannot: %w", t.ID, err)
+			}
+			ct, err := spawnClose(ctx, r, p, rec, m, def, step, []string{t.ID}, o)
+			if err != nil {
+				return fmt.Errorf("%s started, but its close runner did not: %w", t.ID, err)
+			}
+			if _, err := fmt.Fprintln(out, spawnLine(ct)); err != nil {
+				return err
+			}
+		}
+	}
+	parallelNote(r.Store, p.Name, o.Warn)
+	return nil
+}
+
+// latestStageTask returns the newest task of project name in stage, or nil.
+func latestStageTask(tasks []*task.Task, name, stage string) *task.Task {
+	var latest *task.Task
+	for _, t := range tasks {
+		if t.Project == name && t.Stage == stage {
+			latest = t
+		}
+	}
+	return latest
+}
+
+// branchTaken returns project.BranchTaken for the repository at root.
+func branchTaken(ctx context.Context, root string) func(string) string {
+	return func(b string) string { return project.BranchTaken(ctx, root, b) }
+}
+
+// spawnClose spawns the close runner of milestone m laid out in step, after
+// the tasks in after.
+func spawnClose(ctx context.Context, r *runner.Runner, p state.Project, rec project.Record, m project.Milestone, def string,
+	step project.ChainStep, after []string, o milestoneRun,
+) (*task.Task, error) {
+	stage, err := project.LoadStage(project.NodeTemplate(step.Node))
+	if err != nil {
+		return nil, err
+	}
+	h, err := stageHarness(r, stage, o.Agent)
+	if err != nil {
+		return nil, err
+	}
+	if !r.Config.Kinds[stage.Kind].Worktree {
+		return nil, fmt.Errorf("the close runner runs as kind %s, which the config runs without a worktree; it needs one for its release branch", stage.Kind)
+	}
+	if step.Note != "" {
+		o.Warn(step.Note)
+	}
+	data := project.NewStageData(rec, p.Path, project.Tools{}, "", time.Now())
+	project.MilestoneData(&data, rec, m, def)
+	project.NodeData(&data, step)
+	so := stageRun{
+		Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+		TaskStage: step.Stage, Warn: o.Warn, After: after, Branch: step.Branch, Base: step.Base,
+	}
+	return spawnStage(ctx, r, so, p, stage, h, data, p.Name+" "+step.Stage+": "+stage.Title)
+}
+
+func newMilestoneChainCommand() *cobra.Command {
+	var o milestoneRun
+	cmd := &cobra.Command{
+		Use:   "chain <M>",
+		Short: "Spawn a milestone's feature runners from its committed plan",
+		Long: "chain reads the yaml block of the milestone's committed plan once its plan runner is " +
+			"done, and refuses while an open question has no answer. A feature has at most one parent " +
+			"and an integrate node any number; a final integrate node over every leaf is added when " +
+			"the plan does not end in one, and a close runner after it. Runners are spawned in " +
+			"dependency order with --after their parents: root features and integrate nodes start from " +
+			"the default branch, a feature with a parent from its parent's branch, and the close runner " +
+			"from the final integrate node's branch. Integrate nodes work on integrate/<M>-<id>, the " +
+			"close runner on release/<M>. Backlog items the plan takes are marked planned. Run it " +
+			"again after a runner failed: done nodes are kept, a failed node whose runner created its " +
+			"branch continues on <branch>-r<k> from that branch, and any other existing branch is " +
+			"refused before anything is spawned.",
+		Example: `  herdr-runner-kit project milestone chain M1`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return chainMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], o)
+			})
+		},
+	}
+	milestoneFlags(cmd, &o)
+	return cmd
+}
+
+// chainMilestone spawns the runners of milestone id's plan in dependency
+// order. Every check runs before the first spawn.
+func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) error {
+	rec, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return err
+	}
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	if err := project.CheckChainable(rec, p.Name, id, tasks); err != nil {
+		return err
+	}
+	plan, err := project.ReadPlan(ctx, p.Path, rec, id)
+	if err != nil {
+		return err
+	}
+	if qs := project.Unanswered(plan); len(qs) > 0 {
+		return fmt.Errorf("the plan of %s leaves %d open question(s) unanswered:\n- %s\nask its plan runner to answer each with the recommended option, commit and report again",
+			id, len(qs), strings.Join(qs, "\n- "))
+	}
+	if err := project.CheckBacklogMoves(rec, id, plan.Backlog); err != nil {
+		return err
+	}
+	def, err := project.DefaultBranch(ctx, p.Path)
+	if err != nil {
+		return err
+	}
+	steps, err := project.PlanChain(project.ChainInput{
+		Project: p.Name, Milestone: id, Plan: plan, Tasks: tasks, DefaultBranch: def, Slug: runner.Slug,
+		BranchTaken: branchTaken(ctx, p.Path),
+		Merged:      rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })].Branch,
+	})
+	if err != nil {
+		return err
+	}
+	stages := map[string]project.Stage{}
+	harnesses := map[string]task.Harness{}
+	for _, st := range steps {
+		name := project.NodeTemplate(st.Node)
+		if _, loaded := stages[name]; loaded {
+			continue
+		}
+		if stages[name], err = project.LoadStage(name); err != nil {
+			return err
+		}
+		if harnesses[name], err = stageHarness(r, stages[name], o.Agent); err != nil {
+			return err
+		}
+	}
+	m := rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })]
+	moved, err := project.ApplyBacklogMoves(r.Store, p.Name, id, plan.Backlog)
+	if err != nil {
+		return err
+	}
+	if moved > 0 {
+		fmt.Fprintf(out, "backlog: %d item(s) planned into %s; recorded with the next commit point\n", moved, id)
+	}
+	ids := map[string]string{}
+	spawned := 0
+	for _, st := range steps {
+		if st.Done != nil {
+			ids[st.Node.ID] = st.Done.ID
+			fmt.Fprintf(out, "kept %s: %s is done\n", st.Stage, st.Done.ID)
+			continue
+		}
+		if st.Added {
+			fmt.Fprintf(out, "added %s: the plan does not end in one integrate node, so one integrates %s\n",
+				st.Stage, strings.Join(st.Node.DependsOn, ", "))
+		}
+		if st.Note != "" {
+			o.Warn(st.Note)
+		}
+		stage := stages[project.NodeTemplate(st.Node)]
+		data := project.NewStageData(rec, p.Path, project.Tools{}, "", time.Now())
+		project.MilestoneData(&data, rec, m, def)
+		project.NodeData(&data, st)
+		so := stageRun{
+			Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+			TaskStage: st.Stage, Warn: o.Warn,
+		}
+		for _, parent := range st.Node.DependsOn {
+			so.After = append(so.After, ids[parent])
+		}
+		if r.Config.Kinds[stage.Kind].Worktree {
+			so.Branch, so.Base = st.Branch, st.Base
+		}
+		title := p.Name + " " + st.Stage + ": " + runner.TitleFrom(st.Node.Title)
+		t, err := spawnStage(ctx, r, so, p, stage, harnesses[stage.Name], data, title)
+		if err != nil {
+			if spawned > 0 {
+				return fmt.Errorf("spawn %s: %w; the %d runner(s) above were spawned: once they finish, run the chain again", st.Stage, err, spawned)
+			}
+			return fmt.Errorf("spawn %s: %w", st.Stage, err)
+		}
+		ids[st.Node.ID] = t.ID
+		spawned++
+		fmt.Fprintln(out, spawnLine(t))
+	}
+	if spawned == 0 {
+		_, err := fmt.Fprintf(out, "every node of %s is done\n", id)
+		return err
+	}
+	parallelNote(r.Store, p.Name, o.Warn)
+	return nil
+}
+
+func newMilestoneDoneCommand() *cobra.Command {
+	var o milestoneRun
+	var merged string
+	cmd := &cobra.Command{
+		Use:   "done <M>",
+		Short: "Record a milestone done once you merged its release branch, and tag it locally",
+		Long: "done fetches origin when there is one and looks for the close runner's release branch " +
+			"in the local default branch. It refuses until you merged that branch through your pull " +
+			"request and pulled, while the main checkout is on another branch, behind origin, in the " +
+			"middle of a merge, or holds changes to the files the kit renders. Then it imports the " +
+			"release's roadmap update, if any and not imported by an earlier done of the milestone, " +
+			"records the milestone done, commits the records in one commit and creates the annotated " +
+			"tag tagFormat (v0.N.0 by default) on it. The tag is local: push it yourself if you want " +
+			"it on origin. After a squash or rebase merge, pass the merged commit, which must hold the " +
+			"release notes of the release branch's tip. Release notes merged before a reopen never " +
+			"count as a new release.",
+		Example: `  herdr-runner-kit project milestone done M1
+  herdr-runner-kit project milestone done M2 --merged-commit 3f9c2ab`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return finishMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], merged, o)
+			})
+		},
+	}
+	cmd.Flags().StringVar(&o.Project, "project", "", projectFlagHelp)
+	cmd.Flags().StringVar(&merged, "merged-commit", "", "after a squash or rebase merge: the commit on the default branch that holds the release")
+	return cmd
+}
+
+// finishMilestone records milestone id of p done after its merge and tags
+// it locally.
+func finishMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id, merged string, o milestoneRun) error {
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	d, err := project.FinishMilestone(ctx, r.Store, p, id, tasks, project.FinishOptions{MergedCommit: merged})
+	if d.Fetch != "" {
+		o.Warn("note: could not fetch origin (" + d.Fetch + "); checked against what was fetched before")
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s %s is done: %s is merged into %s\n", id, oneLineText(d.Milestone.Title), d.Branch, d.DefaultBranch)
+	if d.Roadmap > 0 {
+		fmt.Fprintf(out, "roadmap: updated %d milestone(s) from %s\n", d.Roadmap, project.RoadmapUpdatePath(id))
+	}
+	fmt.Fprintf(out, "records: committed in %s\n", shortCommit(d.Commit))
+	fmt.Fprintf(out, "tag: %s on %s, local only; push it yourself when you want it on origin: git push origin %s\n", d.Tag, shortCommit(d.Commit), d.Tag)
+	_, err = fmt.Fprintf(out, "next: herdr-runner-kit project status %s\n", p.Name)
+	return err
+}
+
+func shortCommit(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+func newMilestoneReopenCommand() *cobra.Command {
+	var o milestoneRun
+	var reason string
+	cmd := &cobra.Command{
+		Use:   "reopen <M> --reason WHY",
+		Short: "Put a done milestone back in progress for fixes, deleting its local tag",
+		Long: "reopen refuses when the milestone's tag is on origin, since a pushed tag is not taken " +
+			"back, while another milestone is in progress, and once a later milestone is done. It " +
+			"deletes the local tag, sets the milestone in progress and keeps the reason in the decision " +
+			"log, committed with the next commit point. The merged release stays on the default " +
+			"branch: revert it through a pull request if it must come out. After the fixes, close " +
+			"prepares a new release branch.",
+		Example: `  herdr-runner-kit project milestone reopen M1 --reason "export drops the last row"`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return reopenMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], reason)
+			})
+		},
+	}
+	cmd.Flags().StringVar(&o.Project, "project", "", projectFlagHelp)
+	cmd.Flags().StringVar(&reason, "reason", "", "why the milestone is reopened; kept in the decision log")
+	return cmd
+}
+
+// reopenMilestone puts done milestone id of p back in progress.
+func reopenMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id, reason string) error {
+	re, err := project.ReopenMilestone(ctx, r.Store, p, id, reason, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s %s is in progress again; recorded with the next commit point\n", id, oneLineText(re.Milestone.Title))
+	switch {
+	case re.Deleted:
+		fmt.Fprintf(out, "tag: deleted the local tag %s\n", re.Tag)
+	case re.Tag != "":
+		fmt.Fprintf(out, "tag: %s was not in %s\n", re.Tag, p.Path)
+	}
+	if re.Milestone.Branch != "" {
+		fmt.Fprintf(out, "%s stays merged; if its work must come out, revert that merge through a pull request: the kit never does\n", re.Milestone.Branch)
+	}
+	_, err = fmt.Fprintf(out, "next: fix on the branch the release came from, then prepare a new release: herdr-runner-kit project milestone close %s --project %s\n", id, p.Name)
+	return err
+}
+
+func newMilestoneCloseCommand() *cobra.Command {
+	var o milestoneRun
+	cmd := &cobra.Command{
+		Use:   "close <M>",
+		Short: "Spawn a new close runner after a reopen or a failed close",
+		Long: "close spawns a new close runner on release/<M>-r<k>, from the current branch of the " +
+			"step the last close runner waited for (the final integrate node, or M0's scaffold), so " +
+			"the new release holds the fixes made there. It is refused unless the milestone is in " +
+			"progress and its close runner failed, stopped, or prepared a release merged before the " +
+			"milestone was reopened.",
+		Example: `  herdr-runner-kit project milestone close M1`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return recloseMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], o)
+			})
+		},
+	}
+	milestoneFlags(cmd, &o)
+	return cmd
+}
+
+// recloseMilestone spawns a new close runner of milestone id.
+func recloseMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) error {
+	rec, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return err
+	}
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	step, parent, err := project.Reclose(rec, p.Name, id, tasks, branchTaken(ctx, p.Path))
+	if err != nil {
+		return err
+	}
+	def, err := project.DefaultBranch(ctx, p.Path)
+	if err != nil {
+		return err
+	}
+	m := rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })]
+	t, err := spawnClose(ctx, r, p, rec, m, def, step, []string{parent.ID}, o)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, spawnLine(t)); err != nil {
+		return err
+	}
+	parallelNote(r.Store, p.Name, o.Warn)
+	return nil
+}
+
+func newProjectGraduateCommand() *cobra.Command {
+	var name string
+	var o project.GraduateOptions
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "graduate [--export DIR [--include-original]] [--yes]",
+		Short: "Remove the discovery folder from the tree once the evergreen docs hold what it decided",
+		Long: "graduate removes " + project.DiscoveryDir + "/ from the tree in one commit with the " +
+			"project's records, and tags the commit before it " + project.ArchiveTag + " (or " +
+			project.ArchiveTag + "-<n>), locally and last. Prepare it first with: herdr-runner-kit " +
+			"project run " + project.GraduateStage + ", which writes " + project.RequirementsPath + ", " +
+			"keeps the approved pack in " + project.GraduatedApprovalDir + "/ and the open change " +
+			"requests in " + project.GraduatedChangesDir + "/, and rewrites links into the folder. " +
+			"Without --yes it only checks and prints what it would do; with --yes it checks everything " +
+			"again under the checkout lock first. It refuses until both gates passed, the discovery " +
+			"stages finished, the requirements are committed, the folder has no uncommitted or " +
+			"untracked files, no merge, rebase or cherry-pick is in progress, no markdown or HTML file " +
+			"outside the folder links into it, and the export folder is absent or empty. A refused " +
+			"commit restores the folder and leaves no tag. Graduation does not purge history: every " +
+			"committed file stays reachable through the tag. The original brief was never committed " +
+			"and stays on disk, untracked.",
+		Example: `  herdr-runner-kit project graduate
+  herdr-runner-kit project graduate --export ~/archive/demo-app-discovery --yes`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			s, p, err := openProject(name)
+			if err != nil {
+				return err
+			}
+			return graduateProject(cmd.Context(), cmd.OutOrStdout(), s, p, o, yes)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&name, "project", "", projectFlagHelp)
+	f.StringVar(&o.Export, "export", "", "also copy the discovery folder as committed into DIR, which must be absent or empty; symlinks stay links")
+	f.BoolVar(&o.IncludeOriginal, "include-original", false, "with --export: copy the git-ignored original brief too (regular files only)")
+	f.BoolVar(&yes, "yes", false, "graduate; without it, only check and print what would happen")
+	return cmd
+}
+
+// graduateProject checks the graduation of p and, with yes, carries it out.
+func graduateProject(ctx context.Context, out io.Writer, s *state.Store, p state.Project, o project.GraduateOptions, yes bool) error {
+	if !yes {
+		plan, err := project.PlanGraduation(ctx, s, p, o)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "graduate %s: %d committed file(s) under %s/ leave the tree in one commit with the records\n",
+			p.Name, plan.Files, project.DiscoveryDir)
+		fmt.Fprintf(out, "archive: tag %s on %s, local only\n", plan.Tag, shortCommit(plan.Head))
+		printGraduation(out, plan, o)
+		_, err = fmt.Fprintf(out, "nothing changed yet; graduate with: herdr-runner-kit project graduate --project %s%s --yes\n",
+			p.Name, exportFlags(plan, o))
+		return err
+	}
+	g, err := project.Graduate(ctx, s, p, o)
+	if g.Commit == "" {
+		return err
+	}
+	fmt.Fprintf(out, "graduated %s: %s/ removed in %s\n", p.Name, project.DiscoveryDir, shortCommit(g.Commit))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "archive: tag %s on %s, local only; push it yourself when you want it on origin: git push origin %s\n",
+		g.Tag, shortCommit(g.Head), g.Tag)
+	printGraduation(out, g.GraduatePlan, o)
+	fmt.Fprintf(out, "the way back: git -C %s show %s:%s\n", harness.ShellQuote(p.Path), g.Tag, project.SpecPath)
+	_, err = fmt.Fprintf(out, "undo: git -C %s revert %s\n", harness.ShellQuote(p.Path), shortCommit(g.Commit))
+	return err
+}
+
+// printGraduation prints what a graduation moves, exports and leaves, and
+// that it does not purge history.
+func printGraduation(out io.Writer, plan project.GraduatePlan, o project.GraduateOptions) {
+	ids := make([]string, 0, len(plan.Moved))
+	for id := range plan.Moved {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		fmt.Fprintf(out, "change request: %s now points at %s\n", id, plan.Moved[id])
+	}
+	if plan.Export != "" {
+		what := "the folder as committed, symlinks kept as links"
+		if o.IncludeOriginal {
+			what += ", and the original brief"
+		}
+		fmt.Fprintf(out, "export: %s into %s\n", what, plan.Export)
+	}
+	fmt.Fprintf(out, "history: graduation does not purge history; every committed file of %s/ stays in git history and at the tag\n",
+		project.DiscoveryDir)
+	for _, f := range plan.Originals {
+		fmt.Fprintf(out, "untracked: %s was never committed and stays on disk at its path\n", f)
+	}
+}
+
+// exportFlags repeats the export flags of a dry run for its --yes command.
+func exportFlags(plan project.GraduatePlan, o project.GraduateOptions) string {
+	if plan.Export == "" {
+		return ""
+	}
+	flags := " --export " + harness.ShellQuote(plan.Export)
+	if o.IncludeOriginal {
+		flags += " --include-original"
+	}
+	return flags
 }

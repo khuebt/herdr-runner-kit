@@ -112,7 +112,7 @@ func Create(ctx context.Context, s *state.Store, ws Workspaces, o CreateOptions)
 	}
 	rec := NewRecord(p.name)
 	rec.ReferenceRepo = p.reference
-	rec.Decisions = []Decision{{At: time.Now().UTC(), Text: "project created (herdr-runner-kit new)"}}
+	rec.Decisions = []Decision{{At: stamp(time.Now()), Text: "project created (herdr-runner-kit new)"}}
 	rec.Pending = 1
 	if err := Save(s, rec); err != nil {
 		return Created{}, errors.Join(err, s.ForgetProject(p.name))
