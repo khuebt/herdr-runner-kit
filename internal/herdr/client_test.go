@@ -49,6 +49,26 @@ func TestTabCreateParsesIDs(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCreateParsesIDs(t *testing.T) {
+	var got []string
+	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		got = args
+		return []byte(`{"result":{"type":"workspace_created","workspace":{"workspace_id":"w5"},"tab":{"tab_id":"w5:t1"},"root_pane":{"pane_id":"w5:p1","tab_id":"w5:t1","workspace_id":"w5"}}}`), nil, nil
+	}}
+	loc, err := c.WorkspaceCreate(context.Background(), "/repo", "demo-app")
+	if err != nil || loc != (Location{WorkspaceID: "w5", TabID: "w5:t1", PaneID: "w5:p1"}) {
+		t.Fatalf("loc = %+v, %v", loc, err)
+	}
+	if want := "workspace create --cwd /repo --label demo-app --no-focus"; strings.Join(got, " ") != want {
+		t.Errorf("argv = %q", strings.Join(got, " "))
+	}
+
+	c.Exec = fakeExec("", `{"error":{"code":"invalid_cwd","message":"no such folder"}}`, errors.New("exit status 1"))
+	if _, err := c.WorkspaceCreate(context.Background(), "/gone", "demo-app"); !HasCode(err, "invalid_cwd") {
+		t.Errorf("failed create: %v", err)
+	}
+}
+
 func TestUnexpectedOutputIsAnError(t *testing.T) {
 	c := &Client{Bin: "herdr", Exec: fakeExec("not json", "", nil)}
 	if _, err := c.AgentGet(context.Background(), "a"); err == nil {

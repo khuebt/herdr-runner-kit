@@ -142,6 +142,21 @@ func (c *Client) TabCreate(ctx context.Context, workspace, cwd, label string, en
 	return Location{WorkspaceID: p.WorkspaceID, TabID: p.TabID, PaneID: p.PaneID}, nil
 }
 
+// WorkspaceCreate opens a workspace at cwd, without taking focus, and
+// returns its root pane.
+func (c *Client) WorkspaceCreate(ctx context.Context, cwd, label string) (Location, error) {
+	var resp struct {
+		Result struct {
+			RootPane paneJSON `json:"root_pane"`
+		} `json:"result"`
+	}
+	if err := c.runJSON(ctx, DefaultTimeout, &resp, "workspace", "create", "--cwd", cwd, "--label", label, "--no-focus"); err != nil {
+		return Location{}, err
+	}
+	p := resp.Result.RootPane
+	return Location{WorkspaceID: p.WorkspaceID, TabID: p.TabID, PaneID: p.PaneID}, nil
+}
+
 // WorktreeOptions selects the repository by an open workspace or by a path.
 type WorktreeOptions struct {
 	Workspace string

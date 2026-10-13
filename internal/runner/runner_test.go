@@ -1422,3 +1422,146 @@ func TestSpawnProjectTaskOwner(t *testing.T) {
 		}
 	}
 }
+
+// projectRunner registers repo as project demo-app and makes the fake herdr
+// answer workspace calls from open, the workspace ids open in repo; a
+// workspace create opens w5 there.
+func projectRunner(t *testing.T, open ...string) (*Runner, *fakeHerdr, string) {
+	t.Helper()
+	r, fake, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	if _, err := r.Store.ReserveProject("demo-app", repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.CommitProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	fake.on("workspace list", func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		var items []string
+		for _, id := range open {
+			items = append(items, fmt.Sprintf(`{"workspace_id":%q}`, id))
+		}
+		return `{"result":{"workspaces":[` + strings.Join(items, ",") + `]}}`, nil
+	})
+	fake.on("workspace get", ok(`{"result":{"workspace":{"worktree":{"checkout_path":"`+repo+`","is_linked_worktree":false,"repo_root":"`+repo+`"}}}}`))
+	fake.on("workspace create", func([]string) (string, error) {
+		time.Sleep(10 * time.Millisecond) // widen the window for a second launch
+		mu.Lock()
+		defer mu.Unlock()
+		open = append(open, "w5")
+		return `{"result":{"root_pane":{"pane_id":"w5:p1","tab_id":"w5:t1","workspace_id":"w5"}}}`, nil
+	})
+	return r, fake, repo
+}
+
+func TestProjectTabOpensInTheOpenProjectWorkspace(t *testing.T) {
+	r, fake, _ := projectRunner(t, "w7")
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w7 ") {
+		t.Errorf("tab create = %q", tab)
+	}
+	if n := fake.count("workspace", "create"); n != 0 {
+		t.Errorf("workspace create ran %d times with the workspace open", n)
+	}
+}
+
+func TestProjectWorkspaceIsOpenedAgain(t *testing.T) {
+	r, fake, repo := projectRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ws := strings.Join(fake.call("workspace", "create"), " "); ws != "workspace create --cwd "+repo+" --label demo-app --no-focus" {
+		t.Errorf("workspace create = %q", ws)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w5 --cwd "+repo+" ") {
+		t.Errorf("tab create = %q", tab)
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "project-workspace-fallback") {
+		t.Errorf("events = %v", ev)
+	}
+}
+
+func TestProjectWorktreeOpensFromTheProjectWorkspace(t *testing.T) {
+	r, fake, _ := projectRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Skill: "ak:cook", Prompt: "plan.md", Project: "demo-app"})
+	if !tk.UseWorktree {
+		t.Fatal("code task in a git project should use a worktree")
+	}
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if wt := strings.Join(fake.call("worktree", "create"), " "); !strings.HasPrefix(wt, "worktree create --workspace w5 --branch ") {
+		t.Errorf("worktree create = %q", wt)
+	}
+}
+
+func TestProjectWorkspaceFallback(t *testing.T) {
+	r, fake, repo := projectRunner(t)
+	fake.on("workspace create", herdrErr("invalid_cwd"))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w1 ") {
+		t.Errorf("tab create = %q, want the main workspace", tab)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running {
+		t.Errorf("status = %s", got.Status)
+	}
+	if ev := events(t, r, tk.ID); !slices.Contains(ev, "project-workspace-fallback") {
+		t.Errorf("events = %v", ev)
+	}
+
+	// A worktree task falls back to herdr opening the worktree on its own.
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "code", Skill: "ak:cook", Prompt: "plan.md", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if wt := strings.Join(fake.call("worktree", "create"), " "); !strings.HasPrefix(wt, "worktree create --cwd "+repo+" --branch ") {
+		t.Errorf("worktree create = %q", wt)
+	}
+}
+
+func TestNonProjectTabSkipsWorkspaceLookup(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := fake.count("workspace"); n != 0 {
+		t.Errorf("a task without a project made %d workspace calls", n)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w1 ") {
+		t.Errorf("tab create = %q", tab)
+	}
+}
+
+func TestConcurrentProjectLaunchesOpenOneWorkspace(t *testing.T) {
+	r, fake, _ := projectRunner(t)
+	var tasks []*task.Task
+	for range 2 {
+		tasks = append(tasks, spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"}))
+	}
+	var wg sync.WaitGroup
+	got := make([]string, len(tasks))
+	errs := make([]error, len(tasks))
+	for i, tk := range tasks {
+		wg.Go(func() { got[i], errs[i] = r.projectWorkspace(context.Background(), tk) })
+	}
+	wg.Wait()
+	for i := range tasks {
+		if errs[i] != nil || got[i] != "w5" {
+			t.Errorf("launch %d: workspace %q, %v", i, got[i], errs[i])
+		}
+	}
+	if n := fake.count("workspace", "create"); n != 1 {
+		t.Errorf("workspace create ran %d times, want 1", n)
+	}
+}
