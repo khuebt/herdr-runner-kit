@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.3.0...v0.4.0) (2026-10-13)
+
+
+### Features
+
+* safer cleanup, git state in reports and runner keep ([#17](https://github.com/khuebt/herdr-runner-kit/issues/17)) ([860af5a](https://github.com/khuebt/herdr-runner-kit/commit/860af5a3e70c8310797f9f4e41603490ed51e717))
+
 ## [0.3.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.2.0...v0.3.0) (2026-10-13)
 
 
