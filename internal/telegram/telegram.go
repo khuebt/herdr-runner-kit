@@ -133,9 +133,9 @@ func Message(ev state.Event, t *task.Task) string {
 func roundReply(n int) string {
 	answers := make([]string, n)
 	for i := range answers {
-		answers[i] = fmt.Sprintf("%d%c", i+1, 'a'+rune(i%2))
+		answers[i] = fmt.Sprintf("%d<option>", i+1)
 	}
-	return strings.Join(answers, " ")
+	return strings.Join(answers, " ") + ", such as 1a 2b"
 }
 
 // gitLine shows the git snapshot of a report, or nothing without one.

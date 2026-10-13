@@ -48,7 +48,7 @@ Drop the v1 endpoint? (recommended: yes)
 Reply: #t3 <answer>
 ```
 
-A round of questions arrives as `#t4 needs 2 decisions`, one numbered line per question and `Reply: #t4 1a 2b`. A `done` lists the runner's own decisions as `Decided:` lines above the summary.
+A round of questions arrives as `#t4 needs 2 decisions`, one numbered line per question and `Reply: #t4 1<option> 2<option>, such as 1a 2b`. A `done` lists the runner's own decisions as `Decided:` lines above the summary.
 
 `telegram.notify` selects the events (default: all of `needs-human`, `failed`, `stalled`, `held`, `turn-ended-unreported`, `usage-limit` and `done`). A `done` is sent only for a task that no other task waits for, so a chain sends one message at its end.
 

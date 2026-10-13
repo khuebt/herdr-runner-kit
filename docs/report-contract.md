@@ -31,7 +31,7 @@ t4 needs-human · pick a store · 2 questions
   2. Which host? a) VPS (recommended) b) PaaS
 ```
 
-Telegram shows the same round with `Reply: #t4 1a 2b`. Answer it the usual way, for example `herdr-runner-kit answer t4 "1a 2b"`.
+Telegram shows the same round with `Reply: #t4 1<option> 2<option>, such as 1a 2b`. Answer it the usual way, for example `herdr-runner-kit answer t4 "1a 2b"`.
 
 ### Decisions
 
