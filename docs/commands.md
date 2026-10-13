@@ -25,12 +25,13 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | `answer <id> <text>` | Answers a runner that reported `needs-human`. It continues in the same session. |
 | `answer --from-telegram --stdin` | Routes a Telegram reply by its `#id` tag, or to the only waiting task. See [telegram.md](telegram.md). |
 | `main [--exec]` | Prints, or runs, the command that starts the main session with the skill and the Telegram channel. |
-| `send <id> <text>` | Types a new prompt into a live runner. A `done` task becomes `running` again, and its next report wakes `wait`. |
+| `send <id> <text>` | Types a new prompt into a live runner. A finished task whose tab is still open becomes `running` again, and its next report wakes `wait`. |
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
-| `list [--all]`, `show <id>` | Stored status and herdr's live state; one task in full. |
+| `list [--all]`, `show <id>` | Stored status, herdr's live state, and the TAB column: `open` (with when `gc` closes it), `kept`, `closed`, or `-` before a tab exists; one task in full. |
 | `events [--since 1h] [--task ID] [--follow] [--timings]` | The event log, or the measured latencies per task. |
 | `focus <id>` | Switches herdr to the runner's tab. |
-| `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. `gc` closes those that finished at least 30 minutes ago (`--older-than`), except a runner whose agent is working or blocked because someone kept using its tab; `wait` does the same for its owner's runners while it watches, and the auto re-arm hook once nothing is left to watch. Worktrees and branches are kept unless removal is asked. |
+| `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. `gc` closes those that finished at least 30 minutes ago (`--older-than`), except kept runners (see `keep`) and a runner whose agent is working or blocked because someone kept using its tab; `wait` does the same for its owner's runners while it watches, and the auto re-arm hook once nothing is left to watch. Worktrees and branches are kept unless removal is asked; `gc --remove-worktree` also closes kept runners. |
+| `keep <id> [--off]` | Keeps a finished runner's tab open until `keep --off` or `stop`. `--off` lets `gc` close it again, at once when its close time has passed. |
 | `cleanup [id]... [--yes] [--no-fetch]` | Fetches origin, then lists your finished worktree tasks whose worktree or branch is still there, as `merged`, `unmerged` or `dirty`. `--yes` removes the worktree and deletes the local branch of each merged one, or of the given ids. See [Cleaning up](#cleaning-up). |
 
 ## Chaining
@@ -41,15 +42,15 @@ With `--gate auto` (the default) the child starts by itself within about a secon
 
 A Claude runner uses the main session's Claude config folder, and so its account. `spawn --claude-config DIR` picks another one, as a path or a bare name: `claude2` means `~/.claude2`, and `claude` means Claude's default, `~/.claude`. Run `setup` and `doctor` for that folder too, so its herdr hook and permission prompt are ready.
 
-A worktree branch is named `hrk/<id>-<slug>` unless `spawn --branch NAME` names it after the repository's own convention, such as `fix/CSD-11-paid-leave`. The runner commits on that branch and never creates or switches branches.
+A worktree branch is named `hrk/<id>-<slug>` unless `spawn --branch NAME` names it after the repository's own convention, such as `fix/CSD-11-paid-leave`. The runner commits on that branch and never creates or switches branches. When a worktree task gets the default name, `spawn` also prints a `note:` with the repository's recent branch names, so the next spawn can follow them with `--branch`.
 
 ## Cleaning up
 
 Finished runners close on their own (see `gc`), but their worktrees and branches stay until you remove them:
 
-- **merged:** the branch, and the commit the worktree has checked out, are in the default branch (`origin/HEAD`, else `origin/main` or `origin/master`), and no tracked file has changes. `cleanup --yes` removes these. Untracked files in the worktree, such as plan files, are deleted with it; the list says how many.
+- **merged:** the branch, and the commit the worktree has checked out, are in the default branch (`origin/HEAD`, else `origin/main` or `origin/master`), no tracked file has changes, and no untracked file lies outside `plans/`. `cleanup --yes` removes these. Untracked files under `plans/` and ignored files are deleted with the worktree; the list says how many. The worktree and branch are checked again right before removal. Only a branch the task created is deleted, and only while it is still merged; a branch another worktree has checked out is kept.
 - **unmerged:** commits are not in the default branch. A branch merged with squash or rebase looks unmerged, since its commits never land as they are; delete it yourself.
-- **dirty:** tracked files have changes. They are never removed.
+- **dirty:** tracked files have changes, or untracked files lie outside `plans/`; the list names the first few. They are never removed.
 
 While `wait` runs, it fetches origin at most every 10 minutes and reports each newly merged worktree once as `cleanable` news, so the main agent can ask you. Nothing is removed until you agree.
 
@@ -60,10 +61,12 @@ The main agent runs `wait` in the background. In the session `main --exec` start
 `wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped`, `turn-ended-unreported` and `cleanable`. Other events, such as `started`, only move its cursor.
 
 ```
-t3 done · fix login · Login fixed; tests pass · out: /…/tasks/t3/out/notes.md
+t3 done · fix login · git: on hrk/t3-fix-login, 1 commit, no upstream · tab closes 15:42 · Login fixed; tests pass · out: /…/tasks/t3/out/notes.md
 t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 ```
 
+- A `done` or `failed` line carries `git:`, the state of the task's checkout when the runner reported: its worktree, or `repo state` for a task without one. It counts uncommitted and untracked files, and commits not pushed, behind, diverged from the upstream, or with no upstream.
+- A `done` line says `tab closes HH:MM` when `gc` will close the runner, or `tab kept` after `keep`.
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.
 - It only sees tasks of its owner, the git top-level of the current folder by default, so several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`.

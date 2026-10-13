@@ -11,7 +11,7 @@ The first prompt is the rendered skill (if `--skill` was given) followed by your
 
 ## What the runner is told
 
-The runner reports once when it finishes, with one of the commands below. A later message from the main session (`send`) is new work: `send` to a `done` task sets it `running` again, and the runner reports again when that work is done.
+The runner reports once when it finishes, with one of the commands below. A later message from the main session (`send`) is new work: `send` to a finished task whose tab is still open sets it `running` again, and the runner reports again when that work is done.
 
 ```sh
 herdr-runner-kit report done --summary "<one or two sentences>" [--output <path>]...
@@ -19,7 +19,7 @@ herdr-runner-kit report needs-human --question "<one question, with the recommen
 herdr-runner-kit report failed --summary "<what failed and why>"
 ```
 
-The command path is the absolute path of the binary that spawned the runner.
+The command path is the absolute path of the binary that spawned the runner. `report` also records a local git snapshot of the task's checkout, capped at 2 seconds and never fetching, which `wait` shows as `git:` on the news line.
 
 Rules the runner follows:
 
@@ -28,7 +28,8 @@ Rules the runner follows:
 - `needs-human` is only for a decision the runner cannot make. It asks one question, lists the options, recommends one, and stops. The answer arrives in the same session with `send`; the runner continues and reports again.
 - Background shells and subagents finish before `done` is reported.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Files under `plans/` and agent folders (`.claude/`, `.codex/`, `.agents/`) are never committed. The runner never pushes and never opens a pull request.
-- It commits on the branch it starts on, and never creates, switches or deletes branches.
+- It commits on the branch it starts on, and never creates, switches or deletes branches. If its prompt names another branch, it stays on its own and says so in its summary.
+- With a report language set (`language` in [config.md](config.md), or `spawn --language`), it writes summaries and questions in that language.
 
 ## A runner that forgets to report
 

@@ -49,7 +49,8 @@ herdr-runner-kit doctor [--claude-config DIR]…
   - the auto re-arm hook points at this binary;
   - herdr's state hook is registered in `settings.json`, not just present as a script;
   - the `--dangerously-skip-permissions` prompt has been accepted;
-  - the Telegram plugin is installed, has an access list, and loads only in the main session (see [telegram.md](telegram.md)).
+  - the Telegram plugin is installed, has an access list, and loads only in the main session (see [telegram.md](telegram.md));
+- Claude trust per config folder that runners use, including folders recorded by earlier Claude tasks: Claude has run with it, so its `.claude.json` exists, and whether the current repository is already trusted there (information only; the kit marks each runner's folder trusted at launch).
 
 ## uninstall
 
