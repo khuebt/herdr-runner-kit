@@ -67,7 +67,7 @@ func TestStatusNextStep(t *testing.T) {
 	packed.Gates.Pack = Gate{Status: GateApproved, Version: "v1", At: decided}
 	waived := approved
 	waived.Gates.Pack = Gate{Waived: true, At: decided}
-	graduated := NewRecord("demo-app")
+	graduated := waived
 	graduated.Graduated = &Graduated{At: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)}
 	running := []*task.Task{{ID: "t1", Project: "demo-app", Status: task.Running}}
 	held := []*task.Task{{ID: "t2", Project: "demo-app", Status: task.Held}}
@@ -93,7 +93,7 @@ func TestStatusNextStep(t *testing.T) {
 		{"folder gone", &fresh, held, true, "the folder /work/demo app is gone"},
 		{"held", &fresh, held, false, "herdr-runner-kit release t2"},
 		{"dialog", &fresh, dialog, false, "herdr-runner-kit focus t3"},
-		{"graduated", &graduated, nil, false, "nothing; the project has graduated"},
+		{"graduated", &graduated, nil, false, "spawn a runner for the next piece of work"},
 		{"runners", &fresh, running, false, "wait for the 1 runner(s) at work"},
 		{"discovery", &fresh, nil, false, "start discovery from the brief in " + BriefDir + ": herdr-runner-kit project run intake --project demo-app"},
 		{"after intake", &fresh, []*task.Task{intake}, false, "write the spec from the brief summary: herdr-runner-kit project run spec --project demo-app"},

@@ -63,8 +63,10 @@ func Commit(ctx context.Context, s *state.Store, name, message string, paths ...
 }
 
 // commitRendered is Commit for a caller that holds the project's checkout
-// lock and checked paths and message.
-func commitRendered(ctx context.Context, s *state.Store, p state.Project, message string, paths []string) (string, error) {
+// lock and checked paths and message. The commit also takes the changes
+// already staged under extra, such as a folder removed with git rm; they
+// are never passed to git add, which refuses a path that no longer exists.
+func commitRendered(ctx context.Context, s *state.Store, p state.Project, message string, paths []string, extra ...string) (string, error) {
 	name := p.Name
 	if err := checkCheckout(ctx, s, p); err != nil {
 		return "", err
@@ -89,13 +91,14 @@ func commitRendered(ctx context.Context, s *state.Store, p state.Project, messag
 	if out, err := gitLocked(ctx, p.Path, append([]string{"add", "-A", "--"}, paths...)...); err != nil {
 		return "", fmt.Errorf("git add: %s", firstLine(out, err))
 	}
-	changed, err := staged(ctx, p.Path, paths)
+	all := append(slices.Clone(paths), extra...)
+	changed, err := staged(ctx, p.Path, all)
 	if err != nil {
 		return "", err
 	}
 	sha := ""
 	if changed {
-		if sha, err = commitPaths(ctx, p.Path, message, paths); err != nil {
+		if sha, err = commitPaths(ctx, p.Path, message, all); err != nil {
 			return "", err
 		}
 	}

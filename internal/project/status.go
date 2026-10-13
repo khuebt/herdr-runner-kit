@@ -329,8 +329,6 @@ func (r Report) Next() string {
 	case r.Decide != nil:
 		return fmt.Sprintf("%s's impact is in %s: ask the user, then record the decision: %s",
 			r.Decide.ID, orDash(r.Decide.Path), r.command("cr decide "+strings.TrimPrefix(r.Decide.ID, "CR-")+" <now|next|backlog|reject>", ""))
-	case rec.Graduated != nil:
-		return "nothing; the project has graduated"
 	case len(r.Runners) > 0:
 		return fmt.Sprintf("wait for the %d runner(s) at work: herdr-runner-kit wait", len(r.Runners))
 	case rec.Gates.Spec.Status != GateApproved:

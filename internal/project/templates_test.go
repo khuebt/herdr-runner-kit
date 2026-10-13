@@ -24,7 +24,7 @@ func TestTemplateEveryStageRendersForBothHarnesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"architecture", "change", "design", "intake", "pack", "roadmap", "spec", "ux"}
+	want := []string{"architecture", "change", "design", "graduate", "intake", "pack", "roadmap", "spec", "ux"}
 	if got := StageNames(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("stages = %v, want %v", got, want)
 	}

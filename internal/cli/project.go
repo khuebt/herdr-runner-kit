@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
@@ -35,7 +36,7 @@ func newProjectCommand() *cobra.Command {
 		newProjectRunCommand(), newProjectShareCommand(),
 		newProjectGateCommand("approve"), newProjectGateCommand("changes"), newProjectGateCommand("reject"),
 		newProjectDecideCommand(), newProjectCRCommand(), newProjectBacklogCommand(), newProjectDepCommand(),
-		newProjectMilestoneCommand())
+		newProjectMilestoneCommand(), newProjectGraduateCommand())
 	return cmd
 }
 
@@ -449,6 +450,11 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 	}
 	data := project.NewStageData(rec, p.Path, o.Tools, o.Notes, time.Now())
 	data.Docx = o.Docx
+	if stage.Name == project.GraduateStage {
+		if err := project.GraduateData(ctx, &data, p.Path, rec); err != nil {
+			return nil, err
+		}
+	}
 	title := p.Name + " " + stage.Name + ": " + stage.Title
 	var change project.Change
 	if stage.Name == changeStage {
@@ -510,7 +516,11 @@ func spawnStage(ctx context.Context, r *runner.Runner, o stageRun, p state.Proje
 ) (*task.Task, error) {
 	kind := r.Config.Kinds[stage.Kind]
 	if stage.Name == project.GatePack {
-		n, err := project.CommittedPackVersion(ctx, p.Path)
+		rec, err := project.Load(r.Store, p.Name)
+		if err != nil {
+			return nil, err
+		}
+		n, err := project.CommittedPackVersion(ctx, p.Path, rec)
 		if err != nil {
 			return nil, err
 		}
@@ -762,12 +772,12 @@ func decideGate(cmd *cobra.Command, r *runner.Runner, p state.Project, o project
 	if d.Waived {
 		fmt.Fprintln(out, "pack gate: waived for the lite track by your choice; recorded in decisions.md")
 	}
-	if d.Gate == project.GatePack && d.Status == project.GateApproved {
+	if d.Roadmap {
 		fmt.Fprintf(out, "roadmap: imported %d milestone(s) and %d dependency(ies) from %s into %s\n",
 			d.Milestones, d.Dependencies, project.RoadmapProposalPath, project.RoadmapPath)
 	}
 	if d.Gate == project.GatePack && d.NoPDF {
-		fmt.Fprintf(out, "note: %s holds no %s\n", project.PackDir(versionOf(d.Version)), project.PackPDF)
+		fmt.Fprintf(out, "note: %s holds no %s\n", d.Folder, project.PackPDF)
 	}
 	tasks, err := r.Store.List()
 	if err != nil {
@@ -1620,4 +1630,115 @@ func recloseMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p st
 	}
 	parallelNote(r.Store, p.Name, o.Warn)
 	return nil
+}
+
+func newProjectGraduateCommand() *cobra.Command {
+	var name string
+	var o project.GraduateOptions
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "graduate [--export DIR [--include-original]] [--yes]",
+		Short: "Remove the discovery folder from the tree once the evergreen docs hold what it decided",
+		Long: "graduate removes " + project.DiscoveryDir + "/ from the tree in one commit with the " +
+			"project's records, and tags the commit before it " + project.ArchiveTag + " (or " +
+			project.ArchiveTag + "-<n>), locally and last. Prepare it first with: herdr-runner-kit " +
+			"project run " + project.GraduateStage + ", which writes " + project.RequirementsPath + ", " +
+			"keeps the approved pack in " + project.GraduatedApprovalDir + "/ and the open change " +
+			"requests in " + project.GraduatedChangesDir + "/, and rewrites links into the folder. " +
+			"Without --yes it only checks and prints what it would do; with --yes it checks everything " +
+			"again under the checkout lock first. It refuses until both gates passed, the discovery " +
+			"stages finished, the requirements are committed, the folder has no uncommitted or " +
+			"untracked files, no merge, rebase or cherry-pick is in progress, no markdown or HTML file " +
+			"outside the folder links into it, and the export folder is absent or empty. A refused " +
+			"commit restores the folder and leaves no tag. Graduation does not purge history: every " +
+			"committed file stays reachable through the tag. The original brief was never committed " +
+			"and stays on disk, untracked.",
+		Example: `  herdr-runner-kit project graduate
+  herdr-runner-kit project graduate --export ~/archive/demo-app-discovery --yes`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			s, p, err := openProject(name)
+			if err != nil {
+				return err
+			}
+			return graduateProject(cmd.Context(), cmd.OutOrStdout(), s, p, o, yes)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&name, "project", "", projectFlagHelp)
+	f.StringVar(&o.Export, "export", "", "also copy the discovery folder as committed into DIR, which must be absent or empty; symlinks stay links")
+	f.BoolVar(&o.IncludeOriginal, "include-original", false, "with --export: copy the git-ignored original brief too (regular files only)")
+	f.BoolVar(&yes, "yes", false, "graduate; without it, only check and print what would happen")
+	return cmd
+}
+
+// graduateProject checks the graduation of p and, with yes, carries it out.
+func graduateProject(ctx context.Context, out io.Writer, s *state.Store, p state.Project, o project.GraduateOptions, yes bool) error {
+	if !yes {
+		plan, err := project.PlanGraduation(ctx, s, p, o)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "graduate %s: %d committed file(s) under %s/ leave the tree in one commit with the records\n",
+			p.Name, plan.Files, project.DiscoveryDir)
+		fmt.Fprintf(out, "archive: tag %s on %s, local only\n", plan.Tag, shortCommit(plan.Head))
+		printGraduation(out, plan, o)
+		_, err = fmt.Fprintf(out, "nothing changed yet; graduate with: herdr-runner-kit project graduate --project %s%s --yes\n",
+			p.Name, exportFlags(plan, o))
+		return err
+	}
+	g, err := project.Graduate(ctx, s, p, o)
+	if g.Commit == "" {
+		return err
+	}
+	fmt.Fprintf(out, "graduated %s: %s/ removed in %s\n", p.Name, project.DiscoveryDir, shortCommit(g.Commit))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "archive: tag %s on %s, local only; push it yourself when you want it on origin: git push origin %s\n",
+		g.Tag, shortCommit(g.Head), g.Tag)
+	printGraduation(out, g.GraduatePlan, o)
+	fmt.Fprintf(out, "the way back: git -C %s show %s:%s\n", harness.ShellQuote(p.Path), g.Tag, project.SpecPath)
+	_, err = fmt.Fprintf(out, "undo: git -C %s revert %s\n", harness.ShellQuote(p.Path), shortCommit(g.Commit))
+	return err
+}
+
+// printGraduation prints what a graduation moves, exports and leaves, and
+// that it does not purge history.
+func printGraduation(out io.Writer, plan project.GraduatePlan, o project.GraduateOptions) {
+	ids := make([]string, 0, len(plan.Moved))
+	for id := range plan.Moved {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		fmt.Fprintf(out, "change request: %s now points at %s\n", id, plan.Moved[id])
+	}
+	if plan.Export != "" {
+		what := "the folder as committed, symlinks kept as links"
+		if o.IncludeOriginal {
+			what += ", and the original brief"
+		}
+		fmt.Fprintf(out, "export: %s into %s\n", what, plan.Export)
+	}
+	fmt.Fprintf(out, "history: graduation does not purge history; every committed file of %s/ stays in git history and at the tag\n",
+		project.DiscoveryDir)
+	for _, f := range plan.Originals {
+		fmt.Fprintf(out, "untracked: %s was never committed and stays on disk at its path\n", f)
+	}
+}
+
+// exportFlags repeats the export flags of a dry run for its --yes command.
+func exportFlags(plan project.GraduatePlan, o project.GraduateOptions) string {
+	if plan.Export == "" {
+		return ""
+	}
+	flags := " --export " + harness.ShellQuote(plan.Export)
+	if o.IncludeOriginal {
+		flags += " --include-original"
+	}
+	return flags
 }

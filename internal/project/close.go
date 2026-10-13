@@ -251,7 +251,7 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 	if d.Merged, err = findMerge(ctx, p.Path, id, d.Branch, d.DefaultBranch, o.MergedCommit); err != nil {
 		return Finished{}, err
 	}
-	if err := checkMainCheckout(ctx, s, p, d.DefaultBranch); err != nil {
+	if err := checkMainCheckout(ctx, s, p, d.DefaultBranch, "done"); err != nil {
 		return Finished{}, err
 	}
 	roadmap, hasRoadmap, err := committedFile(ctx, p.Path, RoadmapUpdatePath(id))
@@ -411,14 +411,15 @@ func ancestor(ctx context.Context, root, commit, ref string) bool {
 // not on the default branch, is behind or apart from origin's, has an
 // operation such as a merge in progress or a runner at work, or holds
 // changes to files the kit renders, which the commit would overwrite.
-func checkMainCheckout(ctx context.Context, s *state.Store, p state.Project, def string) error {
+// command names the command to run again.
+func checkMainCheckout(ctx context.Context, s *state.Store, p state.Project, def, command string) error {
 	head, err := git(ctx, p.Path, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil || head != def {
-		return fmt.Errorf("the main checkout %s is not on %s; check out %s there, pull, then run done again", p.Path, def, def)
+		return fmt.Errorf("the main checkout %s is not on %s; check out %s there, pull, then run %s again", p.Path, def, def, command)
 	}
 	if _, err := git(ctx, p.Path, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+def); err == nil &&
 		!ancestor(ctx, p.Path, "refs/remotes/origin/"+def, "HEAD") {
-		return fmt.Errorf("your %s is behind origin/%s; pull, then run done again", def, def)
+		return fmt.Errorf("your %s is behind origin/%s; pull, then run %s again", def, def, command)
 	}
 	if err := checkCheckout(ctx, s, p); err != nil {
 		return err

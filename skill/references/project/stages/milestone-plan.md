@@ -8,13 +8,13 @@ keep: true
 outputs:
   - "{{.PlanPath}}"
 ---
-Plan of {{.Milestone}} for project {{.Project}}, from the approved {{.Discovery}}/spec.md, handbook/product/roadmap.md, handbook/foundation/ and the code on {{.DefaultBranch}}.
+Plan of {{.Milestone}} for project {{.Project}}, from the approved {{.Spec}}, handbook/product/roadmap.md, handbook/foundation/ and the code on {{.DefaultBranch}}.
 
 1. Run {{skill "ak:plan"}} "{{.Milestone}} of {{.Project}}: one phase per feature of the roadmap list below, each a slice one runner builds and tests, with strict file ownership" --parallel {{if eq .Track "standard"}}--tdd{{else}}--no-tasks{{end}} --skip-journal. It writes plans/<timestamp>-<slug>/; leave that folder uncommitted.
 2. Copy the result into {{.PlanPath}}, one section per node, and make sure that:
    - shared APIs, types and schemas come first, as a contract node the features that use them depend on;
 {{- if eq .Type "ui"}}
-   - every UI feature's acceptance criteria include "matches the approved prototype" under {{.Discovery}}/;
+   - every UI feature's acceptance criteria include "matches the approved prototype"{{if .Prototype}} in {{.Prototype}}/{{else}}, archived at tag {{.ArchiveTag}}{{end}};
 {{- end}}
    - backlog items that fit this milestone, and the debt that slows it, are triaged within a small refactor budget (about a tenth of the milestone); name the backlog items you take;
    - every open question is answered with your recommended option. Pass the most important as --decision "<question> -> <answer>" (up to 7); the user reads them before chaining.

@@ -51,8 +51,15 @@ const (
 // packDir matches the folder of one pack version.
 var packDir = regexp.MustCompile(`^pack-v([1-9][0-9]{0,5})$`)
 
-// PackDir returns the folder of pack version n, relative to the root.
-func PackDir(n int) string { return fmt.Sprintf("%s/pack-v%d", ApprovalDir, n) }
+// PackDir returns the folder of pack version n before graduation,
+// relative to the root.
+func PackDir(n int) string { return packIn(ApprovalDir, n) }
+
+// PackFolder returns the folder of pack version n of rec's project, which
+// moves out of the discovery folder at graduation.
+func PackFolder(rec Record, n int) string { return packIn(ApprovalFolder(rec), n) }
+
+func packIn(dir string, n int) string { return fmt.Sprintf("%s/pack-v%d", dir, n) }
 
 // SpecInfo is what the gates read from the committed spec's front matter.
 type SpecInfo struct {
@@ -92,10 +99,10 @@ func CommittedSpec(ctx context.Context, root string) (SpecInfo, bool, error) {
 	return SpecInfo{Version: head.Version, Type: head.Type, Track: head.Track}, true, nil
 }
 
-// CommittedPackVersion returns the highest pack version committed at HEAD
-// under ApprovalDir, or 0 when there is none.
-func CommittedPackVersion(ctx context.Context, root string) (int, error) {
-	out, err := git(ctx, root, "ls-tree", "-d", "--name-only", "HEAD", "--", ApprovalDir+"/")
+// CommittedPackVersion returns the highest pack version of rec's project
+// committed at HEAD, or 0 when there is none.
+func CommittedPackVersion(ctx context.Context, root string, rec Record) (int, error) {
+	out, err := git(ctx, root, "ls-tree", "-d", "--name-only", "HEAD", "--", ApprovalFolder(rec)+"/")
 	if err != nil {
 		return 0, err
 	}
@@ -167,20 +174,31 @@ type GateState struct {
 
 // ReadGate reads gate name of rec's project in root. Openness is derived
 // from the artifacts committed at HEAD, so a record alone never opens a
-// gate.
+// gate. Once the project graduated, its spec is archived and the spec
+// gate stays as it was decided, while the pack gate reads the packs kept
+// outside the discovery folder.
 func ReadGate(ctx context.Context, root string, rec Record, name string) (GateState, error) {
 	g := GateState{Name: name}
-	spec, _, err := CommittedSpec(ctx, root)
-	if err != nil {
-		return g, err
+	var spec SpecInfo
+	if rec.Graduated != nil {
+		spec = SpecInfo{Version: versionNumber(rec.Gates.Spec.Version), Track: rec.Track}
+	} else {
+		var err error
+		if spec, _, err = CommittedSpec(ctx, root); err != nil {
+			return g, err
+		}
 	}
 	g.Track = spec.Track
 	switch name {
 	case GateSpec:
 		g.Committed, g.Outcome = spec.Version, rec.Gates.Spec
+		if rec.Graduated != nil {
+			return g, nil
+		}
 	case GatePack:
 		g.Outcome = rec.Gates.Pack
-		if g.Committed, err = CommittedPackVersion(ctx, root); err != nil {
+		var err error
+		if g.Committed, err = CommittedPackVersion(ctx, root, rec); err != nil {
 			return g, err
 		}
 	default:
@@ -189,7 +207,7 @@ func ReadGate(ctx context.Context, root string, rec Record, name string) (GateSt
 	// The spec file holds only its latest version, so an older version's
 	// content cannot be checked; each pack version keeps its own folder.
 	if o := g.Outcome; o.Content != "" && (name == GatePack || versionNumber(o.Version) == g.Committed) {
-		id, err := committedID(ctx, root, artifactPath(name, versionNumber(o.Version)))
+		id, err := committedID(ctx, root, artifactPath(rec, name, versionNumber(o.Version)))
 		if err != nil {
 			return g, err
 		}
@@ -199,9 +217,9 @@ func ReadGate(ctx context.Context, root string, rec Record, name string) (GateSt
 }
 
 // artifactPath returns the committed artifact of version n of gate.
-func artifactPath(gate string, n int) string {
+func artifactPath(rec Record, gate string, n int) string {
 	if gate == GatePack {
-		return PackDir(n)
+		return PackFolder(rec, n)
 	}
 	return SpecPath
 }
@@ -317,8 +335,13 @@ type Decided struct {
 	// Milestones and Dependencies count what a pack approval imported
 	// from the roadmap proposal.
 	Milestones, Dependencies int
-	// NoPDF is set when the approved pack holds no PDF.
-	NoPDF bool
+	// NoPDF is set when the approved pack holds no PDF; Folder is the
+	// decided pack's folder.
+	NoPDF  bool
+	Folder string
+	// Roadmap is set when a pack approval imported the roadmap proposal,
+	// which a graduated project no longer has.
+	Roadmap bool
 	// Replaced is the earlier outcome of the same version, which this one
 	// replaces because the version's content changed since; "" when none.
 	Replaced string
@@ -367,7 +390,7 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 	if err := checkOrder(ctx, p.Path, rec, o.Gate); err != nil {
 		return Decided{}, err
 	}
-	spec, n, content, err := committedArtifact(ctx, p.Path, o.Gate)
+	spec, n, content, err := committedArtifact(ctx, p.Path, rec, o.Gate)
 	if err != nil {
 		return Decided{}, err
 	}
@@ -382,11 +405,16 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 		return Decided{}, fmt.Errorf("only a lite-track project may skip the pack gate, and the committed spec says track %s", orDash(spec.Track))
 	}
 	var roadmap []byte
+	// A graduated project keeps its roadmap in the record: the proposal
+	// left the tree with the discovery folder.
+	importRoadmap := o.Gate == GatePack && status == GateApproved && rec.Graduated == nil
+	d.Roadmap = importRoadmap
 	if o.Gate == GatePack {
-		if d.NoPDF, err = missing(ctx, p.Path, PackDir(n)+"/"+PackPDF); err != nil {
+		d.Folder = PackFolder(rec, n)
+		if d.NoPDF, err = missing(ctx, p.Path, d.Folder+"/"+PackPDF); err != nil {
 			return Decided{}, err
 		}
-		if status == GateApproved {
+		if importRoadmap {
 			var ok bool
 			if roadmap, ok, err = committedFile(ctx, p.Path, RoadmapProposalPath); err != nil {
 				return Decided{}, err
@@ -436,11 +464,13 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 			text += "; the pack gate is waived for the lite track by the user's choice"
 		}
 		if o.Gate == GatePack && status == GateApproved {
-			b, err := ParseBlock(roadmap, RoadmapProposal, *rec)
-			if err != nil {
-				return fmt.Errorf("%s: %w", RoadmapProposalPath, err)
+			if importRoadmap {
+				b, err := ParseBlock(roadmap, RoadmapProposal, *rec)
+				if err != nil {
+					return fmt.Errorf("%s: %w", RoadmapProposalPath, err)
+				}
+				d.Milestones, d.Dependencies = applyRoadmap(rec, b)
 			}
-			d.Milestones, d.Dependencies = applyRoadmap(rec, b)
 			rec.Reapproval = Reapproval{}
 			gate.Waived = false
 		}
@@ -522,9 +552,17 @@ var commitVerb = map[string]string{
 // committedArtifact returns the version of gate's artifact committed at
 // HEAD and its git object id, refusing one that is missing or has
 // uncommitted changes. It also returns the committed spec, which every
-// gate reads.
-func committedArtifact(ctx context.Context, root, gate string) (SpecInfo, int, string, error) {
+// gate reads. After graduation the spec is archived and only a pack
+// outside the discovery folder can be decided.
+func committedArtifact(ctx context.Context, root string, rec Record, gate string) (SpecInfo, int, string, error) {
+	if rec.Graduated != nil && gate == GateSpec {
+		return SpecInfo{}, 0, "", fmt.Errorf("the spec was archived when the project graduated (tag %s); scope changes go through change requests",
+			orDash(rec.Graduated.Tag))
+	}
 	spec, ok, err := CommittedSpec(ctx, root)
+	if rec.Graduated != nil {
+		spec, ok, err = SpecInfo{Version: versionNumber(rec.Gates.Spec.Version), Track: rec.Track}, true, nil
+	}
 	if err != nil {
 		return SpecInfo{}, 0, "", err
 	}
@@ -534,19 +572,19 @@ func committedArtifact(ctx context.Context, root, gate string) (SpecInfo, int, s
 			return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no %s; the spec runner commits it before it reports done", SpecPath)
 		}
 	} else {
-		if n, err = CommittedPackVersion(ctx, root); err != nil {
+		if n, err = CommittedPackVersion(ctx, root, rec); err != nil {
 			return SpecInfo{}, 0, "", err
 		}
 		if n == 0 {
-			return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no pack under %s/; run the pack stage first", ApprovalDir)
+			return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no pack under %s/; run the pack stage first", ApprovalFolder(rec))
 		}
-		if gone, err := missing(ctx, root, PackDir(n)+"/"+PackHTML); err != nil {
+		if gone, err := missing(ctx, root, PackFolder(rec, n)+"/"+PackHTML); err != nil {
 			return SpecInfo{}, 0, "", err
 		} else if gone {
-			return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no %s/%s", PackDir(n), PackHTML)
+			return SpecInfo{}, 0, "", fmt.Errorf("HEAD holds no %s/%s", PackFolder(rec, n), PackHTML)
 		}
 	}
-	rel := artifactPath(gate, n)
+	rel := artifactPath(rec, gate, n)
 	dirty, err := uncommitted(ctx, root, rel)
 	if err != nil {
 		return SpecInfo{}, 0, "", err

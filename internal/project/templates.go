@@ -21,6 +21,8 @@ import (
 )
 
 // Folders of the discovery artifacts, relative to the repository root.
+// After graduation the change requests and the packs live in
+// ChangesFolder and ApprovalFolder instead.
 const (
 	DiscoveryDir = "handbook/product/discovery"
 	ChangesDir   = DiscoveryDir + "/changes"
@@ -88,12 +90,17 @@ type StageData struct {
 	Discovery   string
 	ChangesDir  string
 	ApprovalDir string
-	Type        string
-	Track       string
-	Tools       Tools
-	Share       Share
-	Notes       string
-	Today       string
+	// Spec is the approved scope runners read: the spec, or the evergreen
+	// requirements once the project graduated. Prototype is the
+	// prototype's folder, empty once it left the tree.
+	Spec      string
+	Prototype string
+	Type      string
+	Track     string
+	Tools     Tools
+	Share     Share
+	Notes     string
+	Today     string
 	// PackVersion is the version the pack stage writes.
 	PackVersion int
 	// Docx asks the pack stage for a DOCX export as well.
@@ -129,15 +136,32 @@ type StageData struct {
 	Node      string
 	NodeType  string
 	NodeBlock string
+	// The graduate runner's inputs: the evergreen requirements it writes,
+	// the folders change requests and packs move to, the tag the kit
+	// archives the discovery folder under, and the approved spec version.
+	// It copies pack PackVersion, none when 0, and reads the change
+	// requests in Changes.
+	Requirements   string
+	NewChangesDir  string
+	NewApprovalDir string
+	ArchiveTag     string
+	SpecVersion    string
 }
 
 // NewStageData builds the template data of rec's project in root.
 func NewStageData(rec Record, root string, tools Tools, notes string, now time.Time) StageData {
-	return StageData{
+	d := StageData{
 		Project: rec.Name, Root: root, Discovery: DiscoveryDir, ChangesDir: ChangesFolder(rec),
-		ApprovalDir: ApprovalDir, Type: rec.Type, Track: rec.Track, Tools: tools, Share: rec.Share,
+		ApprovalDir: ApprovalFolder(rec), Spec: SpecPath, Prototype: DiscoveryDir + "/prototype",
+		Type: rec.Type, Track: rec.Track, Tools: tools, Share: rec.Share,
 		Notes: strings.TrimSpace(notes), Today: now.Format(time.DateOnly),
+		Requirements: RequirementsPath, NewChangesDir: GraduatedChangesDir, NewApprovalDir: GraduatedApprovalDir,
+		ArchiveTag: ArchiveTag,
 	}
+	if rec.Graduated != nil {
+		d.Spec, d.Prototype, d.ArchiveTag = RequirementsPath, "", rec.Graduated.Tag
+	}
+	return d
 }
 
 // Stages returns every stage template, sorted by name.
@@ -239,16 +263,29 @@ func (s Stage) RenderOutputs(d StageData) ([]string, error) {
 	return out, nil
 }
 
-// CheckRequires refuses a stage while a gate it requires has not passed.
-// Gates are read from the artifacts committed in root, not from the
-// record alone.
+// CheckRequires refuses a stage while a gate it requires has not passed,
+// and a stage that works on the discovery folder once the project
+// graduated. Gates are read from the artifacts committed in root, not from
+// the record alone.
 func CheckRequires(ctx context.Context, root string, rec Record, s Stage) error {
+	if g := rec.Graduated; g != nil && s.needsDiscovery() {
+		return fmt.Errorf("stage %s works on %s/, which left the tree when %s graduated; it is archived at tag %s",
+			s.Name, DiscoveryDir, rec.Name, orDash(g.Tag))
+	}
 	for _, g := range s.Requires {
 		if err := RequireGate(ctx, root, rec, g); err != nil {
 			return fmt.Errorf("stage %s: %w", s.Name, err)
 		}
 	}
 	return nil
+}
+
+// needsDiscovery reports whether the stage's template reads or writes the
+// discovery folder.
+func (s Stage) needsDiscovery() bool {
+	return slices.ContainsFunc(append([]string{s.body}, s.Outputs...), func(text string) bool {
+		return strings.Contains(text, ".Discovery")
+	})
 }
 
 // UntrustedBlock fences text as untrusted data under label. The fence is
