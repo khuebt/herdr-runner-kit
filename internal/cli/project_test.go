@@ -37,6 +37,7 @@ func TestProjectGuard(t *testing.T) {
 		{"project", "register", t.TempDir()},
 		{"project", "forget", "demo-app"},
 		{"project", "forget", "demo-app", "--yes"},
+		{"new", filepath.Join(t.TempDir(), "app"), "--stdin"},
 	} {
 		if _, err := runCLI(args...); !errors.Is(err, project.ErrInsideRunner) {
 			t.Errorf("%v inside a runner: err = %v", args, err)
@@ -71,6 +72,54 @@ func TestProjectRegisterAndForget(t *testing.T) {
 	}
 	if _, err := runCLI("project", "forget", "demo-app"); err == nil {
 		t.Fatal("forgot an unknown project")
+	}
+}
+
+func TestNewProjectFromStdin(t *testing.T) {
+	t.Setenv("HRK_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("HRK_TASK", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	// herdr is down: the project is still created, with a warning.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "herdr"), []byte("#!/bin/sh\necho 'herdr is not running' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "demo-app")
+
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetIn(strings.NewReader("A small tool that tracks reading lists.\n"))
+	root.SetArgs([]string{"new", path, "--stdin", "--remote", "git@example.com:team/demo-app.git"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("new: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"created demo-app at " + path + " (commit ",
+		", branch main)\n",
+		"remote: origin git@example.com:team/demo-app.git\n",
+		"workspace: not created: ",
+		"brief: original kept untracked at " + filepath.Join(path, project.BriefDir, project.IdeaFile) + "\n",
+		"next: herdr-runner-kit project status demo-app\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output lacks %q:\n%s", want, got)
+		}
+	}
+	if _, err := runCLI("new", filepath.Join(dir, "other")); err == nil || !strings.Contains(err.Error(), "--brief FILE or --stdin") {
+		t.Errorf("new without a brief: %v", err)
 	}
 }
 

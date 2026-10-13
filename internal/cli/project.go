@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
+	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -22,6 +24,89 @@ func newProjectCommand() *cobra.Command {
 	}
 	cmd.AddCommand(newProjectRegisterCommand(), newProjectForgetCommand())
 	return cmd
+}
+
+func newNewCommand() *cobra.Command {
+	var o project.CreateOptions
+	var stdin bool
+	cmd := &cobra.Command{
+		Use:   "new <path> (--brief FILE | --stdin)",
+		Short: "Start a project: a git repository with its record, first commit and herdr workspace",
+		Long: "new creates the folder and a git repository in it, keeps the original brief " +
+			"(or the idea read from stdin) git-ignored under " + project.BriefDir + ", writes " +
+			"the project record and makes one first commit of exactly the files it wrote. It " +
+			"adds origin when --remote is given (it never pushes), opens a herdr workspace " +
+			"and registers the project. It refuses /, your home folder, folders inside a git " +
+			"repository or holding a project, non-empty folders without --allow-non-empty and " +
+			"URLs that hold credentials. Nothing is deleted when a step fails.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			if stdin == (o.BriefFile != "") {
+				return errors.New("give the brief with either --brief FILE or --stdin")
+			}
+			if stdin {
+				idea, err := promptText(cmd, nil, true)
+				if err != nil {
+					return err
+				}
+				if idea == "" {
+					return errors.New("the idea on stdin is empty")
+				}
+				o.Idea = idea
+			}
+			o.Path = args[0]
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("find your home folder: %w", err)
+			}
+			o.Home = home
+			store, err := openStore()
+			if err != nil {
+				return err
+			}
+			c, err := project.Create(cmd.Context(), store, herdr.New(), o)
+			if err != nil {
+				return err
+			}
+			printCreated(cmd, c)
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&o.Name, "name", "", "project name (default: the folder name)")
+	f.StringVar(&o.Remote, "remote", "", "URL added as origin; never pushed, and refused when it holds credentials")
+	f.StringVar(&o.BriefFile, "brief", "", "file holding the brief, kept git-ignored in the project")
+	f.BoolVar(&stdin, "stdin", false, "read the idea or brief from stdin")
+	f.StringVar(&o.Reference, "reference", "", "path or URL of a repository to learn from")
+	f.StringVar(&o.InitialBranch, "initial-branch", "", "name of the first branch (default: git's init.defaultBranch, else main)")
+	f.BoolVar(&o.AllowNonEmpty, "allow-non-empty", false, "start the project in a folder that already holds files")
+	return cmd
+}
+
+func printCreated(cmd *cobra.Command, c project.Created) {
+	w := cmd.OutOrStdout()
+	fmt.Fprintf(w, "created %s at %s (commit %s, branch %s)\n", c.Name, c.Path, c.Commit[:min(12, len(c.Commit))], c.Branch)
+	switch {
+	case c.RemoteErr != "":
+		fmt.Fprintf(w, "remote: not added: %s\n", c.RemoteErr)
+	case c.Remote != "":
+		fmt.Fprintf(w, "remote: origin %s\n", c.Remote)
+	default:
+		fmt.Fprintln(w, "remote: none")
+	}
+	if c.WorkspaceErr != "" {
+		fmt.Fprintf(w, "workspace: not created: %s\n", c.WorkspaceErr)
+	} else {
+		fmt.Fprintf(w, "workspace: %s\n", c.Workspace)
+	}
+	if c.RegistryErr != "" {
+		fmt.Fprintf(w, "registry: not registered: %s\n", c.RegistryErr)
+	}
+	fmt.Fprintf(w, "brief: original kept untracked at %s\n", c.Brief)
+	fmt.Fprintf(w, "next: herdr-runner-kit project status %s\n", c.Name)
 }
 
 func newProjectRegisterCommand() *cobra.Command {
