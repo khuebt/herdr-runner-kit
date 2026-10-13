@@ -28,6 +28,7 @@ Rules the runner follows:
 - `needs-human` is only for a decision the runner cannot make. It asks one question, lists the options, recommends one, and stops. The answer arrives in the same session with `send`; the runner continues and reports again.
 - Background shells and subagents finish before `done` is reported.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Files under `plans/` and agent folders (`.claude/`, `.codex/`, `.agents/`) are never committed. The runner never pushes and never opens a pull request.
+- It commits on the branch it starts on, and never creates, switches or deletes branches.
 
 ## A runner that forgets to report
 

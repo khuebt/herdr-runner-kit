@@ -16,6 +16,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `focus <id>` | Switch herdr to the runner's tab. |
 | `stop <id> [--remove-worktree]` | Quit the runner and close its tab. Branches are always kept. |
 | `gc` | Close runners of tasks that finished 30 minutes ago or more. |
+| `cleanup [id]... [--yes]` | List finished worktrees and branches left behind: merged, unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
 
 ## spawn flags
@@ -25,6 +26,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `--kind NAME` | `code`, `flow`, `fix`, `research`, `report`, or a kind from the user's config. |
 | `--agent SPEC` | `claude` or `codex`, with optional `:model` and `:effort`. |
 | `--worktree`, `--no-worktree` | Override the kind's worktree choice. |
+| `--branch NAME` | Name of the new worktree branch, following the repository's convention. |
 | `--base REF` | Git ref a new worktree branch starts from. |
 | `--skill NAME` | Skill to invoke first, such as `ak:cook`. |
 | `--after t1,t2` | Start when every listed task is `done`. |
@@ -48,3 +50,4 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `tN stalled` | The agent waits on a prompt in its pane | Tell the user to look at it (`focus`). |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |
 | `tN stopped` | Stopped by `stop` | Relay it. |
+| `tN cleanable` | Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
