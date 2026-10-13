@@ -179,6 +179,32 @@ func TestRouteTelegram(t *testing.T) {
 			t.Errorf("line = %q", line)
 		}
 	})
+	t.Run("project status", func(t *testing.T) {
+		r, _, dir := setup(t)
+		if _, err := r.Store.ReserveProject("demo-app", plainDir(t)); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Store.CommitProject("demo-app"); err != nil {
+			t.Fatal(err)
+		}
+		// Nothing waits: it is a question for the main session.
+		if line, err := r.RouteTelegram(ctx, "Status demo-app?"); err != nil || line != "meta: project status demo-app" {
+			t.Fatalf("%q %v", line, err)
+		}
+		// The only waiting runner may have asked for exactly this reply.
+		a := ask(t, r, dir)
+		line, err := r.RouteTelegram(ctx, "status demo-app")
+		if err != nil || line != `ambiguous: "status demo-app" could be an answer for `+a.ID+"; ask, or show project status" {
+			t.Fatalf("%q %v", line, err)
+		}
+		if got, _ := r.Store.Get(a.ID); got.Status != task.NeedsHuman {
+			t.Errorf("the reply reached %s: %s", a.ID, got.Status)
+		}
+		// An unregistered name is an ordinary reply.
+		if line, err := r.RouteTelegram(ctx, "status other-app"); err != nil || !strings.HasPrefix(line, a.ID+" got the answer") {
+			t.Fatalf("%q %v", line, err)
+		}
+	})
 	t.Run("held approval and note", func(t *testing.T) {
 		r, _, dir := setup(t)
 		h1 := spawnStarting(t, r, SpawnOptions{Prompt: "cook", Cwd: dir, Gate: task.GateHuman})

@@ -50,13 +50,13 @@ func TestLearningCountsReopensTabAnswersAndSwitches(t *testing.T) {
 		{TS: at(90), Type: "woke", Summary: "t3"},
 	}
 	tasks := []*task.Task{
-		{ID: "t1", Kind: "code", Agent: "codex", Status: task.Done},
+		{ID: "t1", Kind: "code", Agent: "codex", Project: "demo-app", Status: task.Done},
 		{ID: "t2", Kind: "research", Agent: "claude", Status: task.Done},
-		{ID: "t3", Kind: "code", Agent: "claude", FallbackFrom: []string{"codex"}, Status: task.NeedsHuman},
+		{ID: "t3", Kind: "code", Agent: "claude", Project: "demo-app", FallbackFrom: []string{"codex"}, Status: task.NeedsHuman},
 		{ID: "t4", Kind: "fix", Agent: "claude", Status: task.Done},
 	}
 	var out strings.Builder
-	if err := printLearning(&out, events, tasks, nil, at(100)); err != nil {
+	if err := printLearning(&out, events, tasks, nil, "", at(100)); err != nil {
 		t.Fatal(err)
 	}
 	rows := map[string][]string{}
@@ -65,12 +65,12 @@ func TestLearningCountsReopensTabAnswersAndSwitches(t *testing.T) {
 		rows[f[0]] = f
 	}
 	want := map[string]string{
-		//    kind agents status attempts nudges sends answers needs-human unreported switches duration waited
-		"t1": "code codex done 2 1 1 0 0 0 0 5m0s 0s",
+		//    project kind agents status attempts nudges sends answers needs-human unreported switches duration waited
+		"t1": "demo-app code codex done 2 1 1 0 0 0 0 5m0s 0s",
 		// Time held before the spawn is no wait: waited stays within duration.
-		"t2": "research claude done 1 0 1 2 2 0 0 2m0s 1m10s",
-		"t3": "code codex->claude needs-human 1 0 0 0 1 1 1 - 20s",
-		"t4": "fix claude done 1 0 1 1 1 0 0 50s 10s",
+		"t2": "- research claude done 1 0 1 2 2 0 0 2m0s 1m10s",
+		"t3": "demo-app code codex->claude needs-human 1 0 0 0 1 1 1 - 20s",
+		"t4": "- fix claude done 1 0 1 1 1 0 0 50s 10s",
 	}
 	for id, w := range want {
 		if got := strings.Join(rows[id][1:], " "); got != w {
@@ -82,10 +82,22 @@ func TestLearningCountsReopensTabAnswersAndSwitches(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := printLearning(&out, events, tasks, []string{"t2"}, at(100)); err != nil {
+	if err := printLearning(&out, events, tasks, []string{"t2"}, "", at(100)); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "t1") || !strings.Contains(out.String(), "t2") {
 		t.Errorf("--task t2:\n%s", out.String())
+	}
+
+	out.Reset()
+	if err := printLearning(&out, events, tasks, nil, "demo-app", at(100)); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+		got = append(got, strings.Fields(line)[0])
+	}
+	if strings.Join(got, " ") != "TASK t1 t3" {
+		t.Errorf("--project demo-app:\n%s", out.String())
 	}
 }

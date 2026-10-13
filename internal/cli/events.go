@@ -19,6 +19,7 @@ func newEventsCommand() *cobra.Command {
 	var since time.Duration
 	var follow, timings, learn bool
 	var ids []string
+	var project string
 	cmd := &cobra.Command{
 		Use:   "events",
 		Short: "Show the event log, or the latencies and learning numbers computed from it",
@@ -26,6 +27,14 @@ func newEventsCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if learn && (timings || follow) {
 				return errors.New("--learning cannot be combined with --timings or --follow")
+			}
+			if project != "" {
+				if !learn {
+					return errors.New("--project works with --learning only")
+				}
+				if err := state.CheckProjectName(project); err != nil {
+					return err
+				}
 			}
 			r, err := openRunner()
 			if err != nil {
@@ -52,7 +61,7 @@ func newEventsCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return printLearning(out, events, tasks, ids, time.Now())
+				return printLearning(out, events, tasks, ids, project, time.Now())
 			}
 			if timings {
 				// A task's latencies need its parents' and the main
@@ -94,6 +103,7 @@ func newEventsCommand() *cobra.Command {
 	f.BoolVar(&follow, "follow", false, "keep printing new events")
 	f.BoolVar(&timings, "timings", false, "print latencies per task, in milliseconds")
 	f.BoolVar(&learn, "learning", false, "print per task the attempts, nudges, sends, answers, switches, duration and time waited on a human")
+	f.StringVar(&project, "project", "", "with --learning, only the tasks of this project")
 	return cmd
 }
 

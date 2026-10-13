@@ -99,6 +99,15 @@ type Herdr struct {
 	ClosingSince time.Time `json:"closingSince,omitzero"`
 }
 
+// ProjectOwner is the owner of every task of a project, so its news reaches
+// the main session whichever folder that session works in.
+func ProjectOwner(name string) string { return projectOwnerPrefix + name }
+
+// IsProjectOwner reports whether owner is the owner of a project's tasks.
+func IsProjectOwner(owner string) bool { return strings.HasPrefix(owner, projectOwnerPrefix) }
+
+const projectOwnerPrefix = "project:"
+
 // Task is the durable record stored in tasks/<id>/task.json.
 type Task struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -109,7 +118,13 @@ type Task struct {
 	Skill         string `json:"skill,omitempty"`
 	Title         string `json:"title,omitempty"`
 	Cwd           string `json:"cwd"`
-	Owner         string `json:"owner"`
+	// Owner is the main session the task reports to: the git top-level of
+	// the folder spawn ran in, or ProjectOwner of the task's project.
+	Owner string `json:"owner"`
+	// Project is the registered project the task works for, and Stage the
+	// project stage it runs, if any.
+	Project string `json:"project,omitempty"`
+	Stage   string `json:"stage,omitempty"`
 	// RepoRoot is the main repository root of Cwd, empty outside git. Trust
 	// is prepared for it, and worktrees are created from it.
 	RepoRoot string `json:"repoRoot,omitempty"`

@@ -381,3 +381,59 @@ func TestWaitStaysForATaskThatWaitsOnAHuman(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestWaitSeesProjectNews(t *testing.T) {
+	r, _ := newTestRunner(t)
+	projectOwner := task.ProjectOwner("demo-app")
+	proj := addTask(t, r, task.Running, projectOwner)
+	other := addTask(t, r, task.Running, "/elsewhere")
+	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+		t.Fatal(err)
+	}
+	ch := start(r, Options{Owner: owner, Projects: true, Window: time.Millisecond})
+	waitBlocked()
+	report(t, r, other.ID, "not watched")
+	report(t, r, proj.ID, "spec written")
+	got := get(t, ch)
+	if got.err != nil || len(got.res.Lines) != 1 || !strings.HasPrefix(got.res.Lines[0], proj.ID+" done") {
+		t.Fatalf("lines = %q, err = %v", got.res.Lines, got.err)
+	}
+
+	// --owner narrows wait to that one owner.
+	addTask(t, r, task.Running, owner)
+	next := addTask(t, r, task.Running, projectOwner)
+	ch = start(r, Options{Owner: owner, Window: time.Millisecond, Timeout: 300 * time.Millisecond})
+	waitBlocked()
+	report(t, r, next.ID, "not for this wait")
+	if got := get(t, ch); !got.res.TimedOut {
+		t.Fatalf("narrowed wait woke: %+v", got.res)
+	}
+}
+
+func TestWaitSeesAProjectStartedAfterIt(t *testing.T) {
+	r, _ := newTestRunner(t)
+	addTask(t, r, task.Running, owner) // keeps the wait from going idle
+	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+		t.Fatal(err)
+	}
+	ch := start(r, Options{Owner: owner, Projects: true, Window: time.Millisecond})
+	waitBlocked()
+	// new registers the project and a runner starts for it while the wait
+	// runs; a progress event moves the cursor before the news.
+	if _, err := r.Store.ReserveProject("demo-app", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.CommitProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	proj := addTask(t, r, task.Running, task.ProjectOwner("demo-app"))
+	if err := r.Store.Append(state.Event{Task: proj.ID, Owner: proj.Owner, Type: "progress", Summary: "reading"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	report(t, r, proj.ID, "spec written")
+	got := get(t, ch)
+	if got.err != nil || len(got.res.Lines) != 1 || !strings.HasPrefix(got.res.Lines[0], proj.ID+" done") {
+		t.Fatalf("lines = %q, err = %v", got.res.Lines, got.err)
+	}
+}

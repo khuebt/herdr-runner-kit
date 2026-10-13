@@ -15,6 +15,7 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
+	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -179,6 +180,7 @@ func TestSpawnNeedsHerdr(t *testing.T) {
 func TestSpawnStartsLauncherQuickly(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	dir := plainDir(t)
+	t.Chdir(dir)
 	start := time.Now()
 	tk, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "Compare two queues", Cwd: dir})
 	if err != nil {
@@ -1361,5 +1363,339 @@ func TestKeepOffLeavesAnAgentInUse(t *testing.T) {
 	got, err := r.Keep(context.Background(), tk.ID, false)
 	if err != nil || got.Herdr.Closed || got.Keep || fake.count("agent", "send-keys") != 0 {
 		t.Fatalf("keep --off with the agent in use: %+v, %v", got, err)
+	}
+}
+
+func TestSpawnOwnerIsTheCallersFolder(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	caller := gitRepo(t)
+	t.Chdir(filepath.Join(caller, "."))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if tk.Owner != caller || tk.Project != "" {
+		t.Fatalf("owner = %q, project = %q; want the caller's top-level %q", tk.Owner, tk.Project, caller)
+	}
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t), Owner: "/elsewhere"})
+	if tk.Owner != "/elsewhere" {
+		t.Fatalf("--owner ignored: %q", tk.Owner)
+	}
+}
+
+func TestSpawnProjectTaskOwner(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	if _, err := r.Store.ReserveProject("demo-app", repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(plainDir(t))
+	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"}); err == nil ||
+		!strings.Contains(err.Error(), "herdr-runner-kit project forget demo-app") {
+		t.Fatalf("spawned into a project still being set up, or gave no fix: %v", err)
+	}
+	if err := r.Store.CommitProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	caller, _ := os.Getwd()
+
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app", Stage: "intake"})
+	if tk.Cwd != repo || tk.Owner != "project:demo-app" || tk.Project != "demo-app" || tk.Stage != "intake" {
+		t.Fatalf("task = %+v", tk)
+	}
+	if _, found, _ := r.Store.Cursor(state.CursorName(caller)); !found {
+		t.Error("the caller's cursor was not started, so its first wait could miss the task")
+	}
+
+	// A folder inside the project makes a project task without --project.
+	sub := filepath.Join(repo, "docs")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: sub})
+	if tk.Owner != "project:demo-app" || tk.Project != "demo-app" {
+		t.Fatalf("inferred: %+v", tk)
+	}
+
+	for _, o := range []SpawnOptions{
+		{Kind: "research", Prompt: "x", Project: "demo-app", Cwd: plainDir(t)}, // outside the project
+		{Kind: "research", Prompt: "x", Project: "nope"},                       // unknown
+		{Kind: "research", Prompt: "x", Cwd: plainDir(t), Stage: "intake"},     // stage without project
+	} {
+		if _, err := r.Spawn(context.Background(), o); err == nil {
+			t.Errorf("Spawn(%+v) succeeded", o)
+		}
+	}
+}
+
+func TestSpawnCarriesOnWithABrokenRegistry(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	if err := os.WriteFile(filepath.Join(r.Store.Dir(), "projects.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	caller := gitRepo(t)
+	t.Chdir(caller)
+	var warnings []string
+	warn := func(line string) { warnings = append(warnings, line) }
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Warn: warn})
+	if tk.Owner != caller || tk.Project != "" || len(warnings) != 1 || !strings.Contains(warnings[0], "projects.json") {
+		t.Fatalf("task %+v, warnings %q", tk, warnings)
+	}
+	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app", Warn: warn}); err == nil ||
+		!strings.Contains(err.Error(), "projects.json") {
+		t.Fatalf("a project task spawned without the registry: %v", err)
+	}
+}
+
+// projectRunner registers repo as project demo-app and makes the fake herdr
+// answer workspace calls from open, the workspace ids open in repo; a
+// workspace create opens w5 there.
+func projectRunner(t *testing.T, open ...string) (*Runner, *fakeHerdr, string) {
+	t.Helper()
+	r, fake, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	if _, err := r.Store.ReserveProject("demo-app", repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.CommitProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	fake.on("workspace list", func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		var items []string
+		for _, id := range open {
+			items = append(items, fmt.Sprintf(`{"workspace_id":%q}`, id))
+		}
+		return `{"result":{"workspaces":[` + strings.Join(items, ",") + `]}}`, nil
+	})
+	fake.on("workspace get", ok(`{"result":{"workspace":{"worktree":{"checkout_path":"`+repo+`","is_linked_worktree":false,"repo_root":"`+repo+`"}}}}`))
+	fake.on("workspace create", func([]string) (string, error) {
+		time.Sleep(10 * time.Millisecond) // widen the window for a second launch
+		mu.Lock()
+		defer mu.Unlock()
+		open = append(open, "w5")
+		return `{"result":{"root_pane":{"pane_id":"w5:p1","tab_id":"w5:t1","workspace_id":"w5"}}}`, nil
+	})
+	return r, fake, repo
+}
+
+func TestProjectTabOpensInTheOpenProjectWorkspace(t *testing.T) {
+	r, fake, _ := projectRunner(t, "w7")
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w7 ") {
+		t.Errorf("tab create = %q", tab)
+	}
+	if n := fake.count("workspace", "create"); n != 0 {
+		t.Errorf("workspace create ran %d times with the workspace open", n)
+	}
+}
+
+func TestProjectWorkspaceIsOpenedAgain(t *testing.T) {
+	r, fake, repo := projectRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ws := strings.Join(fake.call("workspace", "create"), " "); ws != "workspace create --cwd "+repo+" --label demo-app --no-focus" {
+		t.Errorf("workspace create = %q", ws)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w5 --cwd "+repo+" ") {
+		t.Errorf("tab create = %q", tab)
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "project-workspace-fallback") {
+		t.Errorf("events = %v", ev)
+	}
+}
+
+func TestProjectWorktreeOpensFromTheProjectWorkspace(t *testing.T) {
+	r, fake, _ := projectRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Skill: "ak:cook", Prompt: "plan.md", Project: "demo-app"})
+	if !tk.UseWorktree {
+		t.Fatal("code task in a git project should use a worktree")
+	}
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if wt := strings.Join(fake.call("worktree", "create"), " "); !strings.HasPrefix(wt, "worktree create --workspace w5 --branch ") {
+		t.Errorf("worktree create = %q", wt)
+	}
+}
+
+func TestProjectWorkspaceFallback(t *testing.T) {
+	r, fake, repo := projectRunner(t)
+	fake.on("workspace create", herdrErr("invalid_cwd"))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w1 ") {
+		t.Errorf("tab create = %q, want the main workspace", tab)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running {
+		t.Errorf("status = %s", got.Status)
+	}
+	if ev := events(t, r, tk.ID); !slices.Contains(ev, "project-workspace-fallback") {
+		t.Errorf("events = %v", ev)
+	}
+
+	// A worktree task falls back to herdr opening the worktree on its own.
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "code", Skill: "ak:cook", Prompt: "plan.md", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if wt := strings.Join(fake.call("worktree", "create"), " "); !strings.HasPrefix(wt, "worktree create --cwd "+repo+" --branch ") {
+		t.Errorf("worktree create = %q", wt)
+	}
+}
+
+func TestNonProjectTabSkipsWorkspaceLookup(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := fake.count("workspace"); n != 0 {
+		t.Errorf("a task without a project made %d workspace calls", n)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w1 ") {
+		t.Errorf("tab create = %q", tab)
+	}
+}
+
+func TestConcurrentProjectLaunchesOpenOneWorkspace(t *testing.T) {
+	r, fake, _ := projectRunner(t)
+	var tasks []*task.Task
+	for range 2 {
+		tasks = append(tasks, spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"}))
+	}
+	var wg sync.WaitGroup
+	got := make([]string, len(tasks))
+	errs := make([]error, len(tasks))
+	for i, tk := range tasks {
+		wg.Go(func() { got[i], errs[i] = r.projectWorkspace(context.Background(), tk) })
+	}
+	wg.Wait()
+	for i := range tasks {
+		if errs[i] != nil || got[i] != "w5" {
+			t.Errorf("launch %d: workspace %q, %v", i, got[i], errs[i])
+		}
+	}
+	if n := fake.count("workspace", "create"); n != 1 {
+		t.Errorf("workspace create ran %d times, want 1", n)
+	}
+}
+
+// labelOnlyHerdr makes the fake herdr report workspaces as herdr does for
+// one made with workspace create: an id and a label, no folder. A workspace
+// create opens the next free id from w3 under its label.
+func labelOnlyHerdr(fake *fakeHerdr, labels map[string]string) {
+	var mu sync.Mutex
+	next := 3
+	fake.on("workspace list", func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		var items []string
+		for id, label := range labels {
+			items = append(items, fmt.Sprintf(`{"workspace_id":%q,"label":%q}`, id, label))
+		}
+		return `{"result":{"workspaces":[` + strings.Join(items, ",") + `]}}`, nil
+	})
+	fake.on("workspace get", func(args []string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		label, found := labels[args[2]]
+		if !found {
+			return "", herdrError(herdr.CodeNoWorkspace)
+		}
+		return fmt.Sprintf(`{"result":{"workspace":{"workspace_id":%q,"label":%q}}}`, args[2], label), nil
+	})
+	fake.on("workspace create", func(args []string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		id := fmt.Sprintf("w%d", next)
+		for ; labels[id] != ""; id = fmt.Sprintf("w%d", next) {
+			next++
+		}
+		labels[id] = args[slices.Index(args, "--label")+1]
+		return fmt.Sprintf(`{"result":{"root_pane":{"pane_id":"%s:p1","tab_id":"%s:t1","workspace_id":%q}}}`, id, id, id), nil
+	})
+}
+
+func TestNewProjectWorkspaceIsJoinedByItsRunners(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(k, "t")
+	}
+	labels := map[string]string{"w1": "main"}
+	labelOnlyHerdr(fake, labels)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := project.Create(context.Background(), r.Store, r.Herdr, project.CreateOptions{
+		Path: filepath.Join(root, "demo-app"), Idea: "A small tool.", Home: "/nonexistent-home",
+	})
+	if err != nil || c.Workspace != "w3" || c.WorkspaceErr != "" {
+		t.Fatalf("created %+v, %v", c, err)
+	}
+
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace w3 ") {
+		t.Errorf("tab create = %q", tab)
+	}
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "code", Skill: "ak:cook", Prompt: "plan.md", Project: "demo-app"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if wt := strings.Join(fake.call("worktree", "create"), " "); !strings.HasPrefix(wt, "worktree create --workspace w3 --branch ") {
+		t.Errorf("worktree create = %q", wt)
+	}
+	if n := fake.count("workspace", "create"); n != 1 {
+		t.Errorf("workspace create ran %d times, want 1", n)
+	}
+}
+
+func TestRememberedProjectWorkspaceIsChecked(t *testing.T) {
+	cases := []struct {
+		name  string
+		label string // of the remembered w3; "" when herdr has no w3
+	}{
+		{"closed", ""},
+		{"id reused by another workspace", "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fake, _ := projectRunner(t)
+			labels := map[string]string{"w1": "main"}
+			if tc.label != "" {
+				labels["w3"] = tc.label
+			}
+			labelOnlyHerdr(fake, labels)
+			if err := r.Store.SetProjectWorkspace("demo-app", "w3"); err != nil {
+				t.Fatal(err)
+			}
+			tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"})
+			if err := r.Launch(context.Background(), tk.ID); err != nil {
+				t.Fatal(err)
+			}
+			want := "w3"
+			if tc.label != "" {
+				want = "w4"
+			}
+			if tab := strings.Join(fake.call("tab", "create"), " "); !strings.Contains(tab, "--workspace "+want+" ") {
+				t.Errorf("tab create = %q, want workspace %s", tab, want)
+			}
+			if p, err := r.Store.ProjectByName("demo-app"); err != nil || p.WorkspaceID != want {
+				t.Errorf("registry %+v %v, want workspace %s", p, err, want)
+			}
+			if n := fake.count("workspace", "create"); n != 1 {
+				t.Errorf("workspace create ran %d times, want 1", n)
+			}
+		})
 	}
 }

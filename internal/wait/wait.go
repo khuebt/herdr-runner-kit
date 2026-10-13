@@ -44,11 +44,16 @@ func IsNews(typ string) bool { return slices.Contains(newsTypes, typ) }
 
 // Options select what a wait watches.
 type Options struct {
-	Owner   string
-	Tasks   []string // empty means every task of Owner
-	Cursor  string   // cursor name; default derived from Owner
-	Timeout time.Duration
-	Window  time.Duration
+	Owner string
+	// Projects also watches the tasks of every project, whose runners
+	// report to the main session from any folder. It goes by the owner of
+	// each task, not by the registry, so a project registered after the
+	// wait started is watched too. It is ignored when Owner is empty.
+	Projects bool
+	Tasks    []string // empty means every task of the owners
+	Cursor   string   // cursor name; default derived from Owner
+	Timeout  time.Duration
+	Window   time.Duration
 }
 
 // Result is what one wait returns.
@@ -105,10 +110,19 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	defer scan.Stop()
 	eventsPath := r.Store.EventsPath()
 	var gcAfter time.Time
+	tasks, err := ownTasks(r.Store, o)
+	if err != nil {
+		return Result{}, err
+	}
 	// Look for merged worktrees to offer in the background, since it may
 	// fetch. An idle wait lets it finish first, so its news is not lost.
 	checking := make(chan struct{})
-	go func() { defer close(checking); r.NoticeCleanable(ctx, o.Owner) }()
+	go func(owners []string) {
+		defer close(checking)
+		for _, owner := range owners {
+			r.NoticeCleanable(ctx, owner)
+		}
+	}(o.owners(tasks))
 
 	for {
 		var news []state.Event
@@ -136,8 +150,7 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			}
 			saved = cursor
 		}
-		tasks, err := ownTasks(r.Store, o)
-		if err != nil {
+		if tasks, err = ownTasks(r.Store, o); err != nil {
 			return Result{}, err
 		}
 		if idle := idleLine(tasks); idle != "" {
@@ -160,12 +173,17 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			return Result{Idle: idle}, nil
 		}
 		b.scan(ctx, tasks)
-		if due, ok := runner.NextGC(tasks, o.Owner); ok && time.Now().After(due) && time.Now().After(gcAfter) {
+		// tasks holds only the watched owners' tasks.
+		if due, ok := runner.NextGC(tasks, ""); ok && time.Now().After(due) && time.Now().After(gcAfter) {
 			// In the background, so a slow agent exit never delays news; at
 			// most once a minute, so a runner that is in use or will not close is not
 			// sent Ctrl+C every scan.
 			gcAfter = time.Now().Add(runner.GCRetry)
-			go func() { _, _ = r.GC(ctx, o.Owner, runner.GCAge, false) }()
+			go func(owners []string) {
+				for _, owner := range owners {
+					_, _ = r.GC(ctx, owner, runner.GCAge, false)
+				}
+			}(o.owners(tasks))
 		}
 		if res, done, err := next(ctx, watcher, scan.C, timeout.C, eventsPath); done || err != nil {
 			return res, err
@@ -215,10 +233,25 @@ func readNews(s *state.Store, cursor int64, o Options) ([]state.Event, int64, er
 }
 
 func mine(owner, id string, o Options) bool {
-	if o.Owner != "" && owner != o.Owner {
+	if o.Owner != "" && owner != o.Owner && (!o.Projects || !task.IsProjectOwner(owner)) {
 		return false
 	}
 	return len(o.Tasks) == 0 || slices.Contains(o.Tasks, id)
+}
+
+// owners lists Owner and the owners of the watched tasks, each once. An
+// empty Owner means every owner.
+func (o Options) owners(tasks []*task.Task) []string {
+	if o.Owner == "" {
+		return []string{""}
+	}
+	out := []string{o.Owner}
+	for _, t := range tasks {
+		if !slices.Contains(out, t.Owner) {
+			out = append(out, t.Owner)
+		}
+	}
+	return out
 }
 
 func ownTasks(s *state.Store, o Options) ([]*task.Task, error) {

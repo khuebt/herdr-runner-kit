@@ -94,8 +94,9 @@ func (l *learning) tabAnswer() {
 // reports, unreported turns, agent switches, the time from spawn to its last
 // finish, and the time it waited on a human after its spawn. Every number
 // comes from the events given; tasks only add the kind, agents and current
-// status. ids, when set, limits the rows.
-func printLearning(out io.Writer, events []state.Event, tasks []*task.Task, ids []string, now time.Time) error {
+// status. ids, when set, limits the rows, and so does project: to the tasks
+// of that project.
+func printLearning(out io.Writer, events []state.Event, tasks []*task.Task, ids []string, project string, now time.Time) error {
 	byID := map[string]*task.Task{}
 	for _, t := range tasks {
 		byID[t.ID] = t
@@ -104,6 +105,9 @@ func printLearning(out io.Writer, events []state.Event, tasks []*task.Task, ids 
 	rows := map[string]*learning{}
 	for _, ev := range events {
 		if ev.Task == "" || (len(ids) > 0 && !slices.Contains(ids, ev.Task)) {
+			continue
+		}
+		if t := byID[ev.Task]; project != "" && (t == nil || t.Project != project) {
 			continue
 		}
 		l := rows[ev.Task]
@@ -115,20 +119,20 @@ func printLearning(out io.Writer, events []state.Event, tasks []*task.Task, ids 
 		l.observe(ev)
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TASK\tKIND\tAGENTS\tSTATUS\tATTEMPTS\tNUDGES\tSENDS\tANSWERS\tNEEDS-HUMAN\tUNREPORTED\tSWITCHES\tDURATION\tWAITED")
+	fmt.Fprintln(w, "TASK\tPROJECT\tKIND\tAGENTS\tSTATUS\tATTEMPTS\tNUDGES\tSENDS\tANSWERS\tNEEDS-HUMAN\tUNREPORTED\tSWITCHES\tDURATION\tWAITED")
 	for _, id := range order {
 		l := rows[id]
-		kind, agents, status := "-", "-", l.lastStatus
+		proj, kind, agents, status := "-", "-", "-", l.lastStatus
 		if t := byID[id]; t != nil {
-			kind, status = t.Kind, t.Status
+			proj, kind, status = orDash(t.Project), t.Kind, t.Status
 			agents = strings.Join(append(slices.Clone(t.FallbackFrom), t.Agent), "->")
 		}
 		waited := l.waited
 		if !l.waitingSince.IsZero() && (status == task.NeedsHuman || status == task.Held) {
 			waited += now.Sub(l.waitingSince)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\n",
-			id, kind, agents, orDash(string(status)), l.attempts, l.nudges, l.sends, l.answers,
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\n",
+			id, proj, kind, agents, orDash(string(status)), l.attempts, l.nudges, l.sends, l.answers,
 			l.needsHuman, l.unreported, l.switches, roundedSpan(l.spawned, l.ended), rounded(waited))
 	}
 	return w.Flush()

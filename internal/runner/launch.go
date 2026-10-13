@@ -11,6 +11,7 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
+	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -217,15 +218,32 @@ func (r *Runner) runnerEnv(t *task.Task) []string {
 }
 
 // openLocation creates the worktree workspace or the tab the agent runs in.
+// A project task opens in its project's workspace; when that cannot be
+// opened, it falls back to where a task without a project would go.
 func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location, error) {
 	label := t.ID + " · " + t.Title
-	if !t.UseWorktree {
-		return r.Herdr.TabCreate(ctx, t.MainWorkspace, t.Cwd, label, r.runnerEnv(t))
+	tabWS, repoWS := t.MainWorkspace, ""
+	if t.Project != "" {
+		ws, err := r.projectWorkspace(ctx, t)
+		if err == nil {
+			tabWS, repoWS = ws, ws
+		} else {
+			where := "the tab opens in the main workspace"
+			if t.UseWorktree {
+				where = "the worktree opens as its own workspace"
+			}
+			r.emit(t, "project-workspace-fallback", "open the workspace of project "+t.Project+": "+err.Error()+"; "+where, "")
+		}
 	}
-	// Reuse the repository's open workspace, so herdr does not open another.
-	repoWS, err := r.Herdr.RepoWorkspace(ctx, t.RepoRoot)
-	if err != nil {
-		return herdr.Location{}, err
+	if !t.UseWorktree {
+		return r.Herdr.TabCreate(ctx, tabWS, t.Cwd, label, r.runnerEnv(t))
+	}
+	if t.Project == "" {
+		// Reuse the repository's open workspace, so herdr does not open another.
+		var err error
+		if repoWS, err = r.Herdr.RepoWorkspace(ctx, t.RepoRoot); err != nil {
+			return herdr.Location{}, err
+		}
 	}
 	base := t.Worktree.Base
 	if base == "" {
@@ -256,6 +274,15 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 	}
 	// worktree create has no --env, so export in the root pane's shell.
 	return loc, r.exportEnv(ctx, loc.PaneID, t, false)
+}
+
+// projectWorkspace returns the herdr workspace of t's project, opening it
+// again when the user closed it.
+func (r *Runner) projectWorkspace(ctx context.Context, t *task.Task) (string, error) {
+	if t.RepoRoot == "" {
+		return "", fmt.Errorf("%s is not in a git repository", t.Cwd)
+	}
+	return project.OpenWorkspace(ctx, r.Store, r.Herdr, t.Project, t.RepoRoot)
 }
 
 // exportEnv sets the runner's environment in the shell of pane. With reset,

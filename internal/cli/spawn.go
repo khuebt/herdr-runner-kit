@@ -42,6 +42,7 @@ func newSpawnCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			o.Warn = func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }
 			t, err := r.Spawn(cmd.Context(), o)
 			if err != nil {
 				return err
@@ -72,7 +73,8 @@ func newSpawnCommand() *cobra.Command {
 	f.StringVar(&o.Cwd, "cwd", "", "folder the task works in (default: current folder)")
 	f.StringVar(&o.Title, "title", "", "short title (default: from the prompt)")
 	f.BoolVar(&stdin, "stdin", false, "read the prompt from stdin")
-	f.StringVar(&o.Owner, "owner", "", "main session the task reports to (default: git top-level of the current folder)")
+	f.StringVar(&o.Project, "project", "", "registered project the task works for; it runs in the project's folder and reports to project:<name> (default: the project holding --cwd, if any)")
+	f.StringVar(&o.Owner, "owner", "", "main session the task reports to (default: git top-level of the current folder, or project:<name> for a project task)")
 	return cmd
 }
 
