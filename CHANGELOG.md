@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.6.0...v0.7.0) (2026-10-13)
+
+
+### Features
+
+* discovery stages, two hard gates and change control for projects ([#23](https://github.com/khuebt/herdr-runner-kit/issues/23)) ([428890e](https://github.com/khuebt/herdr-runner-kit/commit/428890e7063130f291c8bac5b12a452d40ff7d4f))
+* milestone loop, release detection and graduation for projects ([#25](https://github.com/khuebt/herdr-runner-kit/issues/25)) ([57140c9](https://github.com/khuebt/herdr-runner-kit/commit/57140c998967f387df93e4b7161fbd12aa84cebf))
+
 ## [0.6.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.5.0...v0.6.0) (2026-10-13)
 
 
