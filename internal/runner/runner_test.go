@@ -221,6 +221,23 @@ func TestSpawnWorktreeInGitRepo(t *testing.T) {
 	}
 }
 
+func TestSpawnNamesTheBranch(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, Branch: "fix/CSD-11-paid-leave"})
+	if tk.Worktree == nil || tk.Worktree.Branch != "fix/CSD-11-paid-leave" {
+		t.Errorf("worktree = %+v", tk.Worktree)
+	}
+	for _, o := range []SpawnOptions{
+		{Kind: "code", Prompt: "x", Cwd: repo, Branch: "bad..name"},
+		{Kind: "fix", Prompt: "x", Cwd: repo, Branch: "fix/no-worktree"},
+	} {
+		if _, err := r.Spawn(context.Background(), o); err == nil {
+			t.Errorf("Spawn(%+v) succeeded", o)
+		}
+	}
+}
+
 func TestSpawnRefusesExistingBranch(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	repo := gitRepo(t)

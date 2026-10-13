@@ -22,6 +22,7 @@ Rules:
 - Write files meant for the main session under %[4]s and pass each one with --output.
 - Use needs-human only for a decision you cannot make yourself. Ask exactly one question, list the options and say which one you recommend, then stop. The answer arrives in this session; continue the work and report again.
 - If you hand work to background shells or subagents, wait for them before reporting done.
-- Commits use Conventional Commits, with no AI attribution and no plan or task ids. Never add files under plans/ or agent folders such as .claude/, .codex/ or .agents/. Do not push and do not open pull requests.`,
+- Commits use Conventional Commits, with no AI attribution and no plan or task ids. Never add files under plans/ or agent folders such as .claude/, .codex/ or .agents/. Do not push and do not open pull requests.
+- Commit on the branch you start on. Do not create, switch or delete branches.`,
 		t.ID, buildinfo.ContractVersion, bin, outDir)
 }

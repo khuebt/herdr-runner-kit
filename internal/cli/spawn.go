@@ -55,6 +55,7 @@ func newSpawnCommand() *cobra.Command {
 	f.StringVar(&o.Agent, "agent", "", "agent spec harness[:model[:effort]], overriding the kind's default")
 	f.BoolVar(&worktree, "worktree", false, "run in a new git worktree")
 	f.BoolVar(&noWorktree, "no-worktree", false, "run in the current folder")
+	f.StringVar(&o.Branch, "branch", "", "name of the new worktree branch, following the repository's convention (default hrk/<id>-<slug>)")
 	f.StringVar(&o.Base, "base", "", "git ref the worktree branch starts from (default HEAD)")
 	f.StringVar(&o.Skill, "skill", "", "skill to invoke, such as ak:cook; rendered per harness")
 	f.StringSliceVar(&o.After, "after", nil, "start only when these tasks are done")
