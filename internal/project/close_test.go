@@ -273,7 +273,7 @@ func TestDoneWithOrigin(t *testing.T) {
 func TestReopenThenCloseAgain(t *testing.T) {
 	s, p, tasks := closingProject(t, "")
 	ctx := context.Background()
-	exists := func(b string) bool { return run(t, p.Path, "branch", "--list", b) != "" }
+	exists := func(b string) string { return BranchTaken(ctx, p.Path, b) }
 	if _, err := ReopenMilestone(ctx, s, p, "M0", "export drops a row", finishedAt); err == nil || !strings.Contains(err.Error(), "only a done milestone is reopened") {
 		t.Fatalf("reopen in progress: %v", err)
 	}
@@ -383,5 +383,128 @@ func TestParallelNote(t *testing.T) {
 	rec.ParallelWarning = 0
 	if note := ParallelNote(rec, tasks); note != "" {
 		t.Errorf("warning off, note = %q", note)
+	}
+}
+
+// After a reopen, the release merged before it still sits on main: done
+// takes only the new release's notes, and imports a roadmap update only
+// when it changed.
+func TestDoneAfterReopenNeedsTheNewRelease(t *testing.T) {
+	update := roadmapYAML[:strings.Index(roadmapYAML, "dependencies:")] + "  - {id: M2, title: Reports, planned: 2026-12-01}\n"
+	s, p, tasks := closingProject(t, update)
+	ctx := context.Background()
+	run(t, p.Path, "merge", "-q", "--no-ff", "--no-edit", "release/M0")
+	if _, err := finish(s, p, tasks, ""); err != nil {
+		t.Fatal(err)
+	}
+	first := load(t, s).Milestones[0]
+	if len(first.Released) != 1 || first.RoadmapUpdate == "" {
+		t.Fatalf("done recorded %+v", first)
+	}
+	if _, err := ReopenMilestone(ctx, s, p, "M0", "export drops a row", finishedAt); err != nil {
+		t.Fatal(err)
+	}
+	// A later decision moved M2; the old roadmap update must not undo it.
+	if _, err := Update(s, "demo-app", func(r *Record) error {
+		r.Milestones[2].Title = "Reports, later"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created := true
+	tasks = append(tasks, &task.Task{
+		ID: "t4", Project: "demo-app", Stage: "M0/close", Status: task.Done, After: []string{"t1"},
+		Worktree: &task.Worktree{Branch: "release/M0-r1", Base: "feat/M0-scaffold", BranchCreated: &created},
+	})
+	oldMerge := run(t, p.Path, "rev-parse", "HEAD")
+	if _, err := finish(s, p, tasks, oldMerge); err == nil || !strings.Contains(err.Error(), "merged before it was reopened") {
+		t.Fatalf("the old merge, new branch gone: %v", err)
+	}
+
+	run(t, p.Path, "checkout", "-q", "-b", "release/M0-r1", "main")
+	writeFile(t, p.Path, ReleaseNotesPath("M0"), "# M0 release notes\n\nFixed: export drops a row.\n")
+	run(t, p.Path, "commit", "-q", "-am", "docs(release): M0 release notes")
+	run(t, p.Path, "checkout", "-q", "main")
+	if _, err := finish(s, p, tasks, oldMerge); err == nil || !strings.Contains(err.Error(), "holds other release notes than release/M0-r1") {
+		t.Fatalf("the old merge as the new release: %v", err)
+	}
+	if _, err := finish(s, p, tasks, ""); err == nil || !strings.Contains(err.Error(), "release/M0-r1 is not merged into main") {
+		t.Fatalf("new release not merged: %v", err)
+	}
+	if tagExists(t, p.Path, "v0.0.0") || load(t, s).Milestones[0].Status != MilestoneInProgress {
+		t.Fatal("a refused done tagged or recorded the milestone")
+	}
+
+	run(t, p.Path, "merge", "-q", "--no-ff", "--no-edit", "release/M0-r1")
+	d, err := finish(s, p, tasks, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := load(t, s)
+	m := rec.Milestones[0]
+	if d.Roadmap != 0 || rec.Milestones[2].Title != "Reports, later" || strings.Contains(rec.Decisions[len(rec.Decisions)-1].Text, "roadmap updated") {
+		t.Errorf("the old roadmap update was imported again: %d, %+v", d.Roadmap, rec.Milestones[2])
+	}
+	if m.Status != MilestoneDone || m.Branch != "release/M0-r1" || len(m.Released) != 2 || m.Released[0] == m.Released[1] || m.RoadmapUpdate != first.RoadmapUpdate {
+		t.Errorf("second done = %+v", m)
+	}
+	if !tagExists(t, p.Path, "v0.0.0") {
+		t.Error("no tag")
+	}
+}
+
+func TestReopenKeepsTheTagWhenTheRecordFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into read-only folders")
+	}
+	s, p, tasks := closingProject(t, "")
+	run(t, p.Path, "merge", "-q", "--no-ff", "--no-edit", "release/M0")
+	if _, err := finish(s, p, tasks, ""); err != nil {
+		t.Fatal(err)
+	}
+	dir := s.ProjectDir("demo-app")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := ReopenMilestone(context.Background(), s, p, "M0", "export drops a row", finishedAt); err == nil {
+		t.Fatal("reopened without a writable record")
+	}
+	if !tagExists(t, p.Path, "v0.0.0") {
+		t.Error("a refused reopen deleted the tag")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	re, err := ReopenMilestone(context.Background(), s, p, "M0", "export drops a row", finishedAt)
+	if err != nil || !re.Deleted || tagExists(t, p.Path, "v0.0.0") {
+		t.Fatalf("reopen = %+v, %v", re, err)
+	}
+}
+
+func TestReleaseBranchAvoidsNameClashes(t *testing.T) {
+	dir := newRepo(t)
+	ctx := context.Background()
+	run(t, dir, "branch", "release/M1/hotfix")
+	run(t, dir, "branch", "integrate")
+	taken := func(b string) string { return BranchTaken(ctx, dir, b) }
+	for b, want := range map[string]string{
+		"release/M1": "release/M1/hotfix", "integrate/M1-I1": "integrate", "release/M10": "", "integrate": "integrate", "main": "main",
+	} {
+		if got := taken(b); got != want {
+			t.Errorf("BranchTaken(%s) = %q, want %q", b, got, want)
+		}
+	}
+	step, err := CloseStep("demo-app", "M1", "I1", "integrate/M1-I1", "", nil, taken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.Branch != "release/M1-r1" || !strings.Contains(step.Note, "release/M1-r1 is used instead of release/M1") || !strings.Contains(step.Note, "release/M1/hotfix") {
+		t.Errorf("close step = %+v", step)
+	}
+	in := chainInput([]BlockNode{{ID: "F1", Type: NodeFeature, Title: "List"}}, nil)
+	in.BranchTaken = taken
+	if _, err := PlanChain(in); err == nil || !strings.Contains(err.Error(), "branch integrate exists, so git cannot create integrate/M1-") {
+		t.Fatalf("integrate under a branch named integrate: %v", err)
 	}
 }

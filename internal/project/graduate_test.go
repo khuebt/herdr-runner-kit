@@ -410,3 +410,112 @@ func TestGraduateStageData(t *testing.T) {
 		t.Errorf("graduated milestone plan:\n%s", got)
 	}
 }
+
+// A scope change decided after graduation needs a new pack: the pack
+// stage builds it from the evergreen docs, never the archived discovery
+// folder, and approving it lets the next milestone start.
+func TestPackAfterGraduation(t *testing.T) {
+	s, p := graduatingProject(t)
+	ctx := context.Background()
+	if _, err := graduate(s, p, GraduateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(s, "demo-app", func(r *Record) error {
+		r.Changes[0].Class = ClassScope
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := decideChange(s, "CR-1", ChangeNext); err != nil || !d.Reapproval {
+		t.Fatalf("scope change decided next: %+v, %v", d, err)
+	}
+	if _, _, err := start(s, p, "M0"); err == nil || !strings.Contains(err.Error(), "the pack needs a new approval") {
+		t.Fatalf("start before the new pack: %v", err)
+	}
+
+	rec := load(t, s)
+	pack, err := LoadStage(GatePack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRequires(ctx, p.Path, rec, pack); err != nil {
+		t.Fatalf("pack after graduation: %v", err)
+	}
+	n, err := CommittedPackVersion(ctx, p.Path, rec)
+	if err != nil || n != 1 {
+		t.Fatalf("committed pack = %d, %v", n, err)
+	}
+	d := NewStageData(rec, p.Path, Tools{}, "", graduatedAt)
+	d.PackVersion = n + 1
+	got, err := pack.Render(task.Claude, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"from the committed " + RequirementsPath, "handbook/product/roadmap.md", GraduatedChangesDir + "/",
+		GraduatedApprovalDir + "/pack-v2/pack.html",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("graduated pack prompt lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(strings.ToLower(got), "discovery") {
+		t.Errorf("graduated pack prompt names the discovery folder:\n%s", got)
+	}
+	if outputs, err := pack.RenderOutputs(d); err != nil || len(outputs) != 1 || outputs[0] != GraduatedApprovalDir+"/" {
+		t.Errorf("outputs = %v, %v", outputs, err)
+	}
+
+	// The runner commits pack v2 next to the kept v1.
+	writeFile(t, p.Path, GraduatedApprovalDir+"/pack-v2/"+PackHTML, "<html>pack v2</html>\n")
+	writeFile(t, p.Path, GraduatedApprovalDir+"/pack-v2/"+PackPDF, "%PDF v2\n")
+	run(t, p.Path, "add", GraduatedApprovalDir)
+	run(t, p.Path, "commit", "-q", "-m", "docs(approval): pack v2")
+	approved, err := decide(s, GatePack, "approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Version != "v2" || approved.Folder != GraduatedApprovalDir+"/pack-v2" || approved.Roadmap {
+		t.Errorf("approved = %+v", approved)
+	}
+	if rec := load(t, s); rec.Reapproval.Needed || len(rec.Milestones) != 2 {
+		t.Errorf("after approval: reapproval %+v, milestones %+v", rec.Reapproval, rec.Milestones)
+	}
+	if _, _, err := start(s, p, "M0"); err != nil {
+		t.Fatalf("start after the new pack: %v", err)
+	}
+}
+
+// A graduation that fails after the export takes the copy back, so the
+// same folder is accepted when it runs again.
+func TestGraduateFailureTakesBackTheExport(t *testing.T) {
+	s, p := graduatingProject(t)
+	hook := filepath.Join(p.Path, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'blocked by hook' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fresh := filepath.Join(t.TempDir(), "export")
+	if _, err := graduate(s, p, GraduateOptions{Export: fresh}); err == nil ||
+		!strings.Contains(err.Error(), "the export copy in "+fresh+" is removed") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Lstat(fresh); !os.IsNotExist(err) {
+		t.Errorf("the export folder it created is still there: %v", err)
+	}
+	empty := t.TempDir()
+	if _, err := graduate(s, p, GraduateOptions{Export: empty}); err == nil {
+		t.Fatal("graduated through the hook")
+	}
+	if entries, err := os.ReadDir(empty); err != nil || len(entries) != 0 {
+		t.Errorf("the empty export folder holds %v, %v", entries, err)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := graduate(s, p, GraduateOptions{Export: empty}); err != nil {
+		t.Fatalf("after the hook is fixed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(empty, "spec.md")); err != nil {
+		t.Errorf("export lacks the spec: %v", err)
+	}
+}

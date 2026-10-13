@@ -144,7 +144,8 @@ func PlanGraduation(ctx context.Context, s *state.Store, p state.Project, o Grad
 // folder when asked, stages its removal with git rm, records the
 // graduation and commits the removal and the rendered records with commit
 // --only, so no deleted path is ever passed to git add. A refused commit
-// restores the folder, the rendered files and the record. Only then is
+// restores the folder, the rendered files and the record, and takes back
+// the export copy. Only then is
 // the commit before it tagged, last, so a failed graduation leaves no tag.
 // Graduation does not purge history: the files stay reachable through the
 // tag and every earlier commit.
@@ -166,13 +167,21 @@ func Graduate(ctx context.Context, s *state.Store, p state.Project, o GraduateOp
 		return Graduation{}, err
 	}
 	g := Graduation{GraduatePlan: plan}
+	var export exportCopy
 	if plan.Export != "" {
+		export.dir = plan.Export
+		_, err := os.Lstat(plan.Export)
+		export.existed = err == nil
 		if err := exportDiscovery(ctx, p.Path, plan.Head, plan.Export, o.IncludeOriginal); err != nil {
-			return g, fmt.Errorf("nothing graduated: the export failed: %w; %s may hold a partial copy: empty it before you retry", err, plan.Export)
+			msg := fmt.Sprintf("nothing graduated: the export failed: %v", err)
+			if rerr := export.remove(); rerr != nil {
+				return g, fmt.Errorf("%s; %v", msg, rerr)
+			}
+			return g, fmt.Errorf("%s; the partial copy in %s is removed", msg, plan.Export)
 		}
 	}
 	if out, err := gitLocked(ctx, p.Path, "rm", "-r", "-q", "--", DiscoveryDir); err != nil {
-		return g, undoGraduate(ctx, s, p, nil, Decision{}, fmt.Errorf("git rm: %s", firstLine(out, err)))
+		return g, undoGraduate(ctx, s, p, export, nil, Decision{}, fmt.Errorf("git rm: %s", firstLine(out, err)))
 	}
 	decision := Decision{At: o.Now.UTC(), Text: fmt.Sprintf(
 		"graduated: %s/ left the tree; its committed files stay in git history, archived at tag %s", DiscoveryDir, plan.Tag)}
@@ -192,14 +201,14 @@ func Graduate(ctx context.Context, s *state.Store, p state.Project, o GraduateOp
 		r.Pending++
 		return nil
 	}); err != nil {
-		return g, undoGraduate(ctx, s, p, nil, Decision{}, err)
+		return g, undoGraduate(ctx, s, p, export, nil, Decision{}, err)
 	}
 	sha, err := commitRendered(ctx, s, p, "docs(product): graduate and archive the discovery folder", RenderedPaths, DiscoveryDir)
 	if sha == "" {
 		if err == nil {
 			err = errors.New("git committed nothing")
 		}
-		return g, undoGraduate(ctx, s, p, before, decision, err)
+		return g, undoGraduate(ctx, s, p, export, before, decision, err)
 	}
 	g.Commit = sha
 	args := []string{"tag", "-a", plan.Tag, "-m", "Discovery artifacts of " + p.Name + " before graduation", sha + "^"}
@@ -212,10 +221,43 @@ func Graduate(ctx context.Context, s *state.Store, p state.Project, o GraduateOp
 	return g, err
 }
 
-// undoGraduate restores the discovery folder, the rendered files and,
-// when before is set, the record, after a graduation failed before its
-// commit.
-func undoGraduate(ctx context.Context, s *state.Store, p state.Project, before []Change, decision Decision, cause error) error {
+// exportCopy is the export folder a graduation wrote, and whether the
+// folder existed, empty, before it.
+type exportCopy struct {
+	dir     string
+	existed bool
+}
+
+// remove takes back what the graduation exported: the folder's entries,
+// and the folder itself when the graduation created it. Its error says
+// what to delete by hand.
+func (e exportCopy) remove() error {
+	if e.dir == "" {
+		return nil
+	}
+	var err error
+	if !e.existed {
+		err = os.RemoveAll(e.dir)
+	} else {
+		var entries []os.DirEntry
+		if entries, err = os.ReadDir(e.dir); err == nil {
+			for _, entry := range entries {
+				if err = os.RemoveAll(filepath.Join(e.dir, entry.Name())); err != nil {
+					break
+				}
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("removing the export copy failed (%v): delete everything in %s, which must be empty or absent before you graduate again", err, e.dir)
+	}
+	return nil
+}
+
+// undoGraduate restores the discovery folder, the rendered files, the
+// export folder as it was and, when before is set, the record, after a
+// graduation failed before its commit.
+func undoGraduate(ctx context.Context, s *state.Store, p state.Project, export exportCopy, before []Change, decision Decision, cause error) error {
 	reason := cause.Error()
 	var ce *commitError
 	if errors.As(cause, &ce) {
@@ -227,6 +269,9 @@ func undoGraduate(ctx context.Context, s *state.Store, p state.Project, before [
 		errs = append(errs, err.Error())
 	}
 	if err := restoreRendered(ctx, p.Path); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := export.remove(); err != nil {
 		errs = append(errs, err.Error())
 	}
 	if decision != (Decision{}) {
@@ -243,6 +288,9 @@ func undoGraduate(ctx context.Context, s *state.Store, p state.Project, before [
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s; undoing it failed too: %s", msg, strings.Join(errs, "; "))
+	}
+	if export.dir != "" {
+		msg += fmt.Sprintf("; the export copy in %s is removed", export.dir)
 	}
 	return fmt.Errorf("%s; %s/ is back as committed: fix the cause and graduate again", msg, DiscoveryDir)
 }

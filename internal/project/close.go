@@ -59,15 +59,21 @@ func closeNode(milestone, parent string) BlockNode {
 // final integrate node's, or the scaffold's. It gets release/<M>, or
 // release/<M>-r<k> when an earlier close runner created that branch or
 // the record holds it as merged, so a new release never reuses one.
-func CloseStep(name, milestone, parent, base, merged string, tasks []*task.Task, exists func(string) bool) (ChainStep, error) {
+// taken is as PickBranch's.
+func CloseStep(name, milestone, parent, base, merged string, tasks []*task.Task, taken func(string) string) (ChainStep, error) {
 	stage := CloseStage(milestone)
 	own := stageTasks(tasks, name, stage)
-	taken := func(b string) bool { return (merged != "" && b == merged) || exists(b) }
-	branch, _, err := PickBranch(ReleaseBranch(milestone), own, taken)
+	release := func(b string) string {
+		if merged != "" && b == merged {
+			return b
+		}
+		return taken(b)
+	}
+	branch, _, note, err := PickBranch(ReleaseBranch(milestone), own, release)
 	if err != nil {
 		return ChainStep{}, fmt.Errorf("close of %s: %w", milestone, err)
 	}
-	return ChainStep{Node: closeNode(milestone, parent), Stage: stage, Branch: branch, Base: base}, nil
+	return ChainStep{Node: closeNode(milestone, parent), Stage: stage, Branch: branch, Base: base, Note: note}, nil
 }
 
 // CloseStale reports whether the close runner of m prepared the release
@@ -83,8 +89,8 @@ func CloseStale(m Milestone, closer *task.Task) bool {
 // that was merged before the milestone was reopened. The new runner starts
 // after the latest done runner of the step the old one waited for, from
 // its branch, which holds the fixes made since; that runner is returned
-// for --after.
-func Reclose(rec Record, name, id string, tasks []*task.Task, exists func(string) bool) (ChainStep, *task.Task, error) {
+// for --after. taken is as PickBranch's.
+func Reclose(rec Record, name, id string, tasks []*task.Task, taken func(string) string) (ChainStep, *task.Task, error) {
 	i, err := findMilestone(rec, id)
 	if err != nil {
 		return ChainStep{}, nil, err
@@ -113,7 +119,7 @@ func Reclose(rec Record, name, id string, tasks []*task.Task, exists func(string
 	if err != nil {
 		return ChainStep{}, nil, fmt.Errorf("milestone %s: %w", id, err)
 	}
-	step, err := CloseStep(name, id, strings.TrimPrefix(parent.Stage, id+"/"), taskBranch(parent), m.Branch, tasks, exists)
+	step, err := CloseStep(name, id, strings.TrimPrefix(parent.Stage, id+"/"), taskBranch(parent), m.Branch, tasks, taken)
 	if err != nil {
 		return ChainStep{}, nil, err
 	}
@@ -248,15 +254,25 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 			d.Fetch = err.Error()
 		}
 	}
-	if d.Merged, err = findMerge(ctx, p.Path, id, d.Branch, d.DefaultBranch, o.MergedCommit); err != nil {
+	var notes string
+	if d.Merged, notes, err = findMerge(ctx, p.Path, id, d.Branch, d.DefaultBranch, o.MergedCommit, m.Released); err != nil {
 		return Finished{}, err
 	}
 	if err := checkMainCheckout(ctx, s, p, d.DefaultBranch, "done"); err != nil {
 		return Finished{}, err
 	}
-	roadmap, hasRoadmap, err := committedFile(ctx, p.Path, RoadmapUpdatePath(id))
+	// A roadmap update an earlier done of this milestone imported is not
+	// imported again.
+	roadmapID, err := committedID(ctx, p.Path, RoadmapUpdatePath(id))
 	if err != nil {
 		return Finished{}, err
+	}
+	var roadmap []byte
+	hasRoadmap := roadmapID != "" && roadmapID != m.RoadmapUpdate
+	if hasRoadmap {
+		if roadmap, _, err = committedFile(ctx, p.Path, RoadmapUpdatePath(id)); err != nil {
+			return Finished{}, err
+		}
 	}
 	decision := Decision{At: o.Now.UTC(), Text: fmt.Sprintf("%s done: %s is merged into %s; tagged %s locally", id, d.Branch, d.DefaultBranch, d.Tag)}
 	var before []Milestone
@@ -279,6 +295,10 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 			return fmt.Errorf("milestone %s is %s", id, orDash(ms.Status))
 		}
 		ms.Status, ms.Closed, ms.Tag, ms.Branch = MilestoneDone, o.Now.UTC(), d.Tag, d.Branch
+		ms.Released = append(slices.Clone(ms.Released), notes)
+		if roadmapID != "" {
+			ms.RoadmapUpdate = roadmapID
+		}
 		d.Milestone = *ms
 		rec.Decisions = append(rec.Decisions, decision)
 		rec.Pending++
@@ -357,45 +377,72 @@ func restoreRendered(ctx context.Context, root string) error {
 var commitID = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
 
 // findMerge returns the commit that shows the release of milestone id on
-// the local default branch: the tip of its release branch, or merged, a
-// commit given for a squash or rebase merge, which must hold the release
-// notes. A release found only on origin's default branch asks for a pull.
-func findMerge(ctx context.Context, root, id, branch, def, merged string) (string, error) {
-	notes := ReleaseNotesPath(id)
-	var commit string
+// the local default branch, and the blob id of the release notes it holds:
+// the tip of its release branch, or merged, a commit given for a squash or
+// rebase merge. The notes must be the release branch's, when its tip is
+// still found locally or on origin, and none of the earlier releases of
+// the milestone, which released lists, so a release merged before a
+// reopen never passes for a new one. A release found only on origin's
+// default branch asks for a pull.
+func findMerge(ctx context.Context, root, id, branch, def, merged string, released []string) (commit, notes string, err error) {
+	path := ReleaseNotesPath(id)
+	// The notes at the tip of the release branch, locally and on origin.
+	var tip string
+	var tipNotes []string
+	for _, ref := range []string{"refs/heads/" + branch, "refs/remotes/origin/" + branch} {
+		c, err := git(ctx, root, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+		if err != nil {
+			continue
+		}
+		if tip == "" {
+			tip = c
+		}
+		if b, err := git(ctx, root, "rev-parse", "--verify", "--quiet", c+":"+path); err == nil {
+			tipNotes = append(tipNotes, b)
+		}
+	}
+	if tip != "" && len(tipNotes) == 0 {
+		return "", "", fmt.Errorf("%s holds no %s; prepare a new release with herdr-runner-kit project milestone close %s", branch, path, id)
+	}
+	source := branch
 	if merged != "" {
 		if !commitID.MatchString(merged) {
-			return "", fmt.Errorf("--merged-commit %q is not a commit id", merged)
+			return "", "", fmt.Errorf("--merged-commit %q is not a commit id", merged)
 		}
 		c, err := git(ctx, root, "rev-parse", "--verify", "--quiet", merged+"^{commit}")
 		if err != nil {
-			return "", fmt.Errorf("--merged-commit %s is not a commit of %s; pull first", merged, root)
+			return "", "", fmt.Errorf("--merged-commit %s is not a commit of %s; pull first", merged, root)
 		}
-		if _, err := git(ctx, root, "cat-file", "-e", c+":"+notes); err != nil {
-			return "", fmt.Errorf("commit %s holds no %s, so it is not the merge of %s", merged, notes, branch)
+		if notes, err = git(ctx, root, "rev-parse", "--verify", "--quiet", c+":"+path); err != nil {
+			return "", "", fmt.Errorf("commit %s holds no %s, so it is not the merge of %s", merged, path, branch)
 		}
-		commit = c
+		if len(tipNotes) > 0 && !slices.Contains(tipNotes, notes) {
+			return "", "", fmt.Errorf("commit %s holds other release notes than %s, so it is not the merge of %s", merged, branch, branch)
+		}
+		commit, source = c, "commit "+merged
 	} else {
-		for _, ref := range []string{"refs/heads/" + branch, "refs/remotes/origin/" + branch} {
-			if c, err := git(ctx, root, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
-				commit = c
-				break
-			}
+		if tip == "" {
+			return "", "", fmt.Errorf("branch %s is gone from %s and origin; pass the commit on %s that holds it with --merged-commit <sha>", branch, root, def)
 		}
-		if commit == "" {
-			return "", fmt.Errorf("branch %s is gone from %s and origin; pass the commit on %s that holds it with --merged-commit <sha>", branch, root, def)
+		commit = tip
+		if notes, err = git(ctx, root, "rev-parse", "--verify", "--quiet", tip+":"+path); err != nil {
+			return "", "", fmt.Errorf("%s holds no %s; prepare a new release with herdr-runner-kit project milestone close %s", branch, path, id)
 		}
+	}
+	if slices.Contains(released, notes) {
+		return "", "", fmt.Errorf("the release notes in %s are those of a release of %s merged before it was reopened, not a new release; prepare one with herdr-runner-kit project milestone close %s, merge it, then run done again",
+			source, id, id)
 	}
 	if ancestor(ctx, root, commit, "refs/heads/"+def) {
-		return commit, nil
+		return commit, notes, nil
 	}
 	if ancestor(ctx, root, commit, "refs/remotes/origin/"+def) {
-		return "", fmt.Errorf("%s is merged into origin/%s but not into your local %s: pull %s, then run done again", branch, def, def, def)
+		return "", "", fmt.Errorf("%s is merged into origin/%s but not into your local %s: pull %s, then run done again", branch, def, def, def)
 	}
 	if merged != "" {
-		return "", fmt.Errorf("commit %s is not on %s: merge %s through your pull request, then pull", merged, def, branch)
+		return "", "", fmt.Errorf("commit %s is not on %s: merge %s through your pull request, then pull", merged, def, branch)
 	}
-	return "", fmt.Errorf("%s is not merged into %s: merge %s through your pull request, then pull; after a squash or rebase merge, pass the merged commit with --merged-commit <sha>",
+	return "", "", fmt.Errorf("%s is not merged into %s: merge %s through your pull request, then pull; after a squash or rebase merge, pass the merged commit with --merged-commit <sha>",
 		branch, def, branch)
 }
 
@@ -474,7 +521,7 @@ type Reopened struct {
 // found after its release was merged. It refuses while another milestone
 // is in progress or a later one is done, and when the milestone's tag is
 // on origin, since a pushed tag is not taken back. It deletes the local
-// tag, keeps the merged release branch in the record so the close runner
+// tag once the record says in progress, keeps the merged release branch in the record so the close runner
 // counts as stale, and keeps the reason in the decision log, committed
 // with the next commit point. The merge on the default branch stays: the
 // user reverts it through a pull request when needed.
@@ -501,13 +548,10 @@ func ReopenMilestone(ctx context.Context, s *state.Store, p state.Project, id, r
 			return Reopened{}, fmt.Errorf("tag %s is on origin, and a pushed tag is not taken back; fix forward in the next milestone instead", r.Tag)
 		}
 	}
+	local := false
 	if r.Tag != "" {
-		if _, err := git(ctx, p.Path, "rev-parse", "--verify", "--quiet", "refs/tags/"+r.Tag); err == nil {
-			if _, err := git(ctx, p.Path, "tag", "-d", r.Tag); err != nil {
-				return Reopened{}, err
-			}
-			r.Deleted = true
-		}
+		_, err := git(ctx, p.Path, "rev-parse", "--verify", "--quiet", "refs/tags/"+r.Tag)
+		local = err == nil
 	}
 	text := fmt.Sprintf("%s reopened: %s", id, reason)
 	if r.Tag != "" {
@@ -527,6 +571,14 @@ func ReopenMilestone(ctx context.Context, s *state.Store, p state.Project, id, r
 		return r, err
 	}
 	r.Milestone = rec.Milestones[slices.IndexFunc(rec.Milestones, func(m Milestone) bool { return m.ID == id })]
+	// The tag goes last, so a refused record update leaves it in place.
+	if local {
+		if out, err := gitCombined(ctx, p.Path, "tag", "-d", r.Tag); err != nil {
+			return r, fmt.Errorf("%s is reopened, but deleting its local tag %s failed: %s\ndelete it with:\n  %s",
+				id, r.Tag, firstLine(out, err), shellCommand([]string{"git", "-C", p.Path, "tag", "-d", r.Tag}))
+		}
+		r.Deleted = true
+	}
 	return r, nil
 }
 

@@ -7,7 +7,7 @@ milestone: true
 outputs:
   - handbook/
 ---
-Close of {{.Milestone}} {{.MilestoneTitle}} for project {{.Project}}: prepare its release on your branch, which starts from the branch where the milestone's work was integrated.{{if .Started}} It started on {{.Started}}{{if .Planned}} and was planned for {{.Planned}}{{end}}.{{end}} The user merges your branch into {{.DefaultBranch}} through a pull request; the kit tags the release after it sees that merge.
+Close of {{.Milestone}} for project {{.Project}}{{if .MilestoneTitle}} (its title is in the block below){{end}}: prepare its release on your branch, which starts from the branch where the milestone's work was integrated.{{if .Started}} It started on {{.Started}}{{if .Planned}} and was planned for {{.Planned}}{{end}}.{{end}} The user merges your branch into {{.DefaultBranch}} through a pull request; the kit tags the release after it sees that merge.
 
 1. Run {{skill "ak:docs"}} update for what {{.Milestone}} changed, and commit the handbook files it touched.
 2. Run {{skill "ak:retro"}} {{.Started}}:<today as YYYY-MM-DD>. The date range is given, so ask the user nothing. It writes its report under plans/reports/: leave plans/ uncommitted and copy what matters into the release notes.
@@ -17,6 +17,10 @@ Close of {{.Milestone}} {{.MilestoneTitle}} for project {{.Project}}: prepare it
 6. Commit the notes ("docs(release): {{.Milestone}} release notes").
 
 Do not tag, merge, push or open a pull request. Report done with {{.ReleaseNotesPath}} as --output, and name your branch in the summary as the one to merge.
+{{- if .MilestoneTitle}}
+
+{{.MilestoneTitle}}
+{{- end}}
 {{- if .Changes}}
 
 {{.Changes}}

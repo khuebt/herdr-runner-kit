@@ -1264,9 +1264,12 @@ func startMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 				own = append(own, t)
 			}
 		}
-		exists := func(b string) bool { return runner.BranchExists(ctx, p.Path, b) }
-		if so.Branch, so.Base, err = project.PickBranch("feat/"+id+"-scaffold", own, exists); err != nil {
+		var note string
+		if so.Branch, so.Base, note, err = project.PickBranch("feat/"+id+"-scaffold", own, branchTaken(ctx, p.Path)); err != nil {
 			return err
+		}
+		if note != "" {
+			o.Warn(note)
 		}
 		if so.Base == "" {
 			so.Base = def
@@ -1288,8 +1291,7 @@ func startMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		// The scaffold milestone has no plan: its close runner follows the
 		// scaffold runner straight away.
 		if closer := latestStageTask(tasks, p.Name, project.CloseStage(id)); closer == nil || (closer.Status.Terminal() && closer.Status != task.Done) {
-			step, err := project.CloseStep(p.Name, id, "scaffold", so.Branch, m.Branch, tasks,
-				func(b string) bool { return runner.BranchExists(ctx, p.Path, b) })
+			step, err := project.CloseStep(p.Name, id, "scaffold", so.Branch, m.Branch, tasks, branchTaken(ctx, p.Path))
 			if err != nil {
 				return fmt.Errorf("%s started, but its close runner cannot: %w", t.ID, err)
 			}
@@ -1317,6 +1319,11 @@ func latestStageTask(tasks []*task.Task, name, stage string) *task.Task {
 	return latest
 }
 
+// branchTaken returns project.BranchTaken for the repository at root.
+func branchTaken(ctx context.Context, root string) func(string) string {
+	return func(b string) string { return project.BranchTaken(ctx, root, b) }
+}
+
 // spawnClose spawns the close runner of milestone m laid out in step, after
 // the tasks in after.
 func spawnClose(ctx context.Context, r *runner.Runner, p state.Project, rec project.Record, m project.Milestone, def string,
@@ -1332,6 +1339,9 @@ func spawnClose(ctx context.Context, r *runner.Runner, p state.Project, rec proj
 	}
 	if !r.Config.Kinds[stage.Kind].Worktree {
 		return nil, fmt.Errorf("the close runner runs as kind %s, which the config runs without a worktree; it needs one for its release branch", stage.Kind)
+	}
+	if step.Note != "" {
+		o.Warn(step.Note)
 	}
 	data := project.NewStageData(rec, p.Path, project.Tools{}, "", time.Now())
 	project.MilestoneData(&data, rec, m, def)
@@ -1402,8 +1412,8 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	}
 	steps, err := project.PlanChain(project.ChainInput{
 		Project: p.Name, Milestone: id, Plan: plan, Tasks: tasks, DefaultBranch: def, Slug: runner.Slug,
-		BranchExists: func(b string) bool { return runner.BranchExists(ctx, p.Path, b) },
-		Merged:       rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })].Branch,
+		BranchTaken: branchTaken(ctx, p.Path),
+		Merged:      rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })].Branch,
 	})
 	if err != nil {
 		return err
@@ -1441,6 +1451,9 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		if st.Added {
 			fmt.Fprintf(out, "added %s: the plan does not end in one integrate node, so one integrates %s\n",
 				st.Stage, strings.Join(st.Node.DependsOn, ", "))
+		}
+		if st.Note != "" {
+			o.Warn(st.Note)
 		}
 		stage := stages[project.NodeTemplate(st.Node)]
 		data := project.NewStageData(rec, p.Path, project.Tools{}, "", time.Now())
@@ -1486,10 +1499,12 @@ func newMilestoneDoneCommand() *cobra.Command {
 			"in the local default branch. It refuses until you merged that branch through your pull " +
 			"request and pulled, while the main checkout is on another branch, behind origin, in the " +
 			"middle of a merge, or holds changes to the files the kit renders. Then it imports the " +
-			"release's roadmap update, if any, records the milestone done, commits the records in one " +
-			"commit and creates the annotated tag tagFormat (v0.N.0 by default) on it. The tag is " +
-			"local: push it yourself if you want it on origin. After a squash or rebase merge, pass " +
-			"the merged commit, which must hold the release notes.",
+			"release's roadmap update, if any and not imported by an earlier done of the milestone, " +
+			"records the milestone done, commits the records in one commit and creates the annotated " +
+			"tag tagFormat (v0.N.0 by default) on it. The tag is local: push it yourself if you want " +
+			"it on origin. After a squash or rebase merge, pass the merged commit, which must hold the " +
+			"release notes of the release branch's tip. Release notes merged before a reopen never " +
+			"count as a new release.",
 		Example: `  herdr-runner-kit project milestone done M1
   herdr-runner-kit project milestone done M2 --merged-commit 3f9c2ab`,
 		Args: cobra.ExactArgs(1),
@@ -1612,7 +1627,7 @@ func recloseMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p st
 	if err != nil {
 		return err
 	}
-	step, parent, err := project.Reclose(rec, p.Name, id, tasks, func(b string) bool { return runner.BranchExists(ctx, p.Path, b) })
+	step, parent, err := project.Reclose(rec, p.Name, id, tasks, branchTaken(ctx, p.Path))
 	if err != nil {
 		return err
 	}

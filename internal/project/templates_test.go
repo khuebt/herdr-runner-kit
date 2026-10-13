@@ -488,3 +488,48 @@ func TestPreambleOfMilestoneStages(t *testing.T) {
 		}
 	}
 }
+
+// A stage that runs after graduation reads nothing under the discovery
+// folder there; every other stage that reads it is refused.
+func TestTemplateGraduatedVariants(t *testing.T) {
+	stages, err := Stages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := NewRecord("demo-app")
+	rec.Type = "ui"
+	rec.Graduated = &Graduated{At: time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC), Tag: ArchiveTag}
+	for _, s := range stages {
+		if !s.Graduated {
+			continue
+		}
+		if s.needsDiscovery() {
+			t.Errorf("%s has a graduated variant but is refused after graduation", s.Name)
+		}
+		for _, h := range harnesses {
+			got, err := s.Render(h, milestoneStageData(rec))
+			if err != nil {
+				t.Fatalf("%s for %s: %v", s.Name, h, err)
+			}
+			if strings.Contains(strings.ToLower(got), "discovery") {
+				t.Errorf("graduated %s for %s names the discovery folder:\n%s", s.Name, h, got)
+			}
+		}
+		outputs, err := s.RenderOutputs(milestoneStageData(rec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range outputs {
+			if strings.HasPrefix(o, DiscoveryDir) {
+				t.Errorf("graduated %s writes %s", s.Name, o)
+			}
+		}
+	}
+	ux, err := LoadStage("ux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ux.Graduated || !ux.needsDiscovery() {
+		t.Error("ux runs after graduation")
+	}
+}

@@ -42,7 +42,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `project share <stitch\|lavish-hosted> <on\|off>` | The user's opt-in to share work outside this machine. |
 | `project milestone start <M>` | M0: the scaffold runner, then its close runner. Later milestones: the plan runner. |
 | `project milestone chain <M>` | Spawn the feature, integrate and close runners from the committed plan. Run it again after a failed runner; done nodes are kept. |
-| `project milestone done <M> [--merged-commit SHA]` | After the user merged `release/<M>` and pulled: commit the records and tag the release locally. |
+| `project milestone done <M> [--merged-commit SHA]` | After the user merged `release/<M>` and pulled: commit the records and tag the release locally. The notes it finds must be the close branch's, not a release merged before a reopen. |
 | `project milestone reopen <M> --reason WHY` | Put a done milestone back in progress and delete its local tag. |
 | `project milestone close <M>` | A new close runner on `release/<M>-r<k>` after a reopen or a failed close. |
 | `project graduate [--export DIR] [--yes]` | Remove the discovery folder in one commit and tag the commit before it locally. Without `--yes` it only checks. |
@@ -105,7 +105,7 @@ A project spawn prints `note: N runners of <name> are active …` above the proj
 
 ### Graduate
 
-Suggest it once, after M1 is done. `project run graduate` writes the evergreen requirements and copies the approved pack and open change requests out of the discovery folder. Then run `project graduate`, which only checks, show its output, and add `--yes` on the user's word. Tell the user that graduation does not purge history: every committed discovery file stays reachable through the `discovery-archive` tag. After it, discovery stages are refused.
+Suggest it once, after M1 is done. `project run graduate` writes the evergreen requirements and copies the approved pack and open change requests out of the discovery folder. Then run `project graduate`, which only checks, show its output, and add `--yes` on the user's word. Tell the user that graduation does not purge history: every committed discovery file stays reachable through the `discovery-archive` tag. After it, discovery stages are refused; `project run pack` still builds a new pack from the requirements after a scope change, and `approve pack` clears the re-approval.
 
 ### Runners of a project
 

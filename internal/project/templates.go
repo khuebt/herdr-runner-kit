@@ -67,7 +67,11 @@ type Stage struct {
 	Milestone bool `yaml:"milestone"`
 	// Code marks a stage whose runner writes code as well as its outputs.
 	Code bool `yaml:"code"`
-	body string
+	// Graduated marks a template with a variant for a graduated project
+	// that reads nothing under the discovery folder, so the stage runs
+	// after graduation too.
+	Graduated bool `yaml:"graduated"`
+	body      string
 }
 
 // Tools are the optional tools found on this machine. Templates mention a
@@ -95,6 +99,8 @@ type StageData struct {
 	// prototype's folder, empty once it left the tree.
 	Spec      string
 	Prototype string
+	// Graduated is set once the project graduated.
+	Graduated bool
 	Type      string
 	Track     string
 	Tools     Tools
@@ -111,8 +117,8 @@ type StageData struct {
 	ChangePath string
 	Tasks      string
 	// Milestone stages: the milestone, its folder and plan, and the
-	// branch merged work lands on. Features, Backlog and Reference are
-	// already fenced as untrusted data, or empty.
+	// branch merged work lands on. MilestoneTitle, Features, Backlog and
+	// Reference are already fenced as untrusted data, or empty.
 	Milestone      string
 	MilestoneTitle string
 	MilestoneDir   string
@@ -159,7 +165,7 @@ func NewStageData(rec Record, root string, tools Tools, notes string, now time.T
 		ArchiveTag: ArchiveTag,
 	}
 	if rec.Graduated != nil {
-		d.Spec, d.Prototype, d.ArchiveTag = RequirementsPath, "", rec.Graduated.Tag
+		d.Spec, d.Prototype, d.ArchiveTag, d.Graduated = RequirementsPath, "", rec.Graduated.Tag, true
 	}
 	return d
 }
@@ -281,9 +287,9 @@ func CheckRequires(ctx context.Context, root string, rec Record, s Stage) error 
 }
 
 // needsDiscovery reports whether the stage's template reads or writes the
-// discovery folder.
+// discovery folder once the project graduated.
 func (s Stage) needsDiscovery() bool {
-	return slices.ContainsFunc(append([]string{s.body}, s.Outputs...), func(text string) bool {
+	return !s.Graduated && slices.ContainsFunc(append([]string{s.body}, s.Outputs...), func(text string) bool {
 		return strings.Contains(text, ".Discovery")
 	})
 }
