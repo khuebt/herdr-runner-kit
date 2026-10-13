@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 
@@ -44,6 +46,9 @@ type Config struct {
 	WorktreeBranchPrefix string
 	Telegram             Telegram
 	UpdateCheck          bool // doctor's daily look for a newer release
+	// Language is the language runners write report summaries and
+	// questions in, as free text such as "Vietnamese". Empty adds no rule.
+	Language string
 }
 
 // NotifyEvents lists the event types the telegram.notify key accepts.
@@ -57,6 +62,7 @@ type fileConfig struct {
 	WorktreeBranchPrefix *string             `yaml:"worktreeBranchPrefix"`
 	Telegram             *fileTelegram       `yaml:"telegram"`
 	UpdateCheck          *bool               `yaml:"updateCheck"`
+	Language             *string             `yaml:"language"`
 }
 
 type fileKind struct {
@@ -134,6 +140,9 @@ func Parse(data []byte) (Config, error) {
 	if file.UpdateCheck != nil {
 		cfg.UpdateCheck = *file.UpdateCheck
 	}
+	if file.Language != nil {
+		cfg.Language = strings.TrimSpace(*file.Language)
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -177,10 +186,28 @@ func (c Config) Validate() error {
 	if strings.ContainsAny(c.WorktreeBranchPrefix, " \t~^:?*[\\") {
 		return fmt.Errorf("worktreeBranchPrefix %q is not a valid git branch prefix", c.WorktreeBranchPrefix)
 	}
+	if err := CheckLanguage(c.Language); err != nil {
+		return fmt.Errorf("language: %w", err)
+	}
 	for _, ev := range c.Telegram.Notify {
 		if !slices.Contains(NotifyEvents, ev) {
 			return fmt.Errorf("telegram.notify: unknown event %q (known: %s)", ev, strings.Join(NotifyEvents, ", "))
 		}
+	}
+	return nil
+}
+
+// maxLanguage is the longest language value, in characters.
+const maxLanguage = 40
+
+// CheckLanguage accepts a report language: free text on one line of at most
+// 40 characters, since it goes into the runner's contract as is.
+func CheckLanguage(s string) error {
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return fmt.Errorf("%q must be one line of plain text", s)
+	}
+	if n := utf8.RuneCountInString(s); n > maxLanguage {
+		return fmt.Errorf("%q has %d characters, more than %d", s, n, maxLanguage)
 	}
 	return nil
 }

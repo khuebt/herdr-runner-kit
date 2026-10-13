@@ -86,6 +86,8 @@ type SpawnOptions struct {
 	// Branch names the worktree branch, following the repository's own
 	// convention. Empty means prefix + "<id>-<slug>".
 	Branch string
+	// Language overrides the configured report language.
+	Language string
 }
 
 // Spawn records a task and, unless it waits on other tasks or on a human,
@@ -261,6 +263,13 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 			return nil, fmt.Errorf("invalid branch name %q", o.Branch)
 		}
 	}
+	language := r.Config.Language
+	if l := strings.TrimSpace(o.Language); l != "" {
+		language = l
+	}
+	if err := config.CheckLanguage(language); err != nil {
+		return nil, fmt.Errorf("--language: %w", err)
+	}
 	owner := o.Owner
 	if owner == "" {
 		if owner = Toplevel(ctx, cwd); owner == "" {
@@ -285,7 +294,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 	return &task.Task{
 		Kind: kindName, Agent: spec.String(), Prompt: o.Prompt, Skill: o.Skill, Title: title,
 		Cwd: cwd, Owner: owner, RepoRoot: root, UseWorktree: useWorktree, After: after, Gate: gate,
-		MainWorkspace: workspace, ClaudeConfigDir: configDir,
+		MainWorkspace: workspace, ClaudeConfigDir: configDir, Language: language,
 		// Queued until spawn decides: a task with no pending parents moves on
 		// to held or starting at once.
 		Status: task.Queued,

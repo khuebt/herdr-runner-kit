@@ -53,6 +53,8 @@ const maxListedPaths = 5
 // Cleanable lists the owner's finished worktree tasks with a worktree or
 // branch left, and whether removing them is safe. With fetch it first
 // fetches origin once per repository, so merges made on the remote count.
+// It reads each worktree live rather than trust the task's report-time git
+// snapshot, since the worktree may have changed after the report.
 func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]CleanupItem, error) {
 	tasks, err := r.Store.List()
 	if err != nil {

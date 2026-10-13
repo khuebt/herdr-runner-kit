@@ -1,6 +1,9 @@
 package task
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseAgentSpec(t *testing.T) {
 	tests := []struct {
@@ -91,6 +94,58 @@ func TestWorktreeOwnsBranch(t *testing.T) {
 	for _, tt := range tests {
 		if got := tt.w.OwnsBranch(); got != tt.want {
 			t.Errorf("%s: OwnsBranch = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestGitStateShort(t *testing.T) {
+	tests := []struct {
+		name string
+		g    GitState
+		want string
+	}{
+		{
+			"uncommitted",
+			GitState{Worktree: true, Branch: "hrk/t1-x", Base: "origin/main", Uncommitted: 3, Untracked: 1, AheadOfBase: 1},
+			"on hrk/t1-x, 3 uncommitted, 1 untracked, 1 commit, no upstream",
+		},
+		{
+			"not pushed",
+			GitState{Worktree: true, Branch: "b", Base: "origin/main", Upstream: "origin/b", Ahead: 2, AheadOfBase: 3},
+			"on b, 2 commits not pushed",
+		},
+		{
+			"diverged",
+			GitState{Worktree: true, Branch: "b", Base: "origin/main", Upstream: "origin/b", Ahead: 1, Behind: 1, AheadOfBase: 1},
+			"on b, diverged from origin/b (1 ahead, 1 behind)",
+		},
+		{
+			"behind",
+			GitState{Worktree: true, Branch: "b", Base: "origin/main", Upstream: "origin/b", Behind: 2, AheadOfBase: 1},
+			"on b, 2 behind origin/b",
+		},
+		{
+			"no upstream",
+			GitState{Worktree: true, Branch: "b", Base: "origin/main", AheadOfBase: 2},
+			"on b, 2 commits, no upstream",
+		},
+		{"no new commits", GitState{Worktree: true, Branch: "b", Base: "origin/main"}, "on b, no new commits"},
+		{
+			"clean and pushed",
+			GitState{Worktree: true, Branch: "b", Base: "origin/main", Upstream: "origin/b", AheadOfBase: 2},
+			"on b, clean, pushed",
+		},
+		{"unknown base", GitState{Worktree: true, Branch: "b"}, "on b, clean"},
+		{"repo state", GitState{Branch: "main", Base: "origin/main", Uncommitted: 3}, "repo state, on main, 3 uncommitted"},
+		{"detached", GitState{Worktree: true, Branch: "(detached)", Base: "origin/main"}, "detached HEAD, no new commits"},
+	}
+	for _, tt := range tests {
+		got := tt.g.Short()
+		if got != tt.want {
+			t.Errorf("%s: Short() = %q, want %q", tt.name, got, tt.want)
+		}
+		if strings.Contains(got, "force") {
+			t.Errorf("%s: Short() suggests a force-push: %q", tt.name, got)
 		}
 	}
 }

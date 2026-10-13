@@ -46,8 +46,15 @@ func newSpawnCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t))
-			return err
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t)); err != nil {
+				return err
+			}
+			if t.Worktree != nil && o.Branch == "" {
+				recent := runner.RecentBranches(cmd.Context(), t.RepoRoot, r.Config.WorktreeBranchPrefix, t.Worktree.Branch, 5)
+				_, err = fmt.Fprintln(cmd.ErrOrStderr(), branchNote(t.Worktree.Branch, recent))
+				return err
+			}
+			return nil
 		},
 	}
 	f := cmd.Flags()
@@ -61,11 +68,24 @@ func newSpawnCommand() *cobra.Command {
 	f.StringSliceVar(&o.After, "after", nil, "start only when these tasks are done")
 	f.StringVar(&gate, "gate", "auto", "auto starts on its own; human waits for `release`")
 	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of a Claude runner, as a path or a name such as claude2 for ~/.claude2 (default: the main session's)")
+	f.StringVar(&o.Language, "language", "", "language of the runner's report summaries and questions, such as Vietnamese (default: the config's language)")
 	f.StringVar(&o.Cwd, "cwd", "", "folder the task works in (default: current folder)")
 	f.StringVar(&o.Title, "title", "", "short title (default: from the prompt)")
 	f.BoolVar(&stdin, "stdin", false, "read the prompt from stdin")
 	f.StringVar(&o.Owner, "owner", "", "main session the task reports to (default: git top-level of the current folder)")
 	return cmd
+}
+
+// branchNote tells the main session that a worktree task got the kit's
+// default branch name, and which names the repository uses, so the next
+// spawn can follow its convention with --branch.
+func branchNote(branch string, recent []string) string {
+	note := "note: branch " + branch + " is the kit's default"
+	if len(recent) == 0 {
+		return note + "."
+	}
+	return note + "; recent branches here: " + strings.Join(recent, ", ") +
+		". Pass --branch to follow the repository's convention."
 }
 
 func spawnLine(t *task.Task) string {

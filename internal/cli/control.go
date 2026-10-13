@@ -366,6 +366,9 @@ func newShowCommand() *cobra.Command {
 			if err := enc.Encode(t); err != nil {
 				return err
 			}
+			if t.Git != nil {
+				fmt.Fprintf(out, "\ngit: %s (checked %s)\n", t.Git.Short(), t.Git.CheckedAt.Local().Format("15:04"))
+			}
 			all, _, err := r.Store.ReadEventsSince(0)
 			if err != nil {
 				return err

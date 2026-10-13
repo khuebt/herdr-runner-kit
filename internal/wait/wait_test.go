@@ -320,6 +320,29 @@ func TestDoneLineHasCloseTime(t *testing.T) {
 	}
 }
 
+func TestLineUsesEventSnapshot(t *testing.T) {
+	tk := &task.Task{
+		Title: "fix login", Status: task.Done, Herdr: task.Herdr{PaneID: "w1:p1", Closed: true},
+		Git: &task.GitState{Worktree: true, Branch: "b", Uncommitted: 4},
+	}
+	ev := state.Event{Task: "t1", Type: "done", Summary: "fixed", Git: "on b, 1 commit not pushed"}
+	if got := Line(ev, tk); got != "t1 done · fix login · git: on b, 1 commit not pushed · fixed" {
+		t.Errorf("done line = %q", got)
+	}
+	ev.Type, ev.Summary = "failed", "broke"
+	if got := Line(ev, tk); got != "t1 failed · fix login · git: on b, 1 commit not pushed · broke" {
+		t.Errorf("failed line = %q", got)
+	}
+	q := Line(state.Event{Task: "t1", Type: "needs-human", Question: "Which?", Git: "on b, clean"}, tk)
+	if strings.Contains(q, "git:") {
+		t.Errorf("needs-human line has git: %q", q)
+	}
+	long := Line(state.Event{Task: "t1", Type: "done", Summary: strings.Repeat("word ", 200), Git: "on b, clean"}, tk)
+	if !strings.Contains(long, "git: on b, clean") {
+		t.Errorf("the cut dropped the git state: %q", long)
+	}
+}
+
 // A status change lands before its event. A wait that looks in between must
 // still return the news, not idle.
 func TestIdleWaitsForTheEventOfAFreshChange(t *testing.T) {

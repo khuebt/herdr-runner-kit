@@ -4,8 +4,47 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
+
+// gitStateTimeout caps the git snapshot a report takes.
+const gitStateTimeout = 2 * time.Second
+
+// gitState snapshots the checkout t works in: its own worktree, or else the
+// repository it was spawned in. It returns nil outside git or when git
+// fails or takes longer than gitStateTimeout; parts it cannot read stay
+// empty. It only runs local git, never a fetch.
+func gitState(t *task.Task) *task.GitState {
+	g := &task.GitState{}
+	dir := t.Cwd
+	switch {
+	case t.Worktree != nil && t.Worktree.Path != "" && !t.Worktree.Removed:
+		dir, g.Worktree = t.Worktree.Path, true
+	case t.RepoRoot == "":
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitStateTimeout)
+	defer cancel()
+	s, err := readStatus(ctx, dir)
+	if err != nil {
+		return nil
+	}
+	g.Branch, g.Upstream, g.Ahead, g.Behind = s.Head, s.Upstream, s.Ahead, s.Behind
+	g.Uncommitted, g.Untracked = len(s.Changed), len(s.Untracked)
+	if g.Base = defaultBranch(ctx, dir); g.Base != "" {
+		n, err := strconv.Atoi(gitOut(ctx, dir, "rev-list", "--count", g.Base+"..HEAD"))
+		if err != nil {
+			g.Base = "" // unknown, so Short never claims there are no new commits
+		}
+		g.AheadOfBase = n
+	}
+	g.CheckedAt = time.Now().UTC()
+	return g
+}
 
 // gitStatus is one read of a checkout's branch and working tree.
 type gitStatus struct {

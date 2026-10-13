@@ -274,12 +274,16 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 }
 
 // Line formats one news event of task t for the main session, at most
-// MaxLine characters. A done line says when the runner's tab closes, ahead
-// of the summary so the cut never drops it. t may be nil.
+// MaxLine characters. A done or failed line carries the git snapshot of
+// that report, and a done line says when the runner's tab closes, both
+// ahead of the summary so the cut never drops them. t may be nil.
 func Line(ev state.Event, t *task.Task) string {
 	parts := []string{ev.Task + " " + ev.Type}
 	if t != nil && t.Title != "" {
 		parts = append(parts, t.Title)
+	}
+	if (ev.Type == "done" || ev.Type == "failed") && ev.Git != "" {
+		parts = append(parts, "git: "+ev.Git)
 	}
 	if ev.Type == "done" && t != nil {
 		if tab := tabNote(t); tab != "" {

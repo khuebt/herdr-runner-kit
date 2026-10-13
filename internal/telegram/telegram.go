@@ -91,13 +91,13 @@ func Message(ev state.Event, t *task.Task) string {
 	case "held":
 		lines = []string{tag + " is waiting for your go" + title, "Reply: " + tag + " ok, or " + tag + " <note> to start it with a note"}
 	case "failed":
-		lines = []string{tag + " failed" + title, ev.Summary}
+		lines = []string{tag + " failed" + title, ev.Summary, gitLine(ev)}
 	case "stalled":
 		lines = []string{tag + " is stalled" + title, ev.Summary, "Check its herdr tab, or reply: " + tag + " <instruction>"}
 	case "turn-ended-unreported":
 		lines = []string{tag + " stopped without reporting" + title, ev.Summary, "Reply: " + tag + " <instruction>"}
 	case "done":
-		lines = []string{tag + " done" + title, ev.Summary}
+		lines = []string{tag + " done" + title, ev.Summary, gitLine(ev)}
 		if len(ev.Outputs) > 0 {
 			lines = append(lines, "Output: "+strings.Join(ev.Outputs, ", "))
 		}
@@ -115,4 +115,12 @@ func Message(ev state.Event, t *task.Task) string {
 		text = string(r[:maxText-1]) + "…"
 	}
 	return text
+}
+
+// gitLine shows the git snapshot of a report, or nothing without one.
+func gitLine(ev state.Event) string {
+	if ev.Git == "" {
+		return ""
+	}
+	return "Git: " + ev.Git
 }

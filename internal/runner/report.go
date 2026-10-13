@@ -27,10 +27,21 @@ type ReportOptions struct {
 
 // Report records a runner's result and returns at once. The slow follow-up
 // work (starting dependents, notifications) runs in a detached child, so a
-// report never waits on herdr or the network.
+// report never waits on herdr or the network; it reads a local git
+// snapshot of the task's checkout, capped at 2 s.
 func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	if err := validateReport(&o); err != nil {
 		return nil, err
+	}
+	cur, err := r.Store.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	// Read git before taking the task lock, so a slow repository never
+	// holds it. A report the update refuses needs no snapshot.
+	var git *task.GitState
+	if !cur.Status.Terminal() {
+		git = gitState(cur)
 	}
 	t, err := r.Store.Update(id, func(t *task.Task) error {
 		switch {
@@ -42,6 +53,7 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 		t.Status = o.Status
 		t.Summary, t.Outputs, t.Question = o.Summary, o.Outputs, o.Question
 		t.Unreported = 0
+		t.Git = git // a failed snapshot clears an older one rather than show it as current
 		if o.Status == task.Failed {
 			t.Error = o.Summary
 		}
@@ -60,6 +72,9 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	ev := state.Event{
 		Task: t.ID, Owner: t.Owner, Type: string(o.Status), Status: t.Status,
 		Summary: summary, Question: o.Question, Outputs: o.Outputs,
+	}
+	if git != nil {
+		ev.Git = git.Short()
 	}
 	if err := r.record(ev); err != nil {
 		return t, fmt.Errorf("write event: %w", err)

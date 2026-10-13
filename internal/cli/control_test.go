@@ -57,3 +57,15 @@ func TestKeepLine(t *testing.T) {
 		t.Errorf("closed: %q", got)
 	}
 }
+
+func TestBranchNote(t *testing.T) {
+	got := branchNote("hrk/t1-x", []string{"feat/CSD-1-a", "main"})
+	want := "note: branch hrk/t1-x is the kit's default; recent branches here: feat/CSD-1-a, main. " +
+		"Pass --branch to follow the repository's convention."
+	if got != want {
+		t.Errorf("note = %q", got)
+	}
+	if got := branchNote("t1-x", nil); got != "note: branch t1-x is the kit's default." {
+		t.Errorf("note without branches = %q", got)
+	}
+}
