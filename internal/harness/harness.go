@@ -14,6 +14,7 @@ package harness
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -49,7 +50,7 @@ const (
 // Dialog is a startup screen the launcher recognises by its text.
 type Dialog struct {
 	Name   string
-	Match  string // substring of the visible screen
+	Match  string // phrase on the visible screen, compared after Normalize
 	Action DialogAction
 	Keys   []string // herdr logical keys, for SendKeys
 }
@@ -83,12 +84,38 @@ func For(h task.Harness) (Adapter, error) {
 
 // DetectDialog returns the first known dialog whose text is on screen.
 func DetectDialog(a Adapter, screen string) (Dialog, bool) {
+	text := Normalize(screen)
 	for _, d := range a.Dialogs() {
-		if strings.Contains(screen, d.Match) {
+		if strings.Contains(text, Normalize(d.Match)) {
 			return d, true
 		}
 	}
 	return Dialog{}, false
+}
+
+// Shows reports whether dialog d is on screen.
+func Shows(screen string, d Dialog) bool {
+	return d.Match != "" && strings.Contains(Normalize(screen), Normalize(d.Match))
+}
+
+// Normalize lowercases s and turns every run of characters that are not
+// letters or digits into one space, so a phrase still matches when the agent
+// wraps it across lines, draws box borders through it or changes its case.
+func Normalize(s string) string {
+	var b strings.Builder
+	space := false
+	for _, c := range s {
+		if !unicode.IsLetter(c) && !unicode.IsDigit(c) {
+			space = b.Len() > 0
+			continue
+		}
+		if space {
+			b.WriteByte(' ')
+			space = false
+		}
+		b.WriteRune(unicode.ToLower(c))
+	}
+	return b.String()
 }
 
 // skillName strips an invocation prefix, so "/ak:plan", "$ak-plan" and

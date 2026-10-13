@@ -117,7 +117,8 @@ func TestReportWakesWaitFast(t *testing.T) {
 		at := time.Now()
 		report(t, r, tk.ID, "done "+tk.ID)
 		got := get(t, ch)
-		if got.err != nil || len(got.res.Lines) != 1 || !strings.HasPrefix(got.res.Lines[0], tk.ID+" done · fix login · done "+tk.ID) {
+		if got.err != nil || len(got.res.Lines) != 1 || !strings.HasPrefix(got.res.Lines[0], tk.ID+" done · fix login · tab closes ") ||
+			!strings.HasSuffix(got.res.Lines[0], " · done "+tk.ID) {
 			t.Fatalf("run %d: %+v %v", i, got.res, got.err)
 		}
 		spans = append(spans, got.at.Sub(at))
@@ -233,7 +234,8 @@ func TestIdleWaitOffersMergedWorktree(t *testing.T) {
 	}
 	tk := addTask(t, r, task.Done, repo)
 	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
-		t.RepoRoot, t.Worktree = repo, &task.Worktree{Branch: "hrk/t1-a", Removed: true}
+		t.RepoRoot = repo
+		t.Worktree = &task.Worktree{Path: repo + "-wt", Branch: "hrk/t1-a", Removed: true, BranchCreated: new(true)}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -280,13 +282,64 @@ func TestDeadLauncherFailsTask(t *testing.T) {
 
 func TestLineIsShort(t *testing.T) {
 	long := strings.Repeat("word ", 200)
-	line := Line(state.Event{Task: "t1", Type: "done", Summary: long, Outputs: []string{"/a.md"}}, "title")
+	tk := &task.Task{Title: "title", Status: task.Done, FinishedAt: time.Now(), Herdr: task.Herdr{PaneID: "w1:p1"}}
+	line := Line(state.Event{Task: "t1", Type: "done", Summary: long, Outputs: []string{"/a.md"}}, tk)
 	if n := len([]rune(line)); n > MaxLine {
 		t.Errorf("line has %d characters", n)
 	}
-	q := Line(state.Event{Task: "t2", Type: "needs-human", Question: "Drop it?\nyes or no"}, "t")
+	if !strings.Contains(line, "tab closes ") {
+		t.Errorf("the cut dropped the close time: %q", line)
+	}
+	q := Line(state.Event{Task: "t2", Type: "needs-human", Question: "Drop it?\nyes or no"}, &task.Task{Title: "t"})
 	if q != "t2 needs-human · t · Q: Drop it? yes or no" {
 		t.Errorf("question line = %q", q)
+	}
+	if got := Line(state.Event{Task: "t3", Type: "done", Summary: "ok"}, nil); got != "t3 done · ok" {
+		t.Errorf("line without a task = %q", got)
+	}
+}
+
+func TestDoneLineHasCloseTime(t *testing.T) {
+	finished := time.Date(2026, 10, 13, 15, 45, 0, 0, time.Local)
+	tk := &task.Task{Title: "fix login", Status: task.Done, FinishedAt: finished, Herdr: task.Herdr{PaneID: "w1:p1"}}
+	ev := state.Event{Task: "t1", Type: "done", Summary: "fixed"}
+	if got := Line(ev, tk); got != "t1 done · fix login · tab closes 16:15 · fixed" {
+		t.Errorf("open tab: %q", got)
+	}
+	tk.Keep = true
+	if got := Line(ev, tk); got != "t1 done · fix login · tab kept · fixed" {
+		t.Errorf("kept tab: %q", got)
+	}
+	tk.Keep, tk.Herdr.Closed = false, true
+	if got := Line(ev, tk); got != "t1 done · fix login · fixed" {
+		t.Errorf("closed tab: %q", got)
+	}
+	tk.Herdr.Closed = false
+	if got := Line(state.Event{Task: "t1", Type: "failed", Summary: "broke"}, tk); strings.Contains(got, "tab") {
+		t.Errorf("failed line has a tab note: %q", got)
+	}
+}
+
+func TestLineUsesEventSnapshot(t *testing.T) {
+	tk := &task.Task{
+		Title: "fix login", Status: task.Done, Herdr: task.Herdr{PaneID: "w1:p1", Closed: true},
+		Git: &task.GitState{Worktree: true, Branch: "b", Uncommitted: 4},
+	}
+	ev := state.Event{Task: "t1", Type: "done", Summary: "fixed", Git: "on b, 1 commit not pushed"}
+	if got := Line(ev, tk); got != "t1 done · fix login · git: on b, 1 commit not pushed · fixed" {
+		t.Errorf("done line = %q", got)
+	}
+	ev.Type, ev.Summary = "failed", "broke"
+	if got := Line(ev, tk); got != "t1 failed · fix login · git: on b, 1 commit not pushed · broke" {
+		t.Errorf("failed line = %q", got)
+	}
+	q := Line(state.Event{Task: "t1", Type: "needs-human", Question: "Which?", Git: "on b, clean"}, tk)
+	if strings.Contains(q, "git:") {
+		t.Errorf("needs-human line has git: %q", q)
+	}
+	long := Line(state.Event{Task: "t1", Type: "done", Summary: strings.Repeat("word ", 200), Git: "on b, clean"}, tk)
+	if !strings.Contains(long, "git: on b, clean") {
+		t.Errorf("the cut dropped the git state: %q", long)
 	}
 }
 

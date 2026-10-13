@@ -135,3 +135,15 @@ func TestMessage(t *testing.T) {
 		t.Errorf("message has %d characters", len([]rune(long)))
 	}
 }
+
+func TestMessageDoneWithGit(t *testing.T) {
+	tk := &task.Task{ID: "t3", Title: "fix login"}
+	got := Message(state.Event{Task: "t3", Type: "done", Summary: "Fixed.", Git: "on b, 1 commit not pushed"}, tk)
+	if got != "#t3 done · fix login\nFixed.\nGit: on b, 1 commit not pushed" {
+		t.Errorf("done = %q", got)
+	}
+	got = Message(state.Event{Task: "t3", Type: "failed", Summary: "Broke.", Git: "repo state, on main, 2 uncommitted"}, tk)
+	if got != "#t3 failed · fix login\nBroke.\nGit: repo state, on main, 2 uncommitted" {
+		t.Errorf("failed = %q", got)
+	}
+}

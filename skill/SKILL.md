@@ -36,7 +36,7 @@ A lookup that grows past a few steps moves to a runner. Do not do runner work yo
 Before any runner, even a one-line fix, reply with a short brief and wait for the user:
 - the goal, and how the runner will reach it: approach, files or areas;
 - what is out of scope, and how it is checked: tests, lint, a manual step;
-- kind, agent, worktree and branch;
+- kind, agent and worktree; for a worktree task, the exact `--branch` value;
 - open questions, if any.
 
 End with "Start?". Spawn only after the user agrees, with their additions in the prompt. Skip the brief only when the user's message already says to start now.
@@ -57,7 +57,7 @@ The user's config may change these defaults. `--agent harness[:model[:effort]]` 
 
 Pass the user's words through `--stdin` with a quoted heredoc, never inside a shell string. Add `--title` with a few words when the prompt does not open with a short summary; the title names the tab and the branch.
 
-For a worktree task, name the branch after the repository's convention with `--branch`, such as `--branch fix/CSD-11-paid-leave`: check recent branch names, the contributing guide or the ticket, and show the name in the brief. A runner works on one branch; for two pull requests, spawn two runners.
+For a worktree task, name the branch after the repository's convention with `--branch`, such as `--branch fix/CSD-11-paid-leave`: check recent branch names, the contributing guide or the ticket, and show the name in the brief. A runner works on one branch; for two pull requests, spawn two runners. When `spawn` prints `note: branch … is the kit's default` with recent branch names, tell the user and follow that convention with `--branch` next time.
 
 ```sh
 herdr-runner-kit spawn --kind fix --stdin <<'EOF'
@@ -98,6 +98,8 @@ EOF
 After you spawn, answer, send or release, run `herdr-runner-kit wait` with the Bash tool's `run_in_background`. Rerun it after every wake.
 
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail.
+- `git: …` on a `done` or `failed` line: remind the user about uncommitted or untracked work, commits not pushed, or a branch diverged from its upstream. `repo state` means the main checkout, not a worktree.
+- `tab closes HH:MM` or `tab kept` on a `done` line: mention it, and offer `herdr-runner-kit keep <id>` when the user wants to come back to the tab later.
 - `timeout`: rerun `wait` silently.
 - `already waiting`: another wait already holds the cursor, usually the auto re-arm hook. Do nothing and do not rerun.
 - `idle:`: every task has finished. Do not rerun until you start something.
@@ -107,7 +109,8 @@ In the session `herdr-runner-kit main` started, news can also arrive as Stop hoo
 ## Answer and steer
 
 - `needs-human`: ask the user the runner's question. Send the reply with `herdr-runner-kit answer <id> --stdin` and a quoted heredoc. The runner continues in the same session.
-- The user wants to steer a runner, or give a finished one more work while its tab is open: `herdr-runner-kit send <id> --stdin`. A `done` task runs again and reports again.
+- The user wants to steer a runner, or give a done or failed one more work while its tab is open: `herdr-runner-kit send <id> --stdin`. It runs again and reports again; a stopped task cannot be reopened.
+- Reuse a runner: before spawning a follow-up on the same topic, check `list`. If a recent runner's TAB is open, propose `send <id>` in the brief instead of a new runner.
 - The user can also type into the runner's tab; `herdr-runner-kit focus <id>` switches to it.
 - `stop <id>` only when the user asks. Branches stay local; merge or open a PR only when asked.
 

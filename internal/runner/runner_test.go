@@ -32,6 +32,7 @@ func newFakeHerdr() *fakeHerdr {
 	f.on("tab create", ok(`{"result":{"root_pane":{"pane_id":"w1:p9","tab_id":"w1:t9","workspace_id":"w1"}}}`))
 	f.on("worktree create", ok(`{"result":{"root_pane":{"pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"},"worktree":{"path":"/wt/t1","branch":"hrk/t1-x"}}}`))
 	f.on("workspace list", ok(`{"result":{"workspaces":[]}}`))
+	f.on("workspace get", ok(`{"result":{"workspace":{"workspace_id":"w2","worktree":{"checkout_path":"/wt/t1","is_linked_worktree":true}}}}`))
 	f.on("agent start", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
 	f.on("agent wait", ok(`{"result":{"agent":{"agent_status":"working"}}}`))
 	f.on("pane read", ok("❯ \n"))
@@ -361,6 +362,19 @@ func TestSpawnPicksClaudeConfig(t *testing.T) {
 	}
 }
 
+func TestSpawnNormalisesDefaultClaudeConfig(t *testing.T) {
+	r, _, e := newTestRunner(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, inherited := range []string{filepath.Join(home, ".claude"), filepath.Join(home, ".claude") + "/", "~/.claude"} {
+		e["CLAUDE_CONFIG_DIR"] = inherited
+		tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+		if tk.ClaudeConfigDir != "" {
+			t.Errorf("inherited CLAUDE_CONFIG_DIR=%s stored as %q, want \"\"", inherited, tk.ClaudeConfigDir)
+		}
+	}
+}
+
 func spawnStarting(t *testing.T, r *Runner, o SpawnOptions) *task.Task {
 	t.Helper()
 	tk, err := r.Spawn(context.Background(), o)
@@ -407,7 +421,7 @@ func TestLaunchClaudeTab(t *testing.T) {
 	if got.Status != task.Running || got.Herdr.PaneID != "w1:p9" || got.Herdr.TabID != "w1:t9" || got.Herdr.AgentName != "hrk-t1" {
 		t.Errorf("task = %+v", got)
 	}
-	if ev := events(t, r, tk.ID); !slices.Equal(ev, []string{"spawned", "started", "prompted"}) {
+	if ev := events(t, r, tk.ID); !slices.Equal(ev, []string{"spawned", "claude-trust-skipped", "started", "prompted"}) {
 		t.Errorf("events = %v", ev)
 	}
 }
@@ -499,7 +513,137 @@ func TestLaunchWaitsForHumanAtTrustDialog(t *testing.T) {
 		t.Errorf("after answer: %+v", got)
 	}
 	ev := events(t, r, tk.ID)
-	if !slices.Equal(ev, []string{"spawned", "needs-human", "started", "prompted"}) {
+	if !slices.Equal(ev, []string{"spawned", "claude-trust-skipped", "needs-human", "started", "prompted"}) {
+		t.Errorf("events = %v", ev)
+	}
+}
+
+// screensThen serves blank screens n times, then the given screens in
+// order, repeating the last one.
+func screensThen(n int, screens ...string) func([]string) (string, error) {
+	var mu sync.Mutex
+	reads := 0
+	return func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		reads++
+		if reads <= n {
+			return "", nil
+		}
+		return screens[min(reads-n, len(screens))-1], nil
+	}
+}
+
+func TestLaunchFindsALateTrustDialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("pane read", screensThen(3, "│ Is this a project you created │\n│ or one you trust? │", "❯ "))
+	var statusDuringWait task.Status
+	fake.on("agent wait", func(args []string) (string, error) {
+		if slices.Contains(args, "idle") && statusDuringWait == "" {
+			got, _ := r.Store.Get("t1")
+			statusDuringWait = got.Status
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if statusDuringWait != task.NeedsHuman {
+		t.Errorf("status while waiting = %s, want needs-human", statusDuringWait)
+	}
+	all, _, _ := r.Store.ReadEventsSince(0)
+	for _, ev := range all {
+		if ev.Type == "needs-human" && ev.Summary != "claude-workspace-trust" {
+			t.Errorf("needs-human for %q, want claude-workspace-trust", ev.Summary)
+		}
+	}
+	if ev := events(t, r, tk.ID); !slices.Contains(ev, "needs-human") {
+		t.Errorf("events = %v", ev)
+	}
+}
+
+func TestLaunchUnknownDialogAfterFallback(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("pane read", ok("  Some new question?\n  1. Yes  2. No"))
+	idleWaits := 0
+	fake.on("agent wait", func(args []string) (string, error) {
+		if !slices.Contains(args, "idle") {
+			return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+		}
+		idleWaits++
+		if idleWaits == 1 {
+			return "", herdrError(herdr.CodeTimeout) // still not ready
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil // the user answered
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := fake.count("pane", "read"); n < 21 {
+		t.Errorf("pane read %d times before the unknown dialog, want at least 21", n)
+	}
+	if idleWaits < 2 {
+		t.Errorf("idle waits = %d, want the fallback wait and the human wait", idleWaits)
+	}
+	all, _, _ := r.Store.ReadEventsSince(0)
+	var question string
+	for _, ev := range all {
+		if ev.Type == "needs-human" {
+			question = ev.Question
+		}
+	}
+	if !strings.Contains(question, "shows the unknown startup dialog") || strings.Contains(question, "dialog dialog") {
+		t.Errorf("question = %q", question)
+	}
+}
+
+func TestLaunchNotReadyThenIdleIsNoDialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("agent wait", ok(`{"result":{"agent":{"agent_status":"idle"}}}`))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "needs-human") {
+		t.Errorf("an agent that turned idle was marked needs-human: %v", ev)
+	}
+}
+
+func TestLaunchNeverPromptsIntoADialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	// Ready at start; the trust dialog opens on the check before the prompt.
+	fake.on("pane read", screensThen(1, " Is this a project you created or one you trust?", "❯ "))
+	promptedDuringDialog := false
+	fake.on("agent prompt", func([]string) (string, error) {
+		if got, _ := r.Store.Get("t1"); got.Status == task.NeedsHuman {
+			promptedDuringDialog = true
+		}
+		return "{}", nil
+	})
+	var callsAtAnswer int
+	fake.on("agent wait", func(args []string) (string, error) {
+		if slices.Contains(args, "idle") {
+			callsAtAnswer = fake.count("agent", "prompt")
+			return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+		}
+		return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if promptedDuringDialog || callsAtAnswer != 0 {
+		t.Errorf("prompt sent before the dialog was answered (%d prompts)", callsAtAnswer)
+	}
+	if fake.count("agent", "prompt") != 1 || fake.count("agent", "send-keys") != 0 {
+		t.Errorf("prompts = %d, send-keys = %d", fake.count("agent", "prompt"), fake.count("agent", "send-keys"))
+	}
+	if ev := events(t, r, tk.ID); !slices.Equal(ev, []string{"spawned", "claude-trust-skipped", "needs-human", "started", "prompted"}) {
 		t.Errorf("events = %v", ev)
 	}
 }
@@ -719,5 +863,502 @@ func TestGCLeavesARunnerSomeoneStillUses(t *testing.T) {
 	fake.on("agent get", herdrErr(herdr.CodeAgentNotFound))
 	if closed, err := r.GC(context.Background(), "", GCAge, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
 		t.Fatalf("after the work: closed %v, %v", closed, err)
+	}
+}
+
+// finishedRunner launches a plain runner whose task finished an hour ago, so
+// gc may close it. Its agent is gone from herdr unless a test says otherwise.
+func finishedRunner(t *testing.T, r *Runner, fake *fakeHerdr) *task.Task {
+	t.Helper()
+	fake.on("agent get", ok(`{"result":{"agent":{"agent_status":"idle"}}}`)) // shell only
+	tk := spawnStarting(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	finishAgo(t, r, tk.ID, time.Hour)
+	got, err := r.Store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// finishAgo sets the task done, finished d ago, with its tab open.
+func finishAgo(t *testing.T, r *Runner, id string, d time.Duration) {
+	t.Helper()
+	if _, err := r.Store.Update(id, func(t *task.Task) error {
+		t.Status, t.FinishedAt = task.Done, time.Now().Add(-d).UTC()
+		t.Herdr.Closed, t.Herdr.ClosingSince = false, time.Time{}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gcCheck() closeCheck {
+	return closeCheck{idle: true, cutoff: time.Now().Add(-GCAge), keep: true}
+}
+
+func TestGCSkipsATaskReopenedBySend(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	listed := finishedRunner(t, r, fake)
+	// Send reopens the task after gc listed it as finished.
+	if _, err := r.Send(context.Background(), listed.ID, "one more thing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.closeRunner(context.Background(), listed, false, gcCheck()); !errors.Is(err, errReopened) {
+		t.Fatalf("close of a reopened runner = %v", err)
+	}
+	if closed, err := r.GC(context.Background(), "", GCAge, false); err != nil || len(closed) != 0 {
+		t.Fatalf("gc closed %v, %v", closed, err)
+	}
+	got, _ := r.Store.Get(listed.ID)
+	if got.Status != task.Running || got.Herdr.Closed || !got.Herdr.ClosingSince.IsZero() || fake.count("agent", "send-keys") != 0 {
+		t.Errorf("task = %s closed %v claim %v; send-keys %d", got.Status, got.Herdr.Closed, got.Herdr.ClosingSince, fake.count("agent", "send-keys"))
+	}
+}
+
+func TestGCRechecksAgeUnderLock(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	listed := finishedRunner(t, r, fake)
+	// Reopened and finished again after gc listed it.
+	if _, err := r.Send(context.Background(), listed.ID, "again"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(listed.ID, ReportOptions{Status: task.Done, Summary: "again"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.closeRunner(context.Background(), listed, false, gcCheck()); !errors.Is(err, errReopened) {
+		t.Fatalf("close of a runner that finished again = %v", err)
+	}
+	if got, _ := r.Store.Get(listed.ID); got.Herdr.Closed || got.Status != task.Done {
+		t.Errorf("task = %s closed %v", got.Status, got.Herdr.Closed)
+	}
+}
+
+func TestSendRefusesAClosingRunner(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	prompts := fake.count("agent", "prompt")
+	var sendErr error
+	fake.on("agent get", func([]string) (string, error) {
+		if sendErr == nil {
+			_, sendErr = r.Send(context.Background(), tk.ID, "late")
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+	})
+	if closed, err := r.GC(context.Background(), "", GCAge, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
+		t.Fatalf("gc closed %v, %v", closed, err)
+	}
+	if sendErr == nil || !strings.Contains(sendErr.Error(), "tab is closing") {
+		t.Errorf("send during the close = %v", sendErr)
+	}
+	if fake.count("agent", "prompt") != prompts {
+		t.Error("a closing runner got the prompt")
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Done || !got.Herdr.Closed || !got.Herdr.ClosingSince.IsZero() {
+		t.Errorf("task = %s closed %v claim %v", got.Status, got.Herdr.Closed, got.Herdr.ClosingSince)
+	}
+}
+
+func TestSendDuringPromptSeesTheClaim(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	// gc claims the runner while the prompt is being typed.
+	fake.on("agent prompt", func([]string) (string, error) {
+		_, err := r.claimClose(tk.ID, gcCheck())
+		return "{}", err
+	})
+	if _, err := r.Send(context.Background(), tk.ID, "late"); err == nil || !strings.Contains(err.Error(), "was closing while the prompt was sent") {
+		t.Fatalf("send = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done {
+		t.Errorf("status = %s, want done", got.Status)
+	}
+}
+
+func TestStaleClaimExpires(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	claim := func(ago time.Duration) {
+		t.Helper()
+		finishAgo(t, r, tk.ID, time.Hour)
+		if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+			t.Herdr.ClosingSince = time.Now().Add(-ago).UTC()
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	claim(10 * time.Second)
+	if _, err := r.Send(context.Background(), tk.ID, "x"); err == nil {
+		t.Error("send got past a live claim")
+	}
+	if closed, err := r.GC(context.Background(), "", GCAge, false); err != nil || len(closed) != 0 {
+		t.Errorf("gc got past a live claim: %v, %v", closed, err)
+	}
+
+	claim(2 * time.Minute)
+	if _, err := r.Send(context.Background(), tk.ID, "x"); err != nil {
+		t.Errorf("send refused after the claim expired: %v", err)
+	}
+	claim(2 * time.Minute)
+	if closed, err := r.GC(context.Background(), "", GCAge, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
+		t.Errorf("gc did not reclaim an expired claim: %v, %v", closed, err)
+	}
+}
+
+func TestSendPromptFailureKeepsDone(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	fake.on("agent prompt", herdrErr("pane_busy"))
+	if _, err := r.Send(context.Background(), tk.ID, "x"); err == nil {
+		t.Fatal("send succeeded")
+	}
+	// The backstop sees the idle agent go; the task must stay done.
+	fake.on("agent wait", herdrErr(herdr.CodeAgentNotRunning))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r.WatchAgent(ctx, tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done {
+		t.Errorf("status = %s, want done", got.Status)
+	}
+}
+
+func TestSendReopensAFailedTask(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.Status, t.Error = task.Failed, "tests failed"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Send(context.Background(), tk.ID, "fix the tests"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Running || got.Error != "" || !got.FinishedAt.IsZero() {
+		t.Errorf("after send: %s, error %q, finished %v", got.Status, got.Error, got.FinishedAt)
+	}
+}
+
+func TestCloseFailureClearsClaim(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	// The agent ignores Ctrl+C.
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
+	if _, err := r.Stop(context.Background(), tk.ID, false); err == nil || !strings.Contains(err.Error(), "did not exit") {
+		t.Fatalf("stop = %v", err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Herdr.Closed || !got.Herdr.ClosingSince.IsZero() {
+		t.Errorf("closed %v claim %v", got.Herdr.Closed, got.Herdr.ClosingSince)
+	}
+	if _, err := r.Send(context.Background(), tk.ID, "x"); err != nil {
+		t.Errorf("send after a failed close: %v", err)
+	}
+}
+
+// Send and gc race on one finished runner many times: one of them wins
+// each time, and a runner is never left running with its tab closed.
+func TestSendAndGCNeverBothAct(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	for i := range 30 {
+		finishAgo(t, r, tk.ID, time.Hour)
+		var wg sync.WaitGroup
+		var sendErr, gcErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); _, sendErr = r.Send(context.Background(), tk.ID, "x") }()
+		go func() { defer wg.Done(); _, gcErr = r.GC(context.Background(), "", GCAge, false) }()
+		wg.Wait()
+		if gcErr != nil {
+			t.Fatalf("run %d: gc: %v", i, gcErr)
+		}
+		got, _ := r.Store.Get(tk.ID)
+		switch {
+		case !got.Herdr.ClosingSince.IsZero():
+			t.Fatalf("run %d: claim left behind", i)
+		case got.Herdr.Closed && got.Status != task.Done:
+			t.Fatalf("run %d: %s with a closed tab", i, got.Status)
+		case sendErr == nil && (got.Herdr.Closed || got.Status != task.Running):
+			t.Fatalf("run %d: send succeeded, task %s closed %v", i, got.Status, got.Herdr.Closed)
+		case sendErr != nil && got.Status != task.Done:
+			t.Fatalf("run %d: send failed (%v), task %s", i, sendErr, got.Status)
+		}
+	}
+}
+
+func TestKeepStopsGC(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.Keep(context.Background(), tk.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if at, ok := CloseAt(got); ok {
+		t.Errorf("kept runner closes at %v", at)
+	}
+	if _, ok := NextGC([]*task.Task{got}, ""); ok {
+		t.Error("NextGC counts a kept runner")
+	}
+	if closed, err := r.GC(context.Background(), "", GCAge, false); err != nil || len(closed) != 0 {
+		t.Fatalf("gc closed a kept runner: %v, %v", closed, err)
+	}
+	// A stale list that still shows it unkept does not close it either.
+	if err := r.closeRunner(context.Background(), tk, false, gcCheck()); !errors.Is(err, errReopened) {
+		t.Errorf("close of a kept runner = %v", err)
+	}
+	if got, err := r.Stop(context.Background(), tk.ID, false); err != nil || !got.Herdr.Closed {
+		t.Fatalf("stop of a kept runner: %+v, %v", got, err)
+	}
+	if _, err := r.Keep(context.Background(), tk.ID, true); err == nil {
+		t.Error("kept a closed runner")
+	}
+}
+
+func TestKeepOffPastDueClosesNow(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.Keep(context.Background(), tk.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Keep(context.Background(), tk.ID, false)
+	if err != nil || !got.Herdr.Closed || got.Keep {
+		t.Fatalf("keep --off past due: %+v, %v", got, err)
+	}
+
+	// Not yet due: it stays open, with its close time back.
+	fresh := finishedRunner(t, r, fake)
+	finishAgo(t, r, fresh.ID, time.Minute)
+	if _, err := r.Keep(context.Background(), fresh.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = r.Keep(context.Background(), fresh.ID, false)
+	if at, ok := CloseAt(got); err != nil || got.Herdr.Closed || !ok || !at.Equal(got.FinishedAt.Add(GCAge)) {
+		t.Errorf("keep --off before due: %+v, %v", got, err)
+	}
+}
+
+func TestCloseAt(t *testing.T) {
+	done := time.Date(2026, 10, 13, 15, 45, 0, 0, time.UTC)
+	tk := &task.Task{Status: task.Done, FinishedAt: done, Herdr: task.Herdr{PaneID: "w1:p1"}}
+	if at, ok := CloseAt(tk); !ok || !at.Equal(done.Add(GCAge)) {
+		t.Errorf("CloseAt = %v, %v", at, ok)
+	}
+	for name, change := range map[string]func(*task.Task){
+		"running": func(t *task.Task) { t.Status = task.Running },
+		"closed":  func(t *task.Task) { t.Herdr.Closed = true },
+		"kept":    func(t *task.Task) { t.Keep = true },
+		"no pane": func(t *task.Task) { t.Herdr.PaneID = "" },
+	} {
+		c := *tk
+		change(&c)
+		if at, ok := CloseAt(&c); ok {
+			t.Errorf("%s: closes at %v", name, at)
+		}
+	}
+}
+
+func TestEndClaimOnlyEndsItsOwnClaim(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	since, err := r.claimClose(tk.ID, gcCheck())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The claim expired mid-quit and another close took the runner.
+	newer := since.Add(2 * time.Minute)
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.ClosingSince = newer; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.endClaim(tk.ID, since, false); err != nil {
+		t.Fatalf("drop of a replaced claim = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); !got.Herdr.ClosingSince.Equal(newer) {
+		t.Errorf("newer claim wiped: %v", got.Herdr.ClosingSince)
+	}
+	if err := r.endClaim(tk.ID, since, true); !errors.Is(err, errReopened) {
+		t.Fatalf("close under a replaced claim = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Herdr.Closed || !got.Herdr.ClosingSince.Equal(newer) {
+		t.Errorf("closed %v claim %v", got.Herdr.Closed, got.Herdr.ClosingSince)
+	}
+
+	// The claim is still ours, but the task runs again.
+	finishAgo(t, r, tk.ID, time.Hour)
+	if since, err = r.claimClose(tk.ID, gcCheck()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Status = task.Running; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.endClaim(tk.ID, since, true); !errors.Is(err, errReopened) {
+		t.Fatalf("close of a running task = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Herdr.Closed || !got.Herdr.ClosingSince.IsZero() {
+		t.Errorf("closed %v claim %v", got.Herdr.Closed, got.Herdr.ClosingSince)
+	}
+}
+
+func TestCloseQuitIsBounded(t *testing.T) {
+	if quitBudget >= closeClaimTTL {
+		t.Fatalf("quitBudget %v must be shorter than closeClaimTTL %v", quitBudget, closeClaimTTL)
+	}
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	defer func(d time.Duration) { quitBudget = d }(quitBudget)
+	quitBudget = 50 * time.Millisecond
+	// herdr hangs while the agent quits.
+	r.Herdr.Exec = func(ctx context.Context, bin string, args ...string) ([]byte, []byte, error) {
+		if len(args) > 1 && args[0] == "agent" && args[1] == "get" {
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}
+		return fake.exec(ctx, bin, args...)
+	}
+	start := time.Now()
+	if _, err := r.Stop(context.Background(), tk.ID, false); err == nil {
+		t.Fatal("stop of a hung agent succeeded")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("stop took %v", d)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Herdr.Closed || !got.Herdr.ClosingSince.IsZero() {
+		t.Errorf("closed %v claim %v", got.Herdr.Closed, got.Herdr.ClosingSince)
+	}
+}
+
+func TestLaunchTimeoutBlockedIsADialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeTimeout))
+	fake.on("pane read", ok("  Some new question?\n  1. Yes  2. No"))
+	idleWaits := 0
+	fake.on("agent wait", func(args []string) (string, error) {
+		switch {
+		case slices.Contains(args, "blocked"):
+			return `{"result":{"agent":{"agent_status":"blocked"}}}`, nil
+		case !slices.Contains(args, "idle"):
+			return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+		}
+		idleWaits++
+		if idleWaits == 1 {
+			return "", herdrError(herdr.CodeTimeout) // still not ready
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil // the user answered
+	})
+	promptedAt := 0
+	fake.on("agent prompt", func([]string) (string, error) {
+		promptedAt = idleWaits
+		return "{}", nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(events(t, r, tk.ID), "needs-human") || promptedAt < 2 {
+		t.Errorf("events = %v, prompted after %d idle waits", events(t, r, tk.ID), promptedAt)
+	}
+}
+
+func TestLaunchBlockedBeforePromptIsADialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	// Ready at start; herdr sees it blocked on the check before the prompt.
+	fake.on("pane read", ok("  Some new question?\n  1. Yes  2. No"))
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"blocked"}}}`))
+	idleWaits := 0
+	fake.on("agent wait", func(args []string) (string, error) {
+		if !slices.Contains(args, "idle") {
+			return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+		}
+		idleWaits++
+		if idleWaits == 1 {
+			return "", herdrError(herdr.CodeTimeout)
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+	})
+	promptedAt := 0
+	fake.on("agent prompt", func([]string) (string, error) {
+		promptedAt = idleWaits
+		return "{}", nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(events(t, r, tk.ID), "needs-human") || promptedAt < 2 {
+		t.Errorf("events = %v, prompted after %d idle waits", events(t, r, tk.ID), promptedAt)
+	}
+}
+
+func TestKeepRefusesAClosingRunner(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.claimClose(tk.ID, gcCheck()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Keep(context.Background(), tk.ID, true); err == nil || !strings.Contains(err.Error(), "closing") {
+		t.Fatalf("keep of a closing runner = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Keep {
+		t.Error("a closing runner was kept")
+	}
+}
+
+func TestSendNeverReopensAStoppedTask(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	// Stop lands while the prompt is typed, before it claims the runner.
+	fake.on("agent prompt", func([]string) (string, error) {
+		_, _, err := r.Store.SetStatus(tk.ID, task.Stopped)
+		return "{}", err
+	})
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Status = task.Running; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Send(context.Background(), tk.ID, "x"); err == nil || !strings.Contains(err.Error(), "was stopped") {
+		t.Fatalf("send during a stop = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Stopped {
+		t.Errorf("status = %s, want stopped", got.Status)
+	}
+	// A stopped task whose tab failed to close gets no prompt.
+	prompts := fake.count("agent", "prompt")
+	if _, err := r.Send(context.Background(), tk.ID, "x"); err == nil || !strings.Contains(err.Error(), "is stopped") {
+		t.Fatalf("send to a stopped task = %v", err)
+	}
+	if fake.count("agent", "prompt") != prompts {
+		t.Error("a stopped task got the prompt")
+	}
+}
+
+func TestKeepOffClosesOnlyThatRunner(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	other := finishedRunner(t, r, fake)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.Keep(context.Background(), tk.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Keep(context.Background(), tk.ID, false); err != nil || !got.Herdr.Closed {
+		t.Fatalf("keep --off past due: %+v, %v", got, err)
+	}
+	if got, _ := r.Store.Get(other.ID); got.Herdr.Closed {
+		t.Error("keep --off closed another runner")
+	}
+}
+
+func TestKeepOffLeavesAnAgentInUse(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	if _, err := r.Keep(context.Background(), tk.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
+	got, err := r.Keep(context.Background(), tk.ID, false)
+	if err != nil || got.Herdr.Closed || got.Keep || fake.count("agent", "send-keys") != 0 {
+		t.Fatalf("keep --off with the agent in use: %+v, %v", got, err)
 	}
 }

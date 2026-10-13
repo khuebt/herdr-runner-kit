@@ -22,6 +22,7 @@ kinds:
     agent: claude:claude-opus-5-5:high
     worktree: false
 worktreeBranchPrefix: hrk/
+language: Vietnamese
 telegram:
   notify: [needs-human, failed]
 ```
@@ -35,6 +36,7 @@ telegram:
 | `kinds.<name>.agent` | see below | Agent spec for tasks of this kind. Required for a new kind. |
 | `kinds.<name>.worktree` | see below | `true` runs the task in a new git worktree when its cwd is inside a git repository. |
 | `worktreeBranchPrefix` | `hrk/` | Prefix of runner branches, for example `hrk/t3-fix-login`. |
+| `language` | none | Language runners write report summaries and questions in, as free text such as `Vietnamese`, on one line of at most 40 characters. `spawn --language` overrides it per task. See [report-contract.md](report-contract.md). |
 | `telegram.envFile` | none | Dotenv file holding `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used instead of the plugin's files. `~/` is expanded. See [telegram.md](telegram.md). |
 | `telegram.stateDir` | the plugin's directory | Directory holding the Telegram channel plugin's `.env` and `access.json`. By default it is `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. |
 | `telegram.chatId` | the plugin's `allowFrom` | Chat to notify, when it should differ from the plugin's allow list. |
@@ -74,7 +76,7 @@ Runners start with permission prompts turned off, so they never stall waiting fo
 
 Before the first Codex runner in a repository, the kit adds that repository root to `~/.codex/config.toml` as trusted, because Codex asks again in every new worktree otherwise. Running `spawn` in a repository is taken as your consent for that repository. The kit appends the entry and never changes existing lines. If you marked the repository as untrusted in Codex, `spawn` stops and tells you instead.
 
-For Claude, the same consent applies: the kit marks the folder the runner starts in (the repository, or the runner's worktree) as trusted in the runner's Claude config: `<config folder>/.claude.json`, or `~/.claude.json` for the default `~/.claude`. Claude asks again for a git repository even when a parent folder is trusted, so copying parent trust is not enough. Approval of external `CLAUDE.md` imports is only copied from the repository's own entry; the kit never approves imports you did not approve.
+For Claude, the same consent applies: the kit marks the folder the runner starts in (the repository, or the runner's worktree) as trusted in the runner's Claude config: `<config folder>/.claude.json`, or `~/.claude.json` for the default `~/.claude`. Claude asks again for a git repository even when a parent folder is trusted, so copying parent trust is not enough. Approval of external `CLAUDE.md` imports is only copied from the repository's own entry; the kit never approves imports you did not approve. When the kit writes nothing, because Claude has never run with that config folder or the folder is already trusted, the event log gets a `claude-trust-skipped` event for the task saying which. `doctor` checks that Claude has run with each config folder runners use; see [setup.md](setup.md#doctor).
 
 If a trust dialog still appears, the task moves to `needs-human` and waits up to 30 minutes for you to answer it in the runner's tab.
 

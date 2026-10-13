@@ -2,7 +2,11 @@
 // launcher. A task is one runner working on one prompt.
 package task
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Status is the lifecycle state of a task.
 type Status string
@@ -64,6 +68,20 @@ type Worktree struct {
 	// Offered is set once the main session was told the worktree and
 	// branch can be cleaned up, so it is told only once.
 	Offered bool `json:"offered,omitempty"`
+	// BranchCreated is set to true once the launcher created the branch
+	// with the worktree, and is false before that. Tasks from older
+	// versions have no value.
+	BranchCreated *bool `json:"branchCreated,omitempty"`
+}
+
+// OwnsBranch reports whether the task created its branch, so cleanup may
+// delete it. A task from an older version owns it when a worktree path was
+// recorded, since the launcher created the branch with the worktree.
+func (w *Worktree) OwnsBranch() bool {
+	if w.BranchCreated != nil {
+		return *w.BranchCreated
+	}
+	return w.Path != ""
 }
 
 // Herdr holds the herdr handles of the runner. They are filled in by the
@@ -75,6 +93,10 @@ type Herdr struct {
 	AgentName   string `json:"agentName,omitempty"`
 	// Closed is set once gc or stop has ended the runner's agent.
 	Closed bool `json:"closed,omitempty"`
+	// ClosingSince is when gc, stop or cleanup claimed the runner to close
+	// it. The claim keeps send away while the agent quits, and expires on
+	// its own, so a close that was abandoned never blocks the runner.
+	ClosingSince time.Time `json:"closingSince,omitzero"`
 }
 
 // Task is the durable record stored in tasks/<id>/task.json.
@@ -119,6 +141,14 @@ type Task struct {
 	CodexThread string `json:"codexThread,omitempty"`
 	// Stalled is set while herdr reports the agent blocked on a prompt.
 	Stalled bool `json:"stalled,omitempty"`
+	// Language is the language the runner writes its report summaries and
+	// questions in. Empty leaves it to the runner.
+	Language string `json:"language,omitempty"`
+	// Git is the checkout's state at the runner's last report.
+	Git *GitState `json:"git,omitempty"`
+	// Keep holds a finished runner's tab open: gc leaves it until keep is
+	// turned off or the task is stopped.
+	Keep bool `json:"keep,omitempty"`
 	// FinishedAt is set when the task reaches a terminal status.
 	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 	Status         Status    `json:"status"`
@@ -126,4 +156,72 @@ type Task struct {
 	LaunchDeadline time.Time `json:"launchDeadline,omitzero"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// GitState is a snapshot of a task's checkout, taken when its runner reports.
+type GitState struct {
+	// Worktree is set for the task's own worktree, and false for the
+	// checkout it was spawned in, which may hold other work too.
+	Worktree bool   `json:"worktree,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	// Base is the default branch AheadOfBase counts against.
+	Base string `json:"base,omitempty"`
+	// Upstream is empty when the branch tracks nothing; Ahead and Behind
+	// count commits against it.
+	Upstream    string    `json:"upstream,omitempty"`
+	AheadOfBase int       `json:"aheadOfBase,omitempty"`
+	Ahead       int       `json:"ahead,omitempty"`
+	Behind      int       `json:"behind,omitempty"`
+	Uncommitted int       `json:"uncommitted,omitempty"`
+	Untracked   int       `json:"untracked,omitempty"`
+	CheckedAt   time.Time `json:"checkedAt,omitzero"`
+}
+
+// Short describes the snapshot in one line, such as "on hrk/t3-fix, 2
+// uncommitted, 1 commit not pushed". A branch that diverged from its
+// upstream is described as such; whether to rewrite the remote is the
+// user's call, so the text never suggests it.
+func (g *GitState) Short() string {
+	head := "on " + g.Branch
+	if g.Branch == "" || g.Branch == "(detached)" {
+		head = "detached HEAD"
+	}
+	if !g.Worktree {
+		head = "repo state, " + head
+	}
+	var parts []string
+	if g.Uncommitted > 0 {
+		parts = append(parts, fmt.Sprintf("%d uncommitted", g.Uncommitted))
+	}
+	if g.Untracked > 0 {
+		parts = append(parts, fmt.Sprintf("%d untracked", g.Untracked))
+	}
+	switch {
+	case g.Upstream != "" && g.Ahead > 0 && g.Behind > 0:
+		parts = append(parts, fmt.Sprintf("diverged from %s (%d ahead, %d behind)", g.Upstream, g.Ahead, g.Behind))
+	case g.Upstream != "" && g.Ahead > 0:
+		parts = append(parts, plural(g.Ahead, "commit")+" not pushed")
+	case g.Upstream != "" && g.Behind > 0:
+		parts = append(parts, fmt.Sprintf("%d behind %s", g.Behind, g.Upstream))
+	case g.Upstream == "" && g.AheadOfBase > 0:
+		parts = append(parts, plural(g.AheadOfBase, "commit")+", no upstream")
+	}
+	if len(parts) == 0 {
+		switch {
+		case g.AheadOfBase == 0 && g.Base != "":
+			parts = append(parts, "no new commits")
+		case g.Upstream != "":
+			parts = append(parts, "clean, pushed")
+		default:
+			parts = append(parts, "clean")
+		}
+	}
+	return head + ", " + strings.Join(parts, ", ")
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, word)
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }

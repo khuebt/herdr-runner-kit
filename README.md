@@ -68,7 +68,7 @@ Each runner has a kind, which picks its default agent and whether it gets its ow
 | `research` | Claude Opus, high effort | no | investigation and analysis |
 | `report` | Claude Opus, high effort | no | written reports and reviews |
 
-Ask for another agent, model or effort in your own words, or change the defaults in the [configuration](docs/config.md). Finished runners close on their own 30 minutes after they finish. Their worktrees and branches stay until `cleanup` removes them; once a branch is merged, the main agent offers to do that, and waits for your yes.
+Ask for another agent, model or effort in your own words, or change the defaults in the [configuration](docs/config.md). Finished runners close on their own 30 minutes after they finish, unless you ask the main agent to `keep` one open. Their worktrees and branches stay until `cleanup` removes them; once a branch is merged, the main agent offers to do that, and waits for your yes.
 
 ## Telegram
 

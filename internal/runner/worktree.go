@@ -12,7 +12,9 @@ import (
 
 // gitOut runs git in dir and returns trimmed stdout, or "" on any failure.
 func gitOut(ctx context.Context, dir string, args ...string) string {
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.WaitDelay = gitWaitDelay
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -38,6 +40,26 @@ func RepoRoot(ctx context.Context, dir string) string {
 // BranchExists reports whether refs/heads/branch exists in the repo at root.
 func BranchExists(ctx context.Context, root, branch string) bool {
 	return exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil
+}
+
+// RecentBranches returns up to n local branches of the repo at root, most
+// recently committed first. It skips skip and, when prefix is not empty,
+// the kit's own branches that start with prefix, so what is left shows the
+// repository's naming convention.
+func RecentBranches(ctx context.Context, root, prefix, skip string, n int) []string {
+	out := gitOut(ctx, root, "for-each-ref", "--sort=-committerdate", "--count=15",
+		"--format=%(refname:short)", "refs/heads")
+	var names []string
+	for name := range strings.FieldsSeq(out) {
+		if len(names) == n {
+			break
+		}
+		if name == skip || (prefix != "" && strings.HasPrefix(name, prefix)) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // Slug turns text into a short lowercase branch-safe word list. Accents are

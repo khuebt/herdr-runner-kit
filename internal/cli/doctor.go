@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/install"
+	"github.com/khuebt/herdr-runner-kit/internal/runner"
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 	"github.com/khuebt/herdr-runner-kit/internal/telegram"
 	"github.com/khuebt/herdr-runner-kit/internal/upgrade"
 )
@@ -86,6 +90,14 @@ func newDoctorCommand() *cobra.Command {
 				show("herdr hook in "+dir, checkHerdrHook(dir, settings))
 				show("bypass prompt in "+dir, checkBypass(dir, settings))
 				show("telegram plugin in "+dir, checkTelegramPlugin(dir, settings, tokenSource))
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			repo := runner.Toplevel(ctx, cwd)
+			for _, dir := range runnerClaudeConfigs(targets) {
+				show("claude config "+claudeConfigLabel(dir), checkClaudeConfig(dir, cwd, repo))
 			}
 			if failed > 0 {
 				return fmt.Errorf("%d check(s) failed", failed)
@@ -354,6 +366,113 @@ func checkTelegramPlugin(dir string, s claudeSettings, tokenSource string) check
 			"CLAUDE_CONFIG_DIR="+dir+" claude plugin disable "+telegramPlugin+"; herdr-runner-kit main enables it for the main session")
 	}
 	return ok("installed, %d chat(s) allowed; only `herdr-runner-kit main` loads it", len(access.AllowFrom))
+}
+
+// runnerClaudeConfigs returns the Claude config folders runners start with:
+// the checked folders plus each folder a Claude task recorded, mapped the way
+// spawn maps them, so ~/.claude is "" (Claude's default). A recorded folder
+// that no longer exists is skipped, because spawn refuses it now.
+func runnerClaudeConfigs(targets []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(dir string) {
+		dir = harness.DefaultClaudeConfigDir(dir)
+		if !seen[dir] {
+			seen[dir] = true
+			out = append(out, dir)
+		}
+	}
+	for _, dir := range targets {
+		add(dir)
+	}
+	sd, err := stateDir()
+	if err != nil {
+		return out
+	}
+	// Read the task files directly: doctor changes nothing, and opening the
+	// store would create the state folder.
+	files, _ := filepath.Glob(filepath.Join(sd, "tasks", "*", "task.json"))
+	for _, f := range files {
+		var rec struct {
+			Agent           string `json:"agent"`
+			ClaudeConfigDir string `json:"claudeConfigDir"`
+		}
+		data, err := os.ReadFile(f)
+		if err != nil || json.Unmarshal(data, &rec) != nil {
+			continue
+		}
+		if spec, err := task.ParseAgentSpec(rec.Agent); err != nil || spec.Harness != task.Claude {
+			continue
+		}
+		if rec.ClaudeConfigDir != "" {
+			if info, err := os.Stat(rec.ClaudeConfigDir); err != nil || !info.IsDir() {
+				continue
+			}
+		}
+		add(rec.ClaudeConfigDir)
+	}
+	return out
+}
+
+// claudeConfigLabel names a runner config folder; "" is Claude's default.
+func claudeConfigLabel(dir string) string {
+	if dir != "" {
+		return dir
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".claude")
+	}
+	return "~/.claude"
+}
+
+// checkClaudeConfig fails when Claude has never run with config folder dir,
+// since a runner there stops at login and trust screens the kit cannot
+// prepare. Whether the current repository is trusted is information only:
+// the kit marks each runner's folder trusted at launch.
+func checkClaudeConfig(dir, cwd, repo string) checkResult {
+	path, err := harness.ClaudeConfigPath(dir)
+	if err != nil {
+		return fail(err.Error(), "")
+	}
+	where := repo
+	if where == "" {
+		where = cwd
+	}
+	run := "claude"
+	if dir != "" {
+		run = "CLAUDE_CONFIG_DIR=" + dir + " claude"
+	}
+	key, err := harness.ClaudeTrusted(path, trustCandidates(cwd, repo))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fail("Claude has never run with "+claudeConfigLabel(dir)+": "+path+" is missing",
+			"run `"+run+"` once in "+where+", log in and accept the trust dialog")
+	case err != nil:
+		return fail(path+" is unreadable: "+err.Error(),
+			"repair "+path+", or run `"+run+"` once in "+where+" so Claude rewrites it")
+	case key != "":
+		return ok("%s is trusted (projects[%q].%s in %s)", where, key, harness.ClaudeTrustFlag, path)
+	}
+	return ok("%s is not trusted in %s (no projects[%q].%s); the kit marks each runner's folder trusted at launch",
+		where, path, filepath.Clean(cwd), harness.ClaudeTrustFlag)
+}
+
+// trustCandidates lists cwd and each parent up to the repository root, the
+// exact keys a trust entry for this repository could have.
+func trustCandidates(cwd, repo string) []string {
+	cwd, repo = filepath.Clean(cwd), filepath.Clean(repo)
+	paths := []string{cwd}
+	if repo == "." || (cwd != repo && !strings.HasPrefix(cwd, repo+string(filepath.Separator))) {
+		if repo != "." && repo != cwd {
+			paths = append(paths, repo)
+		}
+		return paths
+	}
+	for p := cwd; p != repo; {
+		p = filepath.Dir(p)
+		paths = append(paths, p)
+	}
+	return paths
 }
 
 func hasToken(path string) bool {

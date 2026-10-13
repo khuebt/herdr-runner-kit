@@ -53,7 +53,7 @@ func (c claude) FirstPrompt(skill, prompt, _ string) string {
 
 func (claude) Dialogs() []Dialog {
 	return []Dialog{
-		{Name: "claude-workspace-trust", Match: "Is this a project you created or one you trust", Action: NeedsHuman},
+		{Name: "claude-workspace-trust", Match: "is this a project you created or one you trust", Action: NeedsHuman},
 		{Name: "claude-external-imports", Match: "Allow external CLAUDE.md file imports", Action: NeedsHuman},
 	}
 }
@@ -73,6 +73,25 @@ func ClaudeSettings(bin string) ([]byte, error) {
 	return json.MarshalIndent(settings, "", "  ")
 }
 
+// DefaultClaudeConfigDir maps a Claude config folder to the value runners
+// store: ~/.claude becomes "", because Claude keeps that default account in
+// ~/.claude.json, and CLAUDE_CONFIG_DIR=~/.claude would point it at
+// ~/.claude/.claude.json instead. Any other value is returned unchanged.
+func DefaultClaudeConfigDir(dir string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || dir == "" {
+		return dir
+	}
+	clean := dir
+	if rest, ok := strings.CutPrefix(clean, "~/"); ok {
+		clean = filepath.Join(home, rest)
+	}
+	if filepath.Clean(clean) == filepath.Join(home, ".claude") {
+		return ""
+	}
+	return dir
+}
+
 // ClaudeConfigPath returns the file holding Claude's per-project trust for
 // the config folder dir: dir/.claude.json, or ~/.claude.json when dir is
 // empty, which is how Claude runs without CLAUDE_CONFIG_DIR.
@@ -87,28 +106,41 @@ func ClaudeConfigPath(dir string) (string, error) {
 	return filepath.Join(home, ".claude.json"), nil
 }
 
-const claudeTrustFlag = "hasTrustDialogAccepted"
+// ClaudeTrustFlag is the per-project key Claude sets when the user accepts
+// its workspace trust dialog.
+const ClaudeTrustFlag = "hasTrustDialogAccepted"
 
 // claudeImportFlags approve a CLAUDE.md that imports files from outside the
 // project. They are security decisions, so they are only ever copied.
 var claudeImportFlags = []string{"hasClaudeMdExternalIncludesApproved", "hasClaudeMdExternalIncludesWarningShown"}
 
+// Reasons PrepareClaudeTrust gives for writing nothing.
+const (
+	// TrustSkipNoConfig: Claude has never run with the config folder, so its
+	// config file is missing. The kit never creates it.
+	TrustSkipNoConfig = "no-config"
+	// TrustSkipAlreadyTrusted: every flag is already set for the folder.
+	TrustSkipAlreadyTrusted = "already-trusted"
+)
+
 // PrepareClaudeTrust lets a runner's Claude start at runnerPath without
 // dialogs. Workspace trust is granted to runnerPath, because running spawn
 // there is the user's consent, the same rule the kit applies to Codex. The
 // external-import approvals are copied from origin's own entry only, so the
-// kit never approves imports the user did not. It returns the flags it set.
-func PrepareClaudeTrust(configPath, origin, runnerPath string) ([]string, error) {
+// kit never approves imports the user did not. It returns the flags it set,
+// or, when it set none, the reason (TrustSkipNoConfig or
+// TrustSkipAlreadyTrusted).
+func PrepareClaudeTrust(configPath, origin, runnerPath string) (set []string, skipped string, err error) {
 	info, err := os.Stat(configPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil // Claude has never run with this config dir
+		return nil, TrustSkipNoConfig, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	root, err := readJSONObject(configPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	projects, _ := root["projects"].(map[string]any)
 	src, _ := projects[filepath.Clean(origin)].(map[string]any)
@@ -116,10 +148,9 @@ func PrepareClaudeTrust(configPath, origin, runnerPath string) ([]string, error)
 	if dst == nil {
 		dst = map[string]any{}
 	}
-	var set []string
-	if dst[claudeTrustFlag] != true {
-		dst[claudeTrustFlag] = true
-		set = append(set, claudeTrustFlag)
+	if dst[ClaudeTrustFlag] != true {
+		dst[ClaudeTrustFlag] = true
+		set = append(set, ClaudeTrustFlag)
 	}
 	for _, flag := range claudeImportFlags {
 		if src[flag] == true && dst[flag] != true {
@@ -128,26 +159,43 @@ func PrepareClaudeTrust(configPath, origin, runnerPath string) ([]string, error)
 		}
 	}
 	if len(set) == 0 {
-		return nil, nil
+		return nil, TrustSkipAlreadyTrusted, nil
 	}
 	projects[filepath.Clean(runnerPath)] = dst
 
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := fsutil.WriteFileAtomic(configPath, append(data, '\n'), info.Mode().Perm()); err != nil {
-		return nil, fmt.Errorf("write %s: %w", configPath, err)
+		return nil, "", fmt.Errorf("write %s: %w", configPath, err)
 	}
 	// Claude rewrites this file itself, so confirm the flags landed.
 	ok, err := ClaudeTrustPresent(configPath, runnerPath, set)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !ok {
-		return nil, fmt.Errorf("trust flags for %s were overwritten in %s", runnerPath, configPath)
+		return nil, "", fmt.Errorf("trust flags for %s were overwritten in %s", runnerPath, configPath)
 	}
-	return set, nil
+	return set, "", nil
+}
+
+// ClaudeTrusted returns the first of paths that configPath marks trusted,
+// matching exact cleaned keys as PrepareClaudeTrust writes them, or "" when
+// none is. A missing file is an error that wraps fs.ErrNotExist.
+func ClaudeTrusted(configPath string, paths []string) (string, error) {
+	root, err := readJSONObject(configPath)
+	if err != nil {
+		return "", err
+	}
+	projects, _ := root["projects"].(map[string]any)
+	for _, p := range paths {
+		if entry, _ := projects[filepath.Clean(p)].(map[string]any); entry[ClaudeTrustFlag] == true {
+			return filepath.Clean(p), nil
+		}
+	}
+	return "", nil
 }
 
 // ClaudeTrustPresent reports whether every flag is true for path.

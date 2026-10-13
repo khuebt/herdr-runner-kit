@@ -20,6 +20,10 @@ const (
 	// answer a startup dialog in the runner's tab.
 	dialogAnswerTimeout = 30 * time.Minute
 	maxDialogRounds     = 4
+	// unknownDialogIdleWait is how long a launcher waits for an agent that
+	// herdr saw as not ready to turn idle before it calls the screen an
+	// unknown startup dialog.
+	unknownDialogIdleWait = 5 * time.Second
 )
 
 // errHandled means the launch ended in a state that is already recorded.
@@ -96,6 +100,13 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		prompt = strings.TrimSpace(prompt + "\n\n" + t.Inputs)
 	}
 	text := adapter.FirstPrompt(t.Skill, prompt, files.contractText)
+	// A dialog can open after the screen looked ready. Look once more, so
+	// the prompt and its Enter never land in one. An agent herdr sees as
+	// blocked shows a dialog even when no known one matches.
+	a, err := r.Herdr.AgentGet(ctx, loc.PaneID)
+	if err := r.settleDialogs(ctx, t, adapter, loc.PaneID, err == nil && a.Status == "blocked"); err != nil {
+		return err
+	}
 	if err := r.Herdr.AgentPrompt(ctx, loc.PaneID, text); err != nil {
 		return fmt.Errorf("send first prompt: %w", err)
 	}
@@ -180,10 +191,27 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 	if base == "" {
 		base = "HEAD"
 	}
+	// A queued or held task waited; the branch may have appeared since spawn
+	// checked it. Never adopt a branch this task did not create.
+	if BranchExists(ctx, t.RepoRoot, t.Worktree.Branch) {
+		return herdr.Location{}, fmt.Errorf("branch %s already exists", t.Worktree.Branch)
+	}
 	loc, err := r.Herdr.WorktreeCreate(ctx, herdr.WorktreeOptions{
 		Workspace: repoWS, Cwd: t.RepoRoot, Branch: t.Worktree.Branch, Base: base, Label: label,
 	})
 	if err != nil {
+		return loc, err
+	}
+	// Record the worktree at once, so cleanup finds it even when a later
+	// launch step fails.
+	if _, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		t.Herdr.WorkspaceID, t.Herdr.TabID, t.Herdr.PaneID = loc.WorkspaceID, loc.TabID, loc.PaneID
+		if loc.Path != "" {
+			t.Worktree.Path = loc.Path
+		}
+		t.Worktree.BranchCreated = new(true)
+		return nil
+	}); err != nil {
 		return loc, err
 	}
 	// worktree create has no --env, so export in the root pane's shell.
@@ -212,11 +240,16 @@ func (r *Runner) prepareTrust(t *task.Task, h task.Harness) error {
 		if err != nil {
 			return err
 		}
-		set, err := harness.PrepareClaudeTrust(path, t.Cwd, runnerPath)
+		set, skipped, err := harness.PrepareClaudeTrust(path, t.Cwd, runnerPath)
 		if err != nil {
 			return fmt.Errorf("prepare Claude trust: %w", err)
 		}
-		if len(set) > 0 {
+		switch skipped {
+		case harness.TrustSkipNoConfig:
+			r.emit(t, "claude-trust-skipped", "Claude has never run with this config dir: "+path+" is missing", "")
+		case harness.TrustSkipAlreadyTrusted:
+			r.emit(t, "claude-trust-skipped", runnerPath+" is already trusted in "+path, "")
+		default:
 			r.emit(t, "claude-trusted", "set "+strings.Join(set, ", ")+" for "+runnerPath, "")
 		}
 	case task.Codex:
@@ -242,48 +275,88 @@ func (r *Runner) prepareTrust(t *task.Task, h task.Harness) error {
 // settleStartup turns the agent start result into a ready agent, or into a
 // recorded needs-human or failed state.
 func (r *Runner) settleStartup(ctx context.Context, t *task.Task, a harness.Adapter, pane string, startErr error) error {
+	notReady := herdr.HasCode(startErr, herdr.CodeAgentNotReady)
 	switch {
-	case startErr == nil, herdr.HasCode(startErr, herdr.CodeAgentNotReady):
+	case startErr == nil, notReady:
 	case herdr.HasCode(startErr, herdr.CodeTimeout):
 		screen, _ := r.Herdr.PaneRead(ctx, pane, 40)
 		if line := errorLine(screen); line != "" {
 			return fmt.Errorf("agent exited during start: %s", line)
 		}
-		if _, err := r.Herdr.AgentWait(ctx, pane, agentStartTimeout, "idle", "done", "blocked"); err != nil {
+		state, err := r.Herdr.AgentWait(ctx, pane, agentStartTimeout, "idle", "done", "blocked")
+		if err != nil {
 			return fmt.Errorf("agent did not become ready: %w", err)
 		}
+		notReady = state == "blocked"
 	default:
 		return fmt.Errorf("start agent: %w", startErr)
 	}
 
+	return r.settleDialogs(ctx, t, a, pane, notReady)
+}
+
+// settleDialogs answers or waits out the startup dialogs on screen until
+// none shows. notReady says herdr saw the agent as not ready, which means a
+// dialog is open even when no known one matches.
+func (r *Runner) settleDialogs(ctx context.Context, t *task.Task, a harness.Adapter, pane string, notReady bool) error {
 	for range maxDialogRounds {
-		screen, err := r.Herdr.PaneRead(ctx, pane, 40)
+		d, found, err := r.findDialog(ctx, a, pane, notReady)
 		if err != nil {
 			return err
 		}
-		d, ok := harness.DetectDialog(a, screen)
-		if !ok {
-			if startErr == nil || !herdr.HasCode(startErr, herdr.CodeAgentNotReady) {
-				return nil
-			}
-			// herdr saw a dialog this kit does not know. Leave it to the user.
-			d = harness.Dialog{Name: "unknown startup dialog", Action: harness.NeedsHuman}
+		if !found {
+			return nil
 		}
+		notReady = false
 		if d.Action == harness.SendKeys {
 			if err := r.Herdr.AgentSendKeys(ctx, pane, d.Keys...); err != nil {
 				return err
 			}
 			r.emit(t, d.Name+"-skipped", "answered the "+d.Name+" dialog with "+strings.Join(d.Keys, " "), "")
 			r.waitDialogGone(ctx, pane, d)
-			startErr = nil
 			continue
 		}
 		if err := r.waitForHuman(ctx, t, pane, d.Name); err != nil {
 			return err
 		}
-		startErr = nil
 	}
 	return errors.New("startup dialogs kept appearing")
+}
+
+// findDialog returns the startup dialog on screen. When the agent is not
+// ready and no known dialog shows, the dialog may still be drawing: it
+// re-reads the screen for about two seconds, then waits a few seconds for
+// the agent to turn idle, and reads once more. Only an agent that is still
+// not ready with no known dialog on screen counts as an unknown dialog.
+func (r *Runner) findDialog(ctx context.Context, a harness.Adapter, pane string, notReady bool) (harness.Dialog, bool, error) {
+	screen, err := r.Herdr.PaneRead(ctx, pane, 40)
+	if err != nil {
+		return harness.Dialog{}, false, err
+	}
+	if d, ok := harness.DetectDialog(a, screen); ok || !notReady {
+		return d, ok, nil
+	}
+	for range 20 {
+		r.Sleep(100 * time.Millisecond)
+		if screen, err = r.Herdr.PaneRead(ctx, pane, 40); err != nil {
+			return harness.Dialog{}, false, err
+		}
+		if d, ok := harness.DetectDialog(a, screen); ok {
+			return d, true, nil
+		}
+	}
+	_, waitErr := r.Herdr.AgentWait(ctx, pane, unknownDialogIdleWait, "idle", "done")
+	if screen, err = r.Herdr.PaneRead(ctx, pane, 40); err != nil {
+		return harness.Dialog{}, false, err
+	}
+	if d, ok := harness.DetectDialog(a, screen); ok {
+		return d, true, nil
+	}
+	if waitErr == nil {
+		return harness.Dialog{}, false, nil
+	}
+	// herdr saw a dialog this kit does not know. Leave it to the user.
+	return harness.Dialog{Name: "unknown startup", Action: harness.NeedsHuman}, true, nil
 }
 
 // waitDialogGone polls the screen until dialog d has closed, for at most two
@@ -292,7 +365,7 @@ func (r *Runner) waitDialogGone(ctx context.Context, pane string, d harness.Dial
 	for range 20 {
 		r.Sleep(100 * time.Millisecond)
 		screen, err := r.Herdr.PaneRead(ctx, pane, 40)
-		if err != nil || !strings.Contains(screen, d.Match) {
+		if err != nil || !harness.Shows(screen, d) {
 			return
 		}
 	}

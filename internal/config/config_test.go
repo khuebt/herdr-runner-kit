@@ -54,6 +54,19 @@ telegram:
 	}
 }
 
+func TestParseLanguage(t *testing.T) {
+	if cfg, err := Parse(nil); err != nil || cfg.Language != "" {
+		t.Fatalf("default language = %q, %v", cfg.Language, err)
+	}
+	cfg, err := Parse([]byte("language: \" Tiếng Việt \"\n"))
+	if err != nil || cfg.Language != "Tiếng Việt" {
+		t.Fatalf("language = %q, %v", cfg.Language, err)
+	}
+	if err := CheckLanguage(strings.Repeat("ệ", 40)); err != nil {
+		t.Errorf("40 characters refused: %v", err)
+	}
+}
+
 func TestParseEmptyFile(t *testing.T) {
 	if _, err := Parse(nil); err != nil {
 		t.Fatal(err)
@@ -70,6 +83,8 @@ func TestParseErrors(t *testing.T) {
 		{"telegram:\n  notify: [everything]\n", `unknown event "everything"`},
 		{"worktreeBranchPrefix: \"a b/\"\n", "worktreeBranchPrefix"},
 		{"schemaVersion: 2\n", "upgrade herdr-runner-kit"},
+		{"language: \"" + strings.Repeat("x", 41) + "\"\n", "language"},
+		{"language: \"English\\nand more\"\n", "language"},
 	}
 	for _, tt := range tests {
 		_, err := Parse([]byte(tt.yaml))
