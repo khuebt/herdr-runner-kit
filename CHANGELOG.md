@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.5.0...v0.6.0) (2026-10-13)
+
+
+### Features
+
+* start projects with new, a project record and status ([#21](https://github.com/khuebt/herdr-runner-kit/issues/21)) ([0272c1b](https://github.com/khuebt/herdr-runner-kit/commit/0272c1bc12bccb5f0d9744a43adf89f609bce39d))
+
 ## [0.5.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.4.0...v0.5.0) (2026-10-13)
 
 
