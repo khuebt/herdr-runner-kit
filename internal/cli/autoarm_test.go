@@ -60,7 +60,8 @@ func TestAutoarm(t *testing.T) {
 		_, _ = r.Report(tk.ID, runner.ReportOptions{Status: task.Done, Summary: "Login fixed"})
 	}()
 	code := autoarm(context.Background(), r, "/repo", &stderr)
-	if code != install.NewsExit || !strings.Contains(stderr.String(), tk.ID+" done · fix login · Login fixed") {
+	if code != install.NewsExit || !strings.Contains(stderr.String(), tk.ID+" done · fix login · tab closes ") ||
+		!strings.Contains(stderr.String(), " · Login fixed\n") {
 		t.Fatalf("news: code %d, %q", code, stderr.String())
 	}
 

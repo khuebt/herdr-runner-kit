@@ -391,3 +391,28 @@ func TestNoticeCleanableOffersOnce(t *testing.T) {
 		t.Errorf("offered again: %v", got)
 	}
 }
+
+func TestCleanupSkipsAReopenedRunner(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "fix/CSD-9-a")
+	herdrOwnsWorktree(fake, repo, tk.Worktree.Path)
+	git(t, repo, "push", "-q", "origin", "fix/CSD-9-a:main")
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.Closed = false; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	it := cleanable(t, r, repo)
+	if it.Verdict != Merged {
+		t.Fatalf("item = %+v", it)
+	}
+	// The user sends the runner more work after the check.
+	if _, err := r.Send(context.Background(), tk.ID, "one more fix"); err != nil {
+		t.Fatal(err)
+	}
+	cleaned, err := r.Cleanup(context.Background(), []CleanupItem{it})
+	if len(cleaned) != 0 || err == nil || !strings.Contains(err.Error(), "not cleaned") {
+		t.Fatalf("Cleanup = %v, %v", cleaned, err)
+	}
+	if !isDir(tk.Worktree.Path) || fake.count("agent", "send-keys") != 0 {
+		t.Error("the reopened runner was closed or its worktree removed")
+	}
+}

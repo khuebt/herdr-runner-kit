@@ -89,6 +89,10 @@ type Herdr struct {
 	AgentName   string `json:"agentName,omitempty"`
 	// Closed is set once gc or stop has ended the runner's agent.
 	Closed bool `json:"closed,omitempty"`
+	// ClosingSince is when gc, stop or cleanup claimed the runner to close
+	// it. The claim keeps send away while the agent quits, and expires on
+	// its own, so a close that was abandoned never blocks the runner.
+	ClosingSince time.Time `json:"closingSince,omitzero"`
 }
 
 // Task is the durable record stored in tasks/<id>/task.json.
@@ -133,6 +137,9 @@ type Task struct {
 	CodexThread string `json:"codexThread,omitempty"`
 	// Stalled is set while herdr reports the agent blocked on a prompt.
 	Stalled bool `json:"stalled,omitempty"`
+	// Keep holds a finished runner's tab open: gc leaves it until keep is
+	// turned off or the task is stopped.
+	Keep bool `json:"keep,omitempty"`
 	// FinishedAt is set when the task reaches a terminal status.
 	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 	Status         Status    `json:"status"`

@@ -263,11 +263,8 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 	lines := make([]string, 0, len(news))
 	ids := make([]string, 0, len(news))
 	for _, ev := range news {
-		title := ""
-		if t, err := r.Store.Get(ev.Task); err == nil {
-			title = t.Title
-		}
-		lines = append(lines, Line(ev, title))
+		t, _ := r.Store.Get(ev.Task) // nil when unreadable: the line goes without task details
+		lines = append(lines, Line(ev, t))
 		if !slices.Contains(ids, ev.Task) {
 			ids = append(ids, ev.Task)
 		}
@@ -276,12 +273,18 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 	return lines
 }
 
-// Line formats one news event for the main session, at most MaxLine
-// characters.
-func Line(ev state.Event, title string) string {
+// Line formats one news event of task t for the main session, at most
+// MaxLine characters. A done line says when the runner's tab closes, ahead
+// of the summary so the cut never drops it. t may be nil.
+func Line(ev state.Event, t *task.Task) string {
 	parts := []string{ev.Task + " " + ev.Type}
-	if title != "" {
-		parts = append(parts, title)
+	if t != nil && t.Title != "" {
+		parts = append(parts, t.Title)
+	}
+	if ev.Type == "done" && t != nil {
+		if tab := tabNote(t); tab != "" {
+			parts = append(parts, tab)
+		}
 	}
 	if ev.Question != "" {
 		parts = append(parts, "Q: "+ev.Question)
@@ -292,6 +295,21 @@ func Line(ev state.Event, title string) string {
 		parts = append(parts, "out: "+strings.Join(ev.Outputs, ", "))
 	}
 	return truncate(strings.Join(strings.Fields(strings.Join(parts, " · ")), " "), MaxLine)
+}
+
+// tabNote says what happens to a finished runner's open tab: kept, or
+// closed by gc at a given time.
+func tabNote(t *task.Task) string {
+	if t.Herdr.PaneID == "" || t.Herdr.Closed {
+		return ""
+	}
+	if t.Keep {
+		return "tab kept"
+	}
+	if at, ok := runner.CloseAt(t); ok {
+		return "tab closes " + at.Local().Format("15:04")
+	}
+	return ""
 }
 
 func truncate(s string, n int) string {

@@ -15,7 +15,10 @@ import (
 const GCAge = 30 * time.Minute
 
 // Send types text into a live runner as a new prompt, and reports whether
-// herdr saw the agent start a turn within a few seconds.
+// herdr saw the agent start a turn within a few seconds. A message to a
+// finished runner is new work, so the task is reopened, but only after the
+// prompt went in: a failed prompt leaves the task finished, and the backstop
+// never mistakes its idle agent for a failure.
 func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	t, err := r.liveTask(id)
 	if err != nil {
@@ -24,15 +27,21 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
+	errClosing := errors.New("closing")
 	if t, err = r.Store.Update(id, func(t *task.Task) error {
+		if t.Herdr.Closed || claimLive(t, time.Now()) {
+			return errClosing
+		}
 		t.Unreported = 0
-		// A message to a finished runner is new work. Reopen the task, so its
-		// next report counts, unreported turns are nudged, and wait watches it.
-		if t.Status == task.Done {
-			t.Status, t.FinishedAt = task.Running, time.Time{}
+		// Reopen the task, so its next report counts, unreported turns are
+		// nudged, and wait watches it.
+		if t.Status.Terminal() {
+			t.Status, t.FinishedAt, t.Error = task.Running, time.Time{}, ""
 		}
 		return nil
-	}); err != nil {
+	}); errors.Is(err, errClosing) {
+		return false, fmt.Errorf("%s was closing while the prompt was sent; it may not run", id)
+	} else if err != nil {
 		return false, err
 	}
 	r.emit(t, "sent", firstLine(text, 120), "")
@@ -107,6 +116,9 @@ func (r *Runner) liveTask(id string) (*task.Task, error) {
 	if t.Herdr.PaneID == "" || t.Herdr.Closed {
 		return nil, fmt.Errorf("%s has no open runner (status %s)", id, t.Status)
 	}
+	if claimLive(t, time.Now()) {
+		return nil, fmt.Errorf("%s's tab is closing; spawn a new runner", id)
+	}
 	return t, nil
 }
 
@@ -124,15 +136,38 @@ func (r *Runner) Stop(ctx context.Context, id string, removeWorktree bool) (*tas
 		r.emit(t, "stopped", "stopped by the user", "")
 		_ = r.failDependents(t)
 	}
-	if err := r.closeRunner(ctx, t, removeWorktree); err != nil {
+	if err := r.closeRunner(ctx, t, removeWorktree, closeCheck{}); err != nil {
 		return nil, err
 	}
 	return r.Store.Get(id)
 }
 
+// Keep holds a runner's tab open after its task finishes, so gc leaves it
+// until keep is turned off or the task is stopped. Turning keep off on a
+// runner already past its close time closes it at once.
+func (r *Runner) Keep(ctx context.Context, id string, on bool) (*task.Task, error) {
+	t, err := r.Store.Update(id, func(t *task.Task) error {
+		if on && t.Herdr.Closed {
+			return fmt.Errorf("%s has no open runner (status %s)", id, t.Status)
+		}
+		t.Keep = on
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if at, ok := CloseAt(t); on || !ok || time.Now().Before(at) {
+		return t, nil
+	}
+	if _, err := r.GC(ctx, t.Owner, GCAge, false); err != nil {
+		return nil, fmt.Errorf("close %s: %w", id, err)
+	}
+	return r.Store.Get(id)
+}
+
 // GC closes runners whose tasks finished more than olderThan ago, so their
-// agents stop using memory. An empty owner means every owner's tasks. It
-// returns the ids it closed.
+// agents stop using memory. Kept runners stay open unless removeWorktree is
+// set. An empty owner means every owner's tasks. It returns the ids it closed.
 func (r *Runner) GC(ctx context.Context, owner string, olderThan time.Duration, removeWorktree bool) ([]string, error) {
 	tasks, err := r.Store.List()
 	if err != nil {
@@ -145,10 +180,11 @@ func (r *Runner) GC(ctx context.Context, owner string, olderThan time.Duration, 
 		if (owner != "" && t.Owner != owner) || !collectable(t, removeWorktree) || finishedAt(t).After(cutoff) {
 			continue
 		}
-		if !t.Herdr.Closed && r.inUse(ctx, t.Herdr.PaneID) {
-			continue // someone kept working in the tab after the report; try later
+		err := r.closeRunner(ctx, t, removeWorktree, closeCheck{gc: true, cutoff: cutoff, keep: !removeWorktree})
+		if errors.Is(err, errReopened) {
+			continue // reopened, kept or busy since the list; try later
 		}
-		if err := r.closeRunner(ctx, t, removeWorktree); err != nil {
+		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", t.ID, err))
 			continue
 		}
@@ -174,21 +210,36 @@ func (r *Runner) inUse(ctx context.Context, pane string) bool {
 func NextGC(tasks []*task.Task, owner string) (time.Time, bool) {
 	var next time.Time
 	for _, t := range tasks {
-		if (owner != "" && t.Owner != owner) || !collectable(t, false) {
+		if owner != "" && t.Owner != owner {
 			continue
 		}
-		if due := finishedAt(t).Add(GCAge); next.IsZero() || due.Before(next) {
+		if due, ok := CloseAt(t); ok && (next.IsZero() || due.Before(next)) {
 			next = due
 		}
 	}
 	return next, !next.IsZero()
 }
 
+// CloseAt returns when GC closes t's runner, and false when it never will on
+// its own: the task is not finished, its tab is closed, or it is kept.
+func CloseAt(t *task.Task) (time.Time, bool) {
+	if !collectable(t, false) {
+		return time.Time{}, false
+	}
+	return finishedAt(t).Add(GCAge), true
+}
+
 // collectable reports whether t finished and still has something for GC
-// to close: its runner, or with removeWorktree its worktree.
+// to close: its runner unless it is kept, or with removeWorktree its runner
+// or its worktree.
 func collectable(t *task.Task, removeWorktree bool) bool {
-	return t.Status.Terminal() && t.Herdr.PaneID != "" &&
-		(!t.Herdr.Closed || (removeWorktree && t.Worktree != nil && !t.Worktree.Removed))
+	if !t.Status.Terminal() || t.Herdr.PaneID == "" {
+		return false
+	}
+	if removeWorktree {
+		return !t.Herdr.Closed || (t.Worktree != nil && !t.Worktree.Removed)
+	}
+	return !t.Herdr.Closed && !t.Keep
 }
 
 func finishedAt(t *task.Task) time.Time {
@@ -198,38 +249,131 @@ func finishedAt(t *task.Task) time.Time {
 	return t.FinishedAt
 }
 
-// closeRunner quits the agent gracefully, then closes its tab. A worktree
-// runner keeps its workspace, whose pane drops back to a shell, unless
-// removeWorktree is set.
-func (r *Runner) closeRunner(ctx context.Context, t *task.Task, removeWorktree bool) error {
-	if t.Herdr.PaneID == "" {
-		return nil
+// closeClaimTTL is how long a close claim holds. Quitting an agent takes
+// seconds, so a claim older than this was abandoned: its gc was cut off, or
+// its process died.
+const closeClaimTTL = time.Minute
+
+var (
+	// errAlreadyClosed means the runner was closed before; only its
+	// worktree may be left to remove.
+	errAlreadyClosed = errors.New("the runner is already closed")
+	// errReopened means the runner may not be closed now: it is in use
+	// again, kept, not due, or another close is under way.
+	errReopened = errors.New("the runner is in use")
+)
+
+// closeCheck says what a close re-checks under the task lock. Stop and
+// cleanup use the zero value: any finished runner closes.
+type closeCheck struct {
+	gc     bool      // also check that the agent is idle
+	cutoff time.Time // close only a task that finished by then
+	keep   bool      // leave a kept runner open
+}
+
+// claimLive reports whether a close claim on t is still held. The window
+// spans both sides of now, so a clock that steps back cannot stretch it.
+func claimLive(t *task.Task, now time.Time) bool {
+	if t.Herdr.ClosingSince.IsZero() {
+		return false
 	}
-	if !t.Herdr.Closed {
-		if err := r.quitAgent(ctx, t.Herdr.PaneID); err != nil {
-			return err
+	d := now.Sub(t.Herdr.ClosingSince)
+	return d > -closeClaimTTL && d < closeClaimTTL
+}
+
+// claimClose marks id's runner as closing, after checking under the task
+// lock that it may still close: the list the caller worked from may be stale.
+func (r *Runner) claimClose(id string, c closeCheck) error {
+	_, err := r.Store.Update(id, func(t *task.Task) error {
+		now := time.Now()
+		switch {
+		case t.Herdr.Closed:
+			return errAlreadyClosed
+		case !t.Status.Terminal():
+			return fmt.Errorf("%w: it is %s", errReopened, t.Status)
+		case c.keep && t.Keep:
+			return fmt.Errorf("%w: it is kept open", errReopened)
+		case !c.cutoff.IsZero() && finishedAt(t).After(c.cutoff):
+			return fmt.Errorf("%w: it finished again recently", errReopened)
+		case claimLive(t, now):
+			return fmt.Errorf("%w: its tab is already closing", errReopened)
 		}
-		if t.Worktree == nil {
-			if err := r.Herdr.TabClose(ctx, t.Herdr.TabID); err != nil && !isGone(err) {
-				return err
-			}
-		}
-	}
-	removed := false
-	if t.Worktree != nil && removeWorktree && !t.Worktree.Removed {
-		if err := r.removeWorktree(ctx, t, false); err != nil {
-			return fmt.Errorf("remove worktree (the branch is kept): %w", err)
-		}
-		removed = true
-	}
-	_, err := r.Store.Update(t.ID, func(t *task.Task) error {
-		t.Herdr.Closed = true
-		if removed {
-			t.Worktree.Removed = true
-		}
+		t.Herdr.ClosingSince = now.UTC()
 		return nil
 	})
 	return err
+}
+
+// endClaim drops the close claim on id, and with closed marks the runner
+// closed in the same write.
+func (r *Runner) endClaim(id string, closed bool) error {
+	_, err := r.Store.Update(id, func(t *task.Task) error {
+		t.Herdr.ClosingSince = time.Time{}
+		t.Herdr.Closed = t.Herdr.Closed || closed
+		return nil
+	})
+	return err
+}
+
+// closeRunner claims the runner, quits the agent gracefully, then closes its
+// tab. A worktree runner keeps its workspace, whose pane drops back to a
+// shell, unless removeWorktree is set. A runner closed before still has its
+// worktree removed. It fails with errReopened when the runner may not close.
+func (r *Runner) closeRunner(ctx context.Context, t *task.Task, removeWorktree bool, c closeCheck) error {
+	if t.Herdr.PaneID == "" {
+		return nil
+	}
+	switch err := r.claimClose(t.ID, c); {
+	case errors.Is(err, errAlreadyClosed):
+	case err != nil:
+		return err
+	default:
+		if err := r.endAgent(ctx, t, c.gc); err != nil {
+			if clearErr := r.endClaim(t.ID, false); clearErr != nil {
+				return errors.Join(err, clearErr)
+			}
+			return err
+		}
+		// Closed is written only once the agent is gone.
+		if err := r.endClaim(t.ID, true); err != nil {
+			return err
+		}
+	}
+	if t.Worktree == nil || !removeWorktree {
+		return nil
+	}
+	current, err := r.Store.Get(t.ID)
+	if err != nil {
+		return err
+	}
+	if current.Worktree == nil || current.Worktree.Removed {
+		return nil
+	}
+	if err := r.removeWorktree(ctx, current, false); err != nil {
+		return fmt.Errorf("remove worktree (the branch is kept): %w", err)
+	}
+	_, err = r.Store.Update(t.ID, func(t *task.Task) error {
+		t.Worktree.Removed = true
+		return nil
+	})
+	return err
+}
+
+// endAgent quits the agent and closes its tab. With gc it first leaves an
+// agent someone is still using, which keeps working after its report.
+func (r *Runner) endAgent(ctx context.Context, t *task.Task, gc bool) error {
+	if gc && r.inUse(ctx, t.Herdr.PaneID) {
+		return fmt.Errorf("%w: its agent is busy", errReopened)
+	}
+	if err := r.quitAgent(ctx, t.Herdr.PaneID); err != nil {
+		return err
+	}
+	if t.Worktree == nil {
+		if err := r.Herdr.TabClose(ctx, t.Herdr.TabID); err != nil && !isGone(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // quitAgent asks the agent to exit with Ctrl+C pairs, the way a user would.

@@ -176,7 +176,10 @@ func (r *Runner) Cleanup(ctx context.Context, items []CleanupItem) ([]string, er
 
 func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 	t := it.Task
-	if err := r.closeRunner(ctx, t, false); err != nil {
+	// A runner closed before is fine: only its worktree and branch are left.
+	if err := r.closeRunner(ctx, t, false, closeCheck{}); errors.Is(err, errReopened) {
+		return fmt.Errorf("%w; not cleaned", err)
+	} else if err != nil {
 		return err
 	}
 	if it.Worktree {
