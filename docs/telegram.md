@@ -56,6 +56,7 @@ Reply: #t3 <answer>
 - Without a tag, the text goes to the only task waiting for you. With several waiting, the main agent asks which one you mean.
 - For a held task, `ok`, `yes` or `duyệt` starts it; any other text starts it with that text as a note.
 - `status?`, `list` and `?` are for the main agent, which answers them itself.
+- `status <name>` for a registered project asks the main agent for `project status <name>`. While a task is waiting for you, the text could also be its answer, so the main agent asks which you meant; `#t3 status <name>` sends it to t3.
 
 ## Starting the main session
 

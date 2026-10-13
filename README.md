@@ -13,6 +13,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 - **Each runner is visible.** It is an interactive agent in a herdr tab, so you can watch it or type into it.
 - **Results arrive as events.** A runner calls `herdr-runner-kit report`, and the main agent's background `wait` wakes at once. Tasks chained with `--after` start automatically when their parent is done.
 - **Decisions never stall a runner.** A runner that needs input stays alive in its session, and your answer resumes it in the same context.
+- **Projects keep their own record.** `new` starts a git repository with a project record and a herdr workspace, and `project status` shows where it stands. A project's runners open in its workspace and report to the main session from any folder.
 - **Usage limits need not stop a runner.** With a [`quotaFallback`](docs/config.md#keys) list, a runner whose agent hits its usage limit continues on the next agent in the same tab and checkout.
 
 ## Requirements
@@ -56,6 +57,8 @@ Then talk to it as usual:
 | "Fix the typo in README" | a `fix` runner |
 | "Compare fsnotify and polling and write it up" | a `research` runner |
 | "Plan the auth feature, then build it on Codex after I approve" | a plan runner, then a code runner held for your approval |
+| "Start a new project from this idea" | the main agent asks for the folder and remote, then runs `new` |
+| "Where are we on demo-app?" | the main agent runs `project status demo-app` |
 
 ## Kinds
 

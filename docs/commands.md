@@ -27,14 +27,31 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | `main [--exec]` | Prints, or runs, the command that starts the main session with the skill and the Telegram channel. |
 | `send <id> <text>` | Types a new prompt into a live runner. A `done` or `failed` task whose tab is still open becomes `running` again, and its next report wakes `wait`. A `stopped` task refuses it. |
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
-| `list [--all]`, `show <id>` | Stored status, herdr's live state, and the TAB column: `open` (with when `gc` closes it), `kept`, `closed`, or `-` before a tab exists; one task in full. |
+| `list [--all]`, `show <id>` | Your tasks and every registered project's, or every owner's with `--all`: stored status, herdr's live state, and the TAB column: `open` (with when `gc` closes it), `kept`, `closed`, or `-` before a tab exists; one task in full. |
 | `events [--since 1h] [--task ID] [--follow] [--timings]` | The event log, or the measured latencies per task. |
-| `events --learning [--since 1h] [--task ID]` | Per task: kind, agents, status, attempts (starts, plus sends that reopened a finished task), nudges, sends, answers, `needs-human` reports, unreported turns, agent switches, duration from spawn to last finish, and time waited on a human after the spawn. Every number comes from the event log. |
+| `events --learning [--since 1h] [--task ID] [--project NAME]` | Per task: kind, agents, status, attempts (starts, plus sends that reopened a finished task), nudges, sends, answers, `needs-human` reports, unreported turns, agent switches, duration from spawn to last finish, and time waited on a human after the spawn. Every number comes from the event log. |
 | `focus <id>` | Switches herdr to the runner's tab. |
-| `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. `gc` closes those that finished at least 30 minutes ago (`--older-than`), except kept runners (see `keep`) and a runner whose agent is working or blocked because someone kept using its tab; `wait` does the same for its owner's runners while it watches, and the auto re-arm hook once nothing is left to watch. Worktrees and branches are kept unless removal is asked; `gc --remove-worktree` also closes kept runners. |
+| `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. `gc` closes those that finished at least 30 minutes ago (`--older-than`), except kept runners (see `keep`) and a runner whose agent is working or blocked because someone kept using its tab; `wait` does the same for its owners' runners while it watches, and the auto re-arm hook once nothing is left to watch. Worktrees and branches are kept unless removal is asked; `gc --remove-worktree` also closes kept runners. |
 | `sync <id> [--from REF] [--no-send]` | Merges origin's default branch (such as `origin/main`), or `--from REF`, into the branch checked out in the task's worktree, then asks the runner to re-run its checks and report. See [Syncing a branch](#syncing-a-branch). |
 | `keep <id> [--off]` | Keeps a finished runner's tab open until `keep --off` or `stop`. `--off` lets `gc` close it again, at once when its close time has passed. |
 | `cleanup [id]... [--yes] [--no-fetch]` | Fetches origin, then lists your finished worktree tasks whose worktree or branch is still there, as `merged`, `unmerged`, `dirty` or `kept`. `--yes` removes the worktree and deletes the local branch of each merged one, or of the given ids. See [Cleaning up](#cleaning-up). |
+
+## Projects
+
+A project is a git repository the kit keeps a record for, so a main session can drive it from any folder.
+
+| Command | What it does |
+|---|---|
+| `new <path> (--brief FILE \| --stdin)` | Starts a project: creates the folder and a git repository, keeps the original brief git-ignored under `handbook/product/discovery/brief/original`, writes the project record, makes one first commit of exactly the files it wrote, opens a herdr workspace and registers the project. `--remote URL` adds origin and never pushes; `--reference` names a repository to learn from; `--name`, `--initial-branch`. |
+| `project status [name]` | Where the project stands: stage, gates, milestone, runners, tasks waiting on you, and one next step. It reads only the kit's record and tasks, never herdr, and changes nothing. Without a name: the project holding the current folder, else the only one, else one line per project. |
+| `project register <path> [--name NAME]` | Registers an existing git repository, importing a committed `handbook/product/project.md` when there is one. Nothing is written to the repository. It refuses a linked worktree; register the main checkout. |
+| `project forget <name> [--yes]` | Removes the registry entry and the kit's record, never the repository. It refuses while the project has unfinished tasks or record changes not yet committed, unless `--yes`. |
+
+`new` refuses `/`, your home folder or a folder above it, a folder that is a git repository (use `project register`), lies inside one or holds one, a folder that is, lies inside or holds a registered project, a non-empty folder without `--allow-non-empty`, and a remote URL that holds credentials. Nothing is deleted when a step fails; a remote, workspace or registry step that fails is reported as `not added`, `not created` or `not registered`. Runners cannot run `new`, `register` or `forget`.
+
+**Owners.** Every task reports to an owner, and `wait`, `list` and the auto re-arm hook pick tasks by owner. A project task's owner is `project:<name>`. Any other task reports to the git top-level of the folder `spawn` runs in, or that folder outside a repository, even when `--cwd` points elsewhere. `spawn --owner` overrides both. `wait` and `list` take the current folder's owner plus every registered project, so project news reaches the main session from any folder.
+
+**Project tasks.** `spawn --project NAME` makes a project task; so does a spawn whose folder (`--cwd`, else the current one) lies in a registered project. It works in the project's folder unless `--cwd` names another place inside it. Its tab opens in the project's herdr workspace, which is opened again when you closed it; a worktree task creates its worktree from that workspace. When the workspace cannot be opened, the task opens where a task without a project would, and the event log gets a `project-workspace-fallback` event.
 
 ## Chaining
 
@@ -86,7 +103,7 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 - A `done` line says `tab closes HH:MM` when `gc` will close the runner, or `tab kept` after `keep`.
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.
-- It only sees tasks of its owner, the git top-level of the current folder by default, so several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`.
+- It only sees tasks of its owners: the git top-level of the current folder and every registered project by default, or only `--owner`. So several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`.
 - When every task has finished, it exits with an `idle:` line. A task that is `needs-human` or `held` keeps it waiting, because the answer or release can come from another main session's Telegram or from the runner's tab. It waits up to a second after the latest status change first, so news written right after that change is not lost.
 - After 30 minutes without news it prints `timeout` and exits 0 (`--timeout` changes this).
 
