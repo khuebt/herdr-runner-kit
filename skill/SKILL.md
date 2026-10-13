@@ -45,7 +45,7 @@ The user's config may change these defaults. `--agent harness[:model[:effort]]` 
 
 ## Spawn
 
-Pass the user's words through `--stdin` with a quoted heredoc, never inside a shell string:
+Pass the user's words through `--stdin` with a quoted heredoc, never inside a shell string. Add `--title` with a few words when the prompt does not open with a short summary; the title names the tab and the branch:
 
 ```sh
 herdr-runner-kit spawn --kind fix --stdin <<'EOF'
@@ -95,7 +95,7 @@ In the session `herdr-runner-kit main` started, news can also arrive as Stop hoo
 ## Answer and steer
 
 - `needs-human`: ask the user the runner's question. Send the reply with `herdr-runner-kit answer <id> --stdin` and a quoted heredoc. The runner continues in the same session.
-- The user wants to steer a working runner: `herdr-runner-kit send <id> --stdin`.
+- The user wants to steer a runner, or give a finished one more work while its tab is open: `herdr-runner-kit send <id> --stdin`. A `done` task runs again and reports again.
 - The user can also type into the runner's tab; `herdr-runner-kit focus <id>` switches to it.
 - `stop <id>` and `--remove-worktree` only when the user asks. Finished branches stay local as `hrk/<id>-<slug>`; merge or open a PR only when asked.
 
