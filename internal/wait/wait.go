@@ -37,7 +37,7 @@ const (
 
 // newsTypes are the events that wake the main session. Everything else is
 // progress and only moves the cursor.
-var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported"}
+var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "cleanable"}
 
 // IsNews reports whether an event type wakes the main session.
 func IsNews(typ string) bool { return slices.Contains(newsTypes, typ) }
@@ -105,6 +105,10 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	defer scan.Stop()
 	eventsPath := r.Store.EventsPath()
 	var gcAfter time.Time
+	// Look for merged worktrees to offer in the background, since it may
+	// fetch. An idle wait lets it finish first, so its news is not lost.
+	checking := make(chan struct{})
+	go func() { defer close(checking); r.NoticeCleanable(ctx, o.Owner) }()
 
 	for {
 		var news []state.Event
@@ -137,6 +141,15 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			return Result{}, err
 		}
 		if idle := idleLine(tasks); idle != "" {
+			if checking != nil {
+				select {
+				case <-checking:
+				case <-ctx.Done():
+					return Result{}, ctx.Err()
+				}
+				checking = nil
+				continue
+			}
 			// min guards against a clock that stepped back past UpdatedAt.
 			if d := min(statusSettle-sinceLastChange(tasks), statusSettle); d > 0 {
 				if !sleep(ctx, d) {

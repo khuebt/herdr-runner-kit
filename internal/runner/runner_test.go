@@ -221,6 +221,23 @@ func TestSpawnWorktreeInGitRepo(t *testing.T) {
 	}
 }
 
+func TestSpawnNamesTheBranch(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, Branch: "fix/CSD-11-paid-leave"})
+	if tk.Worktree == nil || tk.Worktree.Branch != "fix/CSD-11-paid-leave" {
+		t.Errorf("worktree = %+v", tk.Worktree)
+	}
+	for _, o := range []SpawnOptions{
+		{Kind: "code", Prompt: "x", Cwd: repo, Branch: "bad..name"},
+		{Kind: "fix", Prompt: "x", Cwd: repo, Branch: "fix/no-worktree"},
+	} {
+		if _, err := r.Spawn(context.Background(), o); err == nil {
+			t.Errorf("Spawn(%+v) succeeded", o)
+		}
+	}
+}
+
 func TestSpawnRefusesExistingBranch(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	repo := gitRepo(t)
@@ -578,6 +595,27 @@ func TestStopQuitsAgentAndClosesTab(t *testing.T) {
 	}
 	if _, err := r.Send(context.Background(), tk.ID, "more"); err == nil {
 		t.Error("send to a closed runner succeeded")
+	}
+}
+
+func TestSendReopensADoneTask(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Send(context.Background(), tk.ID, "now run the full check"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Running || !got.FinishedAt.IsZero() {
+		t.Fatalf("after send: status %s, finished %v", got.Status, got.FinishedAt)
+	}
+	if got, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "check passed"}); err != nil || got.Summary != "check passed" {
+		t.Errorf("second report = %+v, %v", got, err)
 	}
 }
 

@@ -9,7 +9,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 ## How it works
 
 - **The main agent answers directly** for ordinary questions, explanations and quick lookups.
-- **Everything else becomes a runner:** code changes of any size, research, analysis reports, and skill or multi-step flows.
+- **Everything else becomes a runner:** code changes of any size, research, analysis reports, and skill or multi-step flows. The main agent first replies with a short brief (goal, approach, checks, kind and branch) and starts the runner when you agree, so you can add what is missing.
 - **Each runner is visible.** It is an interactive agent in a herdr tab, so you can watch it or type into it.
 - **Results arrive as events.** A runner calls `herdr-runner-kit report`, and the main agent's background `wait` wakes at once. Tasks chained with `--after` start automatically when their parent is done.
 - **Decisions never stall a runner.** A runner that needs input stays alive in its session, and your answer resumes it in the same context.
@@ -68,7 +68,7 @@ Each runner has a kind, which picks its default agent and whether it gets its ow
 | `research` | Claude Opus, high effort | no | investigation and analysis |
 | `report` | Claude Opus, high effort | no | written reports and reviews |
 
-Ask for another agent, model or effort in your own words, or change the defaults in the [configuration](docs/config.md). Finished runners close on their own 30 minutes after they finish; their worktrees and branches stay.
+Ask for another agent, model or effort in your own words, or change the defaults in the [configuration](docs/config.md). Finished runners close on their own 30 minutes after they finish. Their worktrees and branches stay until `cleanup` removes them; once a branch is merged, the main agent offers to do that, and waits for your yes.
 
 ## Telegram
 

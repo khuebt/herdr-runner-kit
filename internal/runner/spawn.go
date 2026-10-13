@@ -82,6 +82,9 @@ type SpawnOptions struct {
 	// ClaudeConfig is the Claude config folder of a Claude runner, as a path
 	// or a bare name such as claude2. Empty means the main session's.
 	ClaudeConfig string
+	// Branch names the worktree branch, following the repository's own
+	// convention. Empty means prefix + "<id>-<slug>".
+	Branch string
 }
 
 // Spawn records a task and, unless it waits on other tasks or on a human,
@@ -117,7 +120,10 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 		return nil, err
 	}
 	if t.UseWorktree {
-		branch := BranchName(r.Config.WorktreeBranchPrefix, t.ID, t.Title)
+		branch := o.Branch
+		if branch == "" {
+			branch = BranchName(r.Config.WorktreeBranchPrefix, t.ID, t.Title)
+		}
 		if BranchExists(ctx, t.RepoRoot, branch) {
 			r.fail(t.ID, fmt.Sprintf("branch %s already exists", branch))
 			return nil, fmt.Errorf("branch %s already exists in %s", branch, t.RepoRoot)
@@ -243,6 +249,14 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, error
 	}
 	if o.Base != "" && !useWorktree {
 		return nil, errors.New("--base needs a worktree task")
+	}
+	if o.Branch != "" {
+		if !useWorktree {
+			return nil, errors.New("--branch needs a worktree task")
+		}
+		if exec.CommandContext(ctx, "git", "check-ref-format", "--branch", o.Branch).Run() != nil {
+			return nil, fmt.Errorf("invalid branch name %q", o.Branch)
+		}
 	}
 	owner := o.Owner
 	if owner == "" {

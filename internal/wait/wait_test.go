@@ -3,6 +3,7 @@ package wait
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -215,6 +216,34 @@ func TestIdleAndTimeout(t *testing.T) {
 	got, err = Run(context.Background(), r, Options{Owner: owner, Timeout: 100 * time.Millisecond})
 	if err != nil || !got.TimedOut {
 		t.Errorf("held: %+v %v", got, err)
+	}
+}
+
+func TestIdleWaitOffersMergedWorktree(t *testing.T) {
+	r, _ := newTestRunner(t)
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
+		{"branch", "hrk/t1-a"}, // nothing on it beyond main: merged
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	tk := addTask(t, r, task.Done, repo)
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.RepoRoot, t.Worktree = repo, &task.Worktree{Branch: "hrk/t1-a", Removed: true}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Run(context.Background(), r, Options{Owner: repo})
+	if err != nil || len(got.Lines) != 1 || !strings.HasPrefix(got.Lines[0], "t1 cleanable") {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if got, _ := Run(context.Background(), r, Options{Owner: repo}); got.Idle == "" {
+		t.Errorf("second wait = %+v, want idle", got)
 	}
 }
 

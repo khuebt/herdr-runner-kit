@@ -27,9 +27,19 @@ A lookup that grows past a few steps moves to a runner. Do not do runner work yo
 |---|---|
 | "What does `wait` do?" | answer |
 | "Where is the config loaded?" | answer (one search) |
-| "Fix the typo in README" | runner, kind `fix` |
-| "Compare fsnotify and polling and write it up" | runner, kind `research` |
-| "Plan the auth feature, then build it" | two chained runners |
+| "Fix the typo in README" | brief, then runner, kind `fix` |
+| "Compare fsnotify and polling and write it up" | brief, then runner, kind `research` |
+| "Plan the auth feature, then build it" | brief, then two chained runners |
+
+## Brief first
+
+Before any runner, even a one-line fix, reply with a short brief and wait for the user:
+- the goal, and how the runner will reach it: approach, files or areas;
+- what is out of scope, and how it is checked: tests, lint, a manual step;
+- kind, agent, worktree and branch;
+- open questions, if any.
+
+End with "Start?". Spawn only after the user agrees, with their additions in the prompt. Skip the brief only when the user's message already says to start now.
 
 ## Pick a kind
 
@@ -45,7 +55,9 @@ The user's config may change these defaults. `--agent harness[:model[:effort]]` 
 
 ## Spawn
 
-Pass the user's words through `--stdin` with a quoted heredoc, never inside a shell string:
+Pass the user's words through `--stdin` with a quoted heredoc, never inside a shell string. Add `--title` with a few words when the prompt does not open with a short summary; the title names the tab and the branch.
+
+For a worktree task, name the branch after the repository's convention with `--branch`, such as `--branch fix/CSD-11-paid-leave`: check recent branch names, the contributing guide or the ticket, and show the name in the brief. A runner works on one branch; for two pull requests, spawn two runners.
 
 ```sh
 herdr-runner-kit spawn --kind fix --stdin <<'EOF'
@@ -95,9 +107,14 @@ In the session `herdr-runner-kit main` started, news can also arrive as Stop hoo
 ## Answer and steer
 
 - `needs-human`: ask the user the runner's question. Send the reply with `herdr-runner-kit answer <id> --stdin` and a quoted heredoc. The runner continues in the same session.
-- The user wants to steer a working runner: `herdr-runner-kit send <id> --stdin`.
+- The user wants to steer a runner, or give a finished one more work while its tab is open: `herdr-runner-kit send <id> --stdin`. A `done` task runs again and reports again.
 - The user can also type into the runner's tab; `herdr-runner-kit focus <id>` switches to it.
-- `stop <id>` and `--remove-worktree` only when the user asks. Finished branches stay local as `hrk/<id>-<slug>`; merge or open a PR only when asked.
+- `stop <id>` only when the user asks. Branches stay local; merge or open a PR only when asked.
+
+## Clean up
+
+- `tN cleanable` news: the task's branch is merged and its worktree has no changes. Ask the user whether to remove the worktree and branch; on yes, run `herdr-runner-kit cleanup --yes <id>...`. Never run it without the user's yes.
+- When the user asks to clean up, run `herdr-runner-kit cleanup`, show its list, and ask before `--yes`. Unmerged branches and worktrees with changes are never removed.
 
 ## Telegram
 

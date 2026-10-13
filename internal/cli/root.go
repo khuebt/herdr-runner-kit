@@ -27,6 +27,7 @@ func NewRootCommand() *cobra.Command {
 		newStopCommand(),
 		newFocusCommand(),
 		newGCCommand(),
+		newCleanupCommand(),
 		newReportCommand(),
 		newAfterCommand(),
 		newTurnEndCommand(),
