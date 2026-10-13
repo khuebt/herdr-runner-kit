@@ -29,8 +29,10 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
 | `list [--all]`, `show <id>` | Stored status, herdr's live state, and the TAB column: `open` (with when `gc` closes it), `kept`, `closed`, or `-` before a tab exists; one task in full. |
 | `events [--since 1h] [--task ID] [--follow] [--timings]` | The event log, or the measured latencies per task. |
+| `events --learning [--since 1h] [--task ID]` | Per task: kind, agents, status, attempts, nudges, sends, answers, `needs-human` reports, unreported turns, agent switches, duration and time waited on a human. Every number comes from the event log. |
 | `focus <id>` | Switches herdr to the runner's tab. |
 | `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. `gc` closes those that finished at least 30 minutes ago (`--older-than`), except kept runners (see `keep`) and a runner whose agent is working or blocked because someone kept using its tab; `wait` does the same for its owner's runners while it watches, and the auto re-arm hook once nothing is left to watch. Worktrees and branches are kept unless removal is asked; `gc --remove-worktree` also closes kept runners. |
+| `sync <id> [--from REF] [--no-send]` | Merges the default branch, or `--from REF`, into the branch checked out in the task's worktree, then asks the runner to re-run its checks and report. See [Syncing a branch](#syncing-a-branch). |
 | `keep <id> [--off]` | Keeps a finished runner's tab open until `keep --off` or `stop`. `--off` lets `gc` close it again, at once when its close time has passed. |
 | `cleanup [id]... [--yes] [--no-fetch]` | Fetches origin, then lists your finished worktree tasks whose worktree or branch is still there, as `merged`, `unmerged`, `dirty` or `kept`. `--yes` removes the worktree and deletes the local branch of each merged one, or of the given ids. See [Cleaning up](#cleaning-up). |
 
@@ -44,9 +46,17 @@ A Claude runner uses the main session's Claude config folder, and so its account
 
 A worktree branch is named `hrk/<id>-<slug>` unless `spawn --branch NAME` names it after the repository's own convention, such as `fix/CSD-11-paid-leave`. The runner commits on that branch and never creates or switches branches. When a worktree task gets the default name, `spawn` also prints a `note:` with the repository's recent branch names, so the next spawn can follow them with `--branch`.
 
+## Syncing a branch
+
+`sync <id>` fetches origin and merges the default branch into a worktree task's branch, so a runner that fell behind can re-run its checks. It refuses while the task is starting or its agent is busy, when the worktree has uncommitted changes, and when the worktree has left the task's branch. A branch that already holds the ref is left as it is. A conflicting merge is aborted, the branch is unchanged, and `sync` prints the conflicting files and the text to hand the merge to the runner with `send`. `--no-send` merges without telling the runner. `sync` never pushes, rebases or touches another branch, and a runner cannot run it.
+
+## Usage limits
+
+When a runner's agent shows a usage limit, the task switches to the next agent in the config's [`quotaFallback`](config.md#keys) list. The new agent starts in the same tab and checkout, with the first prompt and a note to continue from the partial work. The event log gets an `agent-switched` event, and `events --learning` lists the agents the task went through. With no fallback left, or none configured, the task fails with `usage limit reached for <agent>`, and its waiting dependents fail too.
+
 ## Cleaning up
 
-Finished runners close on their own (see `gc`), but their worktrees and branches stay until you remove them:
+Finished runners close on their own (see `gc`), but their worktrees and branches stay until you remove them. `cleanup` without `--yes` only reports, however old a worktree is:
 
 - **merged:** the branch, and the commit the worktree has checked out, are in the default branch (`origin/HEAD`, else `origin/main` or `origin/master`), no tracked file has changes, and no untracked file lies outside `plans/`. `cleanup --yes` removes these. Untracked files under `plans/` and ignored files are deleted with the worktree; the list says how many. The worktree and branch are checked again right before removal. Only a branch the task created is deleted, and only while it is still merged; a branch another worktree has checked out is kept.
 - **unmerged:** commits are not in the default branch. A branch merged with squash or rebase looks unmerged, since its commits never land as they are; delete it yourself.

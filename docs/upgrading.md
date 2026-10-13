@@ -26,6 +26,8 @@ When a release changes the state schema, the new binary migrates the state the f
 
 An upgrade within the same schema needs no migration and is always allowed.
 
+An older binary refuses a config key it does not know. Before going back to a release older than a key you set, such as `quotaFallback`, remove that key from the config.
+
 ## Update notes
 
 `herdr-runner-kit version --check` asks GitHub right away. `doctor` also notes a newer release, but asks GitHub at most once a day and caches the answer in your user cache folder (`~/.cache/herdr-runner-kit/latest.json` on Linux). `list`, `report` and the other commands never touch the network. Set `updateCheck: false` in the config to turn the `doctor` note off.

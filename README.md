@@ -13,6 +13,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 - **Each runner is visible.** It is an interactive agent in a herdr tab, so you can watch it or type into it.
 - **Results arrive as events.** A runner calls `herdr-runner-kit report`, and the main agent's background `wait` wakes at once. Tasks chained with `--after` start automatically when their parent is done.
 - **Decisions never stall a runner.** A runner that needs input stays alive in its session, and your answer resumes it in the same context.
+- **Usage limits need not stop a runner.** With a [`quotaFallback`](docs/config.md#keys) list, a runner whose agent hits its usage limit continues on the next agent in the same tab and checkout.
 
 ## Requirements
 

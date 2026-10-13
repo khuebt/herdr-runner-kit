@@ -19,6 +19,8 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `keep <id> [--off]` | Keep a finished runner's tab open instead of letting `gc` close it. `--off` lets `gc` close it again. |
 | `cleanup [id]... [--yes]` | List finished worktrees and branches left behind: merged, unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
+| `events --learning [--task ID]` | Per task: agents, attempts, nudges, sends, answers, agent switches, duration and time waited on a human. |
+| `sync <id> [--from REF] [--no-send]` | Merge the default branch, or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent or a dirty worktree; a conflict is aborted and the text to `send` is printed. |
 
 ## spawn flags
 
@@ -48,7 +50,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `tN done` | Finished; `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay it; remind about uncommitted or unpushed work; offer `keep <id>`. |
 | `tN needs-human` | The runner asks a question | Ask the user, then `answer`. |
 | `tN held` | A `--gate human` task waits | Ask the user, then `release`. |
-| `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. |
+| `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. |
 | `tN stalled` | The agent waits on a prompt in its pane | Tell the user to look at it (`focus`). |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |
 | `tN stopped` | Stopped by `stop` | Relay it. |
