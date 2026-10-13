@@ -26,6 +26,8 @@ When a release changes the state schema, the new binary migrates the state the f
 
 An upgrade within the same schema needs no migration and is always allowed.
 
+Do not go back to a release with report contract 1 while runners started by a contract 2 binary are open: the older binary keeps only the last question of a round and rejects `--decision`. See [report-contract.md](report-contract.md#compatibility).
+
 An older binary refuses a config key it does not know. Before going back to a release older than a key you set, such as `quotaFallback`, remove that key from the config.
 
 ## Update notes

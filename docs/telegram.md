@@ -48,13 +48,16 @@ Drop the v1 endpoint? (recommended: yes)
 Reply: #t3 <answer>
 ```
 
+A round of questions arrives as `#t4 needs 2 decisions`, one numbered line per question and `Reply: #t4 1a 2b`. A `done` lists the runner's own decisions as `Decided:` lines above the summary.
+
 `telegram.notify` selects the events (default: all of `needs-human`, `failed`, `stalled`, `held`, `turn-ended-unreported`, `usage-limit` and `done`). A `done` is sent only for a task that no other task waits for, so a chain sends one message at its end.
 
 ## Replying
 
 - `#t3 <text>` goes to t3: as the answer to its question, as a new message if it is running, or as the go-ahead for a held task.
 - Without a tag, the text goes to the only task waiting for you. With several waiting, the main agent asks which one you mean.
-- For a held task, `ok`, `yes` or `duyệt` starts it; any other text starts it with that text as a note.
+- For a held task, `ok`, `yes` or `duyệt` starts it; any other text starts it with that text as a note. A task held with `spawn --reason`, such as one waiting for a dependency, starts only on a reply tagged with its id.
+- `approve spec <name>` or `approve pack <name>` never releases or answers a runner. The main agent confirms with you and records the approval with `project approve`.
 - `status?`, `list` and `?` are for the main agent, which answers them itself.
 - `status <name>` for a registered project asks the main agent for `project status <name>`. While a task is waiting for you, the text could also be its answer, so the main agent asks which you meant; `#t3 status <name>` sends it to t3.
 
