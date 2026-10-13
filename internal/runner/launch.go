@@ -208,12 +208,9 @@ func (r *Runner) prepareTrust(t *task.Task, h task.Harness) error {
 		if t.Worktree != nil && t.Worktree.Path != "" {
 			runnerPath = t.Worktree.Path
 		}
-		path := filepath.Join(t.ClaudeConfigDir, ".claude.json")
-		if t.ClaudeConfigDir == "" {
-			var err error
-			if path, err = harness.ClaudeConfigPath(); err != nil {
-				return err
-			}
+		path, err := harness.ClaudeConfigPath(t.ClaudeConfigDir)
+		if err != nil {
+			return err
 		}
 		set, err := harness.PrepareClaudeTrust(path, t.Cwd, runnerPath)
 		if err != nil {

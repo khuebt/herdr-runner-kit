@@ -293,6 +293,57 @@ func TestSpawnValidation(t *testing.T) {
 	}
 }
 
+func TestSpawnPicksClaudeConfig(t *testing.T) {
+	r, fake, e := newTestRunner(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, d := range []string{".claude", ".claude2"} {
+		if err := os.Mkdir(filepath.Join(home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := plainDir(t)
+	cases := map[string]string{
+		"":                 e["CLAUDE_CONFIG_DIR"], // the main session's
+		"claude2":          filepath.Join(home, ".claude2"),
+		"~/.claude2":       filepath.Join(home, ".claude2"),
+		home + "/.claude2": filepath.Join(home, ".claude2"),
+		"claude":           "", // Claude's default, which has no CLAUDE_CONFIG_DIR
+	}
+	for in, want := range cases {
+		tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: dir, ClaudeConfig: in})
+		if tk.ClaudeConfigDir != want {
+			t.Errorf("--claude-config %q = %q, want %q", in, tk.ClaudeConfigDir, want)
+		}
+	}
+	for _, o := range []SpawnOptions{
+		{Kind: "research", Prompt: "x", Cwd: dir, ClaudeConfig: "claude3"},
+		{Kind: "code", Prompt: "x", Cwd: dir, ClaudeConfig: "claude2"},
+	} {
+		if _, err := r.Spawn(context.Background(), o); err == nil {
+			t.Errorf("Spawn(%+v) succeeded", o)
+		}
+	}
+
+	// A runner on the default account gets no CLAUDE_CONFIG_DIR, and its
+	// trust goes to ~/.claude.json, not to the main session's folder, which
+	// the launcher inherits.
+	t.Setenv("CLAUDE_CONFIG_DIR", e["CLAUDE_CONFIG_DIR"])
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: dir, ClaudeConfig: "claude"})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tab := strings.Join(fake.call("tab", "create"), " "); strings.Contains(tab, "CLAUDE_CONFIG_DIR") {
+		t.Errorf("tab create sets CLAUDE_CONFIG_DIR: %s", tab)
+	}
+	if b, _ := os.ReadFile(filepath.Join(home, ".claude.json")); !strings.Contains(string(b), dir) {
+		t.Errorf("~/.claude.json does not trust %s: %s", dir, b)
+	}
+}
+
 func spawnStarting(t *testing.T, r *Runner, o SpawnOptions) *task.Task {
 	t.Helper()
 	tk, err := r.Spawn(context.Background(), o)

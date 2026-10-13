@@ -74,7 +74,7 @@ Runners start with permission prompts turned off, so they never stall waiting fo
 
 Before the first Codex runner in a repository, the kit adds that repository root to `~/.codex/config.toml` as trusted, because Codex asks again in every new worktree otherwise. Running `spawn` in a repository is taken as your consent for that repository. The kit appends the entry and never changes existing lines. If you marked the repository as untrusted in Codex, `spawn` stops and tells you instead.
 
-For Claude, the same consent applies: the kit marks the folder the runner starts in (the repository, or the runner's worktree) as trusted in `${CLAUDE_CONFIG_DIR:-~}/.claude.json`. Claude asks again for a git repository even when a parent folder is trusted, so copying parent trust is not enough. Approval of external `CLAUDE.md` imports is only copied from the repository's own entry; the kit never approves imports you did not approve.
+For Claude, the same consent applies: the kit marks the folder the runner starts in (the repository, or the runner's worktree) as trusted in the runner's Claude config: `<config folder>/.claude.json`, or `~/.claude.json` for the default `~/.claude`. Claude asks again for a git repository even when a parent folder is trusted, so copying parent trust is not enough. Approval of external `CLAUDE.md` imports is only copied from the repository's own entry; the kit never approves imports you did not approve.
 
 If a trust dialog still appears, the task moves to `needs-human` and waits up to 30 minutes for you to answer it in the runner's tab.
 

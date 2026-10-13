@@ -30,6 +30,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `--after t1,t2` | Start when every listed task is `done`. |
 | `--gate auto\|human` | `human` holds the task for `release`. |
 | `--title TEXT` | Short title; by default it comes from the prompt. |
+| `--claude-config DIR` | Claude config folder (account) of a Claude runner: a path, or a name such as `claude2` for `~/.claude2`. Default: the main session's. |
 | `--cwd DIR` | Folder the task works in; by default the current folder. |
 
 ## Task statuses
