@@ -34,6 +34,9 @@ type Report struct {
 	// Runners are the project's tasks at work or about to start; Waiting
 	// are those waiting on the user.
 	Runners, Waiting []*task.Task
+	// Active counts the runners that may be working now, which the
+	// record's parallelWarning compares against.
+	Active int
 	// Latest holds the latest task of each stage. Tasks only hint at the
 	// next step; gates are decided from committed artifacts.
 	Latest map[string]*task.Task
@@ -50,6 +53,11 @@ type Report struct {
 	PlanDone   bool
 	Unanswered []string
 	PlanErr    string
+	// Close is the latest close runner of the running milestone, and
+	// CloseStale is set when the release it prepared was merged before the
+	// milestone was reopened.
+	Close      *task.Task
+	CloseStale bool
 	Now        time.Time
 }
 
@@ -67,6 +75,9 @@ func Status(rec *Record, reg state.Project, tasks []*task.Task, now time.Time) R
 		if t.Stage != "" {
 			r.Stage = t.Stage // tasks come in creation order: the last one wins
 			r.Latest[t.Stage] = t
+		}
+		if runnerActive(t.Status) {
+			r.Active++
 		}
 		switch t.Status {
 		case task.NeedsHuman, task.Held:
@@ -103,6 +114,8 @@ func (r *Report) milestoneTasks(rec Record, tasks []*task.Task) {
 	if t := r.Latest[first]; t != nil && t.Status == task.Done && r.Running.ID != ScaffoldMilestone {
 		r.PlanDone = true
 	}
+	r.Close = r.Latest[CloseStage(r.Running.ID)]
+	r.CloseStale = CloseStale(*r.Running, r.Close)
 	at := map[string]int{}
 	for _, t := range tasks {
 		if t.Project != r.Name || t.Stage == first || !strings.HasPrefix(t.Stage, r.Running.ID+"/") {
@@ -165,6 +178,11 @@ func (r Report) Text() string {
 	b.WriteString("blockers: " + blockersLine(rec.Dependencies) + "\n")
 	r.writeTasks(&b, "runners", r.Runners)
 	r.writeTasks(&b, "waiting on you", r.Waiting)
+	if rec.ParallelWarning > 0 {
+		fmt.Fprintf(&b, "active runners: %d (warning above %d)\n", r.Active, rec.ParallelWarning)
+	} else {
+		fmt.Fprintf(&b, "active runners: %d\n", r.Active)
+	}
 	fmt.Fprintf(&b, "records not yet committed: %d\n", rec.Pending)
 	fmt.Fprintf(&b, "next: %s\n", r.Next())
 	return b.String()
@@ -349,12 +367,13 @@ func (r Report) milestoneNext() string {
 		return fmt.Sprintf("%s is in progress without a runner; start it: %s", m.ID, r.command("milestone start "+m.ID, ""))
 	case first.Status != task.Done:
 		return fmt.Sprintf("%s's runner %s %s; run it again: %s", m.ID, first.ID, first.Status, r.command("milestone start "+m.ID, ""))
-	case m.ID == ScaffoldMilestone:
+	case m.ID == ScaffoldMilestone && r.Close == nil:
 		branch := "its branch"
 		if first.Worktree != nil {
 			branch = first.Worktree.Branch
 		}
 		return fmt.Sprintf("%s's scaffold is done in %s: review %s", m.ID, first.ID, branch)
+	case m.ID == ScaffoldMilestone:
 	case r.PlanErr != "":
 		return fmt.Sprintf("the plan of %s cannot be chained (%s); ask %s to fix it: herdr-runner-kit send %s \"<what to fix>\"",
 			m.ID, oneLine(r.PlanErr), first.ID, first.ID)
@@ -366,11 +385,47 @@ func (r Report) milestoneNext() string {
 			m.ID, MilestonePlanPath(m.ID), r.command("milestone chain "+m.ID, ""))
 	}
 	for _, t := range r.Nodes {
-		if t.Status == task.Failed || t.Status == task.Stopped {
+		if t != r.Close && (t.Status == task.Failed || t.Status == task.Stopped) {
 			return fmt.Sprintf("%s of %s %s; fix the cause, then run the chain again: %s", t.ID, t.Stage, t.Status, r.command("milestone chain "+m.ID, ""))
 		}
 	}
+	if c := r.Close; c != nil {
+		switch {
+		case r.CloseStale:
+			return fmt.Sprintf("%s was reopened after %s was merged; once the fixes are on the branch the release came from, prepare a new release: %s",
+				m.ID, m.Branch, r.command("milestone close "+m.ID, ""))
+		case c.Status == task.Done:
+			return fmt.Sprintf("the release of %s is ready on %s: merge it into the default branch through your pull request, pull, then: %s",
+				m.ID, orDash(taskBranch(c)), r.command("milestone done "+m.ID, ""))
+		case c.Status == task.Failed || c.Status == task.Stopped:
+			return fmt.Sprintf("the close runner %s of %s %s; fix the cause, then run it again: %s", c.ID, m.ID, c.Status, r.command("milestone close "+m.ID, ""))
+		}
+	}
 	return fmt.Sprintf("every feature runner of %s is done", m.ID)
+}
+
+// ActiveRunners counts the runners of project name that may be working
+// right now: starting, running, or waiting on a human in their tab.
+// Queued and held tasks do not count.
+func ActiveRunners(tasks []*task.Task, name string) int {
+	n := 0
+	for _, t := range tasks {
+		if t.Project == name && runnerActive(t.Status) {
+			n++
+		}
+	}
+	return n
+}
+
+// ParallelNote is the soft warning printed after a project spawn when more
+// of its runners are active than its record's parallelWarning, or "" when
+// there are not, or the warning is off (0). It never blocks anything.
+func ParallelNote(rec Record, tasks []*task.Task) string {
+	n := ActiveRunners(tasks, rec.Name)
+	if rec.ParallelWarning <= 0 || n <= rec.ParallelWarning {
+		return ""
+	}
+	return fmt.Sprintf("note: %d runners of %s are active (warning above %d); nothing was blocked", n, rec.Name, rec.ParallelWarning)
 }
 
 // laterStages run between the spec and the pack, in the order status

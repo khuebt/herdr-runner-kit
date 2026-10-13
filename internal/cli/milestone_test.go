@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,10 +83,19 @@ func TestMilestoneStartSpawnsTheFirstRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	m0 := projectTasks(t, r, "M0/")
-	if len(m0) != 1 {
+	if len(m0) != 2 {
 		t.Fatalf("M0 tasks = %v", m0)
 	}
-	s := m0[0]
+	s, closer := m0[0], m0[1]
+	if closer.Stage != "M0/close" || closer.Worktree == nil || closer.Worktree.Branch != "release/M0" || closer.Worktree.Base != "feat/M0-scaffold" ||
+		!slices.Equal(closer.After, []string{s.ID}) || closer.Status != task.Queued {
+		t.Errorf("M0 close task = %+v %+v", closer, closer.Worktree)
+	}
+	for _, want := range []string{"/ak:docs update", "/ak:retro 20", "events --learning --project demo-app", project.ReleaseNotesPath("M0"), "Do not tag, merge, push"} {
+		if !strings.Contains(closer.Prompt, want) {
+			t.Errorf("close prompt lacks %q:\n%s", want, closer.Prompt)
+		}
+	}
 	if s.Stage != "M0/scaffold" || s.Kind != "flow" || s.Worktree == nil || s.Worktree.Branch != "feat/M0-scaffold" ||
 		s.Worktree.Base != "main" || s.Owner != task.ProjectOwner("demo-app") {
 		t.Errorf("scaffold task = %+v %+v", s, s.Worktree)
@@ -102,16 +112,25 @@ func TestMilestoneStartSpawnsTheFirstRunner(t *testing.T) {
 		t.Fatalf("start twice: %v", err)
 	}
 
-	// A failed scaffold that created its branch runs again on a new one.
+	// A failed scaffold that created its branch runs again on a new one,
+	// and so does the close runner that failed with it.
 	gitIn(t, p.Path, "branch", "feat/M0-scaffold")
 	setTask(t, r, s.ID, task.Failed, true)
+	setTask(t, r, closer.ID, task.Failed, false)
 	out.Reset()
 	if err := startMilestone(t.Context(), &out, r, p, "M0", milestoneRun{}); err != nil {
 		t.Fatal(err)
 	}
-	again := projectTasks(t, r, "M0/")[1]
+	m0 = projectTasks(t, r, "M0/")
+	if len(m0) != 4 {
+		t.Fatalf("M0 tasks after the run again = %v", m0)
+	}
+	again := m0[2]
 	if again.Worktree.Branch != "feat/M0-scaffold-r1" || again.Worktree.Base != "feat/M0-scaffold" {
 		t.Errorf("run again = %+v", again.Worktree)
+	}
+	if c := m0[3]; c.Stage != "M0/close" || c.Worktree.Branch != "release/M0" || c.Worktree.Base != "feat/M0-scaffold-r1" || !slices.Equal(c.After, []string{again.ID}) {
+		t.Errorf("close again = %+v %+v", c, c.Worktree)
 	}
 	if !strings.Contains(out.String(), "runs m0 again after "+s.ID+" failed") {
 		t.Errorf("output:\n%s", out.String())
@@ -187,11 +206,11 @@ func TestMilestoneChain(t *testing.T) {
 	for _, n := range nodes {
 		byStage[n.Stage] = n
 	}
-	f1, f2, f3, in := byStage["M1/F1"], byStage["M1/F2"], byStage["M1/F3"], byStage["M1/integrate"]
-	if len(nodes) != 4 || f1 == nil || f2 == nil || f3 == nil || in == nil {
+	f1, f2, f3, in, cl := byStage["M1/F1"], byStage["M1/F2"], byStage["M1/F3"], byStage["M1/integrate"], byStage["M1/close"]
+	if len(nodes) != 5 || f1 == nil || f2 == nil || f3 == nil || in == nil || cl == nil {
 		t.Fatalf("nodes = %v", nodes)
 	}
-	if got := []string{nodes[0].Stage, nodes[1].Stage, nodes[2].Stage, nodes[3].Stage}; strings.Join(got, ",") != "M1/F1,M1/F2,M1/F3,M1/integrate" {
+	if got := []string{nodes[0].Stage, nodes[1].Stage, nodes[2].Stage, nodes[3].Stage, nodes[4].Stage}; strings.Join(got, ",") != "M1/F1,M1/F2,M1/F3,M1/integrate,M1/close" {
 		t.Errorf("spawn order = %v", got)
 	}
 	for _, c := range []struct {
@@ -202,7 +221,8 @@ func TestMilestoneChain(t *testing.T) {
 		{f1, "feat/M1-F1-contract", "main", nil},
 		{f2, "feat/M1-F2-list", "", []string{f1.ID}},
 		{f3, "feat/M1-F3-settings", "main", nil},
-		{in, "feat/M1-integrate-integrate-every-feature", "main", []string{f2.ID, f3.ID}},
+		{in, "integrate/M1-integrate", "main", []string{f2.ID, f3.ID}},
+		{cl, "release/M1", "integrate/M1-integrate", []string{in.ID}},
 	} {
 		if c.tk.Worktree == nil || c.tk.Worktree.Branch != c.branch || c.tk.Worktree.Base != c.base || !slices.Equal(c.tk.After, c.after) || c.tk.Kind != "flow" {
 			t.Errorf("%s = %+v after %v", c.tk.Stage, c.tk.Worktree, c.tk.After)
@@ -237,6 +257,7 @@ func TestMilestoneChain(t *testing.T) {
 	setTask(t, r, f2.ID, task.Failed, true)
 	setTask(t, r, f3.ID, task.Failed, false)
 	setTask(t, r, in.ID, task.Failed, false)
+	setTask(t, r, cl.ID, task.Failed, false)
 
 	// A branch no runner of the node created stops the chain before any spawn.
 	gitIn(t, p.Path, "branch", "feat/M1-F3-settings")
@@ -254,7 +275,7 @@ func TestMilestoneChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	again := projectTasks(t, r, "M1/")[before:]
-	if len(again) != 3 {
+	if len(again) != 4 {
 		t.Fatalf("run again spawned %v", again)
 	}
 	if again[0].Stage != "M1/F2" || again[0].Worktree.Branch != "feat/M1-F2-list-r1" || again[0].Worktree.Base != "feat/M1-F2-list" ||
@@ -267,7 +288,103 @@ func TestMilestoneChain(t *testing.T) {
 	if again[2].Stage != "M1/integrate" || !slices.Equal(again[2].After, []string{again[0].ID, again[1].ID}) {
 		t.Errorf("integrate again = %+v", again[2])
 	}
+	if again[3].Stage != "M1/close" || again[3].Worktree.Branch != "release/M1" || !slices.Equal(again[3].After, []string{again[2].ID}) {
+		t.Errorf("close again = %+v %+v", again[3], again[3].Worktree)
+	}
 	if !strings.Contains(out.String(), "kept M1/F1: "+f1.ID+" is done") {
 		t.Errorf("run again output:\n%s", out.String())
+	}
+}
+
+// commitOnBranch commits files on a new branch made from base, and goes
+// back to main.
+func commitOnBranch(t *testing.T, dir, branch, base string, files map[string]string) {
+	t.Helper()
+	gitIn(t, dir, "checkout", "-q", "-b", branch, base)
+	commitFiles(t, dir, files)
+	gitIn(t, dir, "checkout", "-q", "main")
+}
+
+func TestMilestoneDoneReopenAndClose(t *testing.T) {
+	r, p := approvedRunner(t)
+	var out bytes.Buffer
+	if err := startMilestone(t.Context(), &out, r, p, "M0", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	m0 := projectTasks(t, r, "M0/")
+	scaffold, closer := m0[0], m0[1]
+	commitOnBranch(t, p.Path, "feat/M0-scaffold", "main", map[string]string{"app.txt": "app\n"})
+	commitOnBranch(t, p.Path, "release/M0", "feat/M0-scaffold", map[string]string{project.ReleaseNotesPath("M0"): "# M0\n"})
+	setTask(t, r, scaffold.ID, task.Done, true)
+	setTask(t, r, closer.ID, task.Done, true)
+	var warn []string
+	o := milestoneRun{Warn: func(line string) { warn = append(warn, line) }}
+
+	if err := finishMilestone(t.Context(), &out, r, p, "M0", "", o); err == nil || !strings.Contains(err.Error(), "release/M0 is not merged into main") {
+		t.Fatalf("done before the merge: %v", err)
+	}
+	gitIn(t, p.Path, "merge", "-q", "--no-ff", "--no-edit", "release/M0")
+	out.Reset()
+	if err := finishMilestone(t.Context(), &out, r, p, "M0", "", o); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"M0 Scaffold is done: release/M0 is merged into main", "tag: v0.0.0 on ", "local only"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("done output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if gitIn(t, p.Path, "tag", "-l") != "v0.0.0" || len(warn) != 0 {
+		t.Errorf("tags = %q, warnings %v", gitIn(t, p.Path, "tag", "-l"), warn)
+	}
+
+	if err := recloseMilestone(t.Context(), &out, r, p, "M0", o); err == nil || !strings.Contains(err.Error(), "only a milestone in progress") {
+		t.Fatalf("close a done milestone: %v", err)
+	}
+	out.Reset()
+	if err := reopenMilestone(t.Context(), &out, r, p, "M0", "the app does not start"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"M0 Scaffold is in progress again", "deleted the local tag v0.0.0", "revert that merge through a pull request", "milestone close M0 --project demo-app"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("reopen output lacks %q:\n%s", want, out.String())
+		}
+	}
+	out.Reset()
+	if err := recloseMilestone(t.Context(), &out, r, p, "M0", o); err != nil {
+		t.Fatal(err)
+	}
+	again := projectTasks(t, r, "M0/close")
+	c := again[len(again)-1]
+	if len(again) != 2 || c.Worktree == nil || c.Worktree.Branch != "release/M0-r1" || c.Worktree.Base != "feat/M0-scaffold" ||
+		!slices.Equal(c.After, []string{scaffold.ID}) || c.Status == task.Queued || !strings.Contains(c.Prompt, "/ak:retro") {
+		t.Errorf("close again = %+v %+v", c, c.Worktree)
+	}
+	if err := recloseMilestone(t.Context(), &out, r, p, "M0", o); err == nil || !strings.Contains(err.Error(), "of M0/close is starting") {
+		t.Fatalf("close twice: %v", err)
+	}
+}
+
+func TestParallelNoteAfterProjectSpawns(t *testing.T) {
+	r, _ := approvedRunner(t)
+	var notes []string
+	warn := func(line string) { notes = append(notes, line) }
+	spawn := func(after ...string) *task.Task {
+		t.Helper()
+		tk, err := r.Spawn(t.Context(), runner.SpawnOptions{Kind: "research", Project: "demo-app", Prompt: "check " + strconv.Itoa(len(notes)), After: after})
+		if err != nil {
+			t.Fatal(err)
+		}
+		parallelNote(r.Store, "demo-app", warn)
+		return tk
+	}
+	first := spawn()
+	spawn()
+	spawn()
+	if q := spawn(first.ID); q.Status != task.Queued || len(notes) != 0 {
+		t.Fatalf("three active and one queued: %s, notes %v", q.Status, notes)
+	}
+	spawn()
+	if len(notes) != 1 || notes[0] != "note: 4 runners of demo-app are active (warning above 3); nothing was blocked" {
+		t.Errorf("notes = %v", notes)
 	}
 }

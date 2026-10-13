@@ -187,6 +187,7 @@ func TestMilestoneStages(t *testing.T) {
 		{"M2/plan", "M2", "milestone-plan"},
 		{"M2/F1", "M2", "feature"},
 		{"M2/integrate", "M2", "feature"},
+		{"M2/close", "M2", "close"},
 	} {
 		m, tmpl, ok := milestoneStage(c.stage)
 		if !ok || m != c.milestone || tmpl != c.template {
@@ -226,7 +227,7 @@ func TestChainFeatureHasOneParent(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "feature F3 depends on F1 and F2") || !strings.Contains(err.Error(), "add an integrate node over them") {
 		t.Fatalf("two parents: %v", err)
 	}
-	for _, id := range []string{"plan", "scaffold", "a/b"} {
+	for _, id := range []string{"plan", "scaffold", "close", "a/b"} {
 		if _, err := PlanChain(chainInput([]BlockNode{{ID: id, Type: NodeFeature, Title: "x"}}, nil)); err == nil {
 			t.Errorf("node id %q accepted", id)
 		}
@@ -254,15 +255,20 @@ func TestChainOrderBasesAndFinalIntegrate(t *testing.T) {
 		"F1@feat/M1-F1-contract<main",
 		"F2@feat/M1-F2-list<",
 		"F3@feature/share<",
-		"I1@feat/M1-I1-list-and-share<main",
+		"I1@integrate/M1-I1<main",
 		"F5@feat/M1-F5-settings-page<main",
 		"F4@feat/M1-F4-reports<",
-		"integrate@feat/M1-integrate-integrate-every-feature<main",
+		"integrate@integrate/M1-integrate<main",
+		"close@release/M1<integrate/M1-integrate",
 	}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("steps =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	last := steps[len(steps)-1]
+	if cl := steps[len(steps)-1]; cl.Node.Type != nodeClose || cl.Stage != "M1/close" || strings.Join(cl.Node.DependsOn, ",") != "integrate" ||
+		NodeTemplate(cl.Node) != "close" {
+		t.Errorf("close = %+v", cl)
+	}
+	last := steps[len(steps)-2]
 	if !last.Added || last.Node.Type != NodeIntegrate || strings.Join(last.Node.DependsOn, ",") != "F4,F5" || last.Stage != "M1/integrate" {
 		t.Errorf("final integrate = %+v", last)
 	}
@@ -274,13 +280,13 @@ func TestChainOrderBasesAndFinalIntegrate(t *testing.T) {
 		{ID: "F2", Type: NodeFeature, Title: "List"},
 		{ID: "I9", Type: NodeIntegrate, Title: "All", DependsOn: []string{"integrate", "F2"}},
 	}
-	if steps, err := PlanChain(chainInput(ends, nil)); err != nil || len(steps) != 3 || steps[2].Node.ID != "I9" || steps[2].Added {
+	if steps, err := PlanChain(chainInput(ends, nil)); err != nil || len(steps) != 4 || steps[2].Node.ID != "I9" || steps[2].Added {
 		t.Errorf("plan ending in integrate: %+v %v", steps, err)
 	}
 	ends[2].Type = NodeFeature
 	ends[2].DependsOn = []string{"F2"}
 	steps, err = PlanChain(chainInput(ends, nil))
-	if err != nil || steps[len(steps)-1].Node.ID != "integrate-2" {
+	if err != nil || steps[len(steps)-2].Node.ID != "integrate-2" {
 		t.Errorf("taken final id: %+v %v", steps, err)
 	}
 }
@@ -324,13 +330,16 @@ func TestChainRunAgain(t *testing.T) {
 	if steps[2].Branch != "feat/M1-F3-export" || steps[2].Base != "" {
 		t.Errorf("F3 = %+v", steps[2])
 	}
-	if steps[3].Branch != "feat/M1-I1-all" || steps[3].Base != "main" {
+	if steps[3].Branch != "integrate/M1-I1" || steps[3].Base != "main" {
 		t.Errorf("I1 = %+v", steps[3])
+	}
+	if steps[4].Branch != "release/M1" || steps[4].Base != "integrate/M1-I1" {
+		t.Errorf("close = %+v", steps[4])
 	}
 
 	// A branch no earlier runner of the node created is refused.
-	if _, err := PlanChain(chainInput(nodes, tasks, "feat/M1-F1-list", "feat/M1-F2-share", "feat/M1-I1-all")); err == nil ||
-		!strings.Contains(err.Error(), "node I1: branch feat/M1-I1-all already exists and no earlier runner") {
+	if _, err := PlanChain(chainInput(nodes, tasks, "feat/M1-F1-list", "feat/M1-F2-share", "integrate/M1-I1")); err == nil ||
+		!strings.Contains(err.Error(), "node I1: branch integrate/M1-I1 already exists and no earlier runner") {
 		t.Fatalf("foreign branch: %v", err)
 	}
 	// Nothing is laid out while a node runner is unfinished.

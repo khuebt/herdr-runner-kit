@@ -66,7 +66,10 @@ func TestTemplateEveryStageRendersForBothHarnesses(t *testing.T) {
 // so every template renders whole.
 func milestoneStageData(rec Record) StageData {
 	d := stageData(rec, "")
-	MilestoneData(&d, rec, Milestone{ID: "M1", Title: "Lists", Features: []Feature{{ID: "F1", Title: "Add a list"}}}, "main")
+	MilestoneData(&d, rec, Milestone{
+		ID: "M1", Title: "Lists", Features: []Feature{{ID: "F1", Title: "Add a list"}},
+		Planned: time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC), Started: time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC),
+	}, "main")
 	NodeData(&d, ChainStep{Node: BlockNode{ID: "F1", Type: NodeFeature, Title: "Add a list"}})
 	return d
 }
@@ -136,7 +139,17 @@ func TestTemplateMilestoneStages(t *testing.T) {
 		},
 		"integrate": {
 			"flow", true, false,
-			[]string{"git merge --no-edit", `/ak:test "full test suite`, "report failed"},
+			[]string{"git merge --no-edit", `/ak:test "full test suite and lint`, "report failed", "Do not merge into main, push"},
+			nil, nil,
+		},
+		"close": {
+			"flow", false, false,
+			[]string{
+				"/ak:docs update", "/ak:retro 2026-11-02:<today as YYYY-MM-DD>", "ask the user nothing",
+				`events --learning --project demo-app --since "$(( ($(date +%s) - 1793610000) / 3600 + 1 ))h"`,
+				"handbook/product/milestones/M1/release-notes.md", "handbook/product/milestones/M1/roadmap-update.md",
+				"planned for 2026-11-15", "Do not tag, merge, push or open a pull request",
+			},
 			nil, nil,
 		},
 	} {
@@ -181,7 +194,9 @@ func TestTemplateMilestoneTextStaysUntrusted(t *testing.T) {
 	rec.ReferenceRepo = "/work/ref " + injection
 	rec.Backlog = []BacklogItem{{ID: "B1", Text: injection, Status: BacklogOpen}}
 	m := Milestone{ID: "M1", Title: "Lists", Features: []Feature{{ID: "F1", Title: injection}}}
-	for _, name := range []string{"m0", "milestone-plan", "feature"} {
+	rec.Changes = []Change{{ID: "CR-1", Title: injection, Status: ChangeNow, Milestone: "M1"}}
+	rec.Backlog = append(rec.Backlog, BacklogItem{ID: "B2", Text: injection, Status: BacklogPlanned, To: "M1/F1"})
+	for _, name := range []string{"m0", "milestone-plan", "feature", "integrate", "close"} {
 		s, err := LoadStage(name)
 		if err != nil {
 			t.Fatal(err)

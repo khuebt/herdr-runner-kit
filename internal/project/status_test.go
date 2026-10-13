@@ -205,10 +205,17 @@ func TestStatusMilestoneSteps(t *testing.T) {
 	}
 	tk := func(id, stage string, status task.Status) *task.Task {
 		t := &task.Task{ID: id, Project: "demo-app", Stage: stage, Status: status}
-		if stage == "M0/scaffold" {
+		switch stage {
+		case "M0/scaffold":
 			t.Worktree = &task.Worktree{Branch: "feat/M0-scaffold"}
+		case "M0/close", "M1/close":
+			t.Worktree = &task.Worktree{Branch: "release/" + strings.TrimSuffix(stage, "/close")}
 		}
 		return t
+	}
+	reopened := func(rec *Record) *Record {
+		rec.Milestones[1].Branch = "release/M1"
+		return rec
 	}
 	plan := tk("t3", "M1/plan", task.Done)
 	for _, c := range []struct {
@@ -230,6 +237,11 @@ func TestStatusMilestoneSteps(t *testing.T) {
 		{"chain", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan}, nil, "", "plan of M1 done: read its decisions in handbook/product/milestones/M1/plan.md, then chain its features: herdr-runner-kit project milestone chain M1 --project demo-app"},
 		{"node failed", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/F2", task.Failed)}, nil, "", "t5 of M1/F2 failed; fix the cause, then run the chain again: herdr-runner-kit project milestone chain M1"},
 		{"nodes done", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done)}, nil, "", "every feature runner of M1 is done"},
+		{"M0 release ready", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Done), tk("t2", "M0/close", task.Done)}, nil, "", "the release of M0 is ready on release/M0: merge it into the default branch through your pull request, pull, then: herdr-runner-kit project milestone done M0 --project demo-app"},
+		{"M0 close failed", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Done), tk("t2", "M0/close", task.Failed)}, nil, "", "the close runner t2 of M0 failed; fix the cause, then run it again: herdr-runner-kit project milestone close M0"},
+		{"release ready", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/close", task.Done)}, nil, "", "milestone done M1"},
+		{"reopened", reopened(record(MilestoneDone, MilestoneInProgress, false)), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/close", task.Done)}, nil, "", "M1 was reopened after release/M1 was merged; once the fixes are on the branch the release came from, prepare a new release: herdr-runner-kit project milestone close M1"},
+		{"node failed before close", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Failed), tk("t5", "M1/close", task.Failed)}, nil, "", "t4 of M1/F1 failed; fix the cause, then run the chain again"},
 	} {
 		r := Status(c.rec, reg, c.tasks, time.Now())
 		r.Unanswered, r.PlanErr = c.unanswered, c.planErr
@@ -244,7 +256,7 @@ func TestStatusMilestoneSteps(t *testing.T) {
 	if !r.PlanDone || r.Running == nil || r.Running.ID != "M1" {
 		t.Fatalf("report = %+v", r)
 	}
-	if text := r.Text(); !strings.Contains(text, "features: F1 queued (t6) · F2 running (t5)\n") {
+	if text := r.Text(); !strings.Contains(text, "features: F1 queued (t6) · F2 running (t5)\n") || !strings.Contains(text, "active runners: 1 (warning above 3)\n") {
 		t.Errorf("status:\n%s", text)
 	}
 }

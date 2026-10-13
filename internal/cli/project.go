@@ -375,8 +375,11 @@ func newProjectRunCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t))
-			return err
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t)); err != nil {
+				return err
+			}
+			parallelNote(r.Store, t.Project, o.Warn)
+			return nil
 		},
 	}
 	f := cmd.Flags()
@@ -1113,14 +1116,17 @@ func newProjectDepSetCommand() *cobra.Command {
 func newProjectMilestoneCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "milestone",
-		Short: "Start milestones and chain their features",
+		Short: "Start, chain, finish, reopen and close milestones",
 		Long: "A milestone starts after the pack is approved (or waived on the lite track). M0 " +
 			"builds the repository standard and an empty app; every later milestone starts with a " +
-			"plan runner whose plan becomes a chain of feature runners. You merge each milestone " +
-			"through a pull request; the kit never merges into the default branch.",
+			"plan runner whose plan becomes a chain of feature runners, integrate runners and a close " +
+			"runner that prepares the release branch and its notes. You merge that branch through a " +
+			"pull request; done then sees the merge, commits the records and tags the release " +
+			"locally. The kit never merges into the default branch and never pushes.",
 		Args: cobra.NoArgs,
 	}
-	cmd.AddCommand(newMilestoneStartCommand(), newMilestoneChainCommand())
+	cmd.AddCommand(newMilestoneStartCommand(), newMilestoneChainCommand(), newMilestoneDoneCommand(),
+		newMilestoneReopenCommand(), newMilestoneCloseCommand())
 	return cmd
 }
 
@@ -1192,7 +1198,7 @@ func newMilestoneStartCommand() *cobra.Command {
 			"needs a new approval after a scope change, and until the milestone before it in roadmap " +
 			"order is done; reordering goes through a change request and a new pack approval. It marks " +
 			"the milestone in progress in the record, committed when the milestone is done. M0 spawns " +
-			"the scaffold runner; later milestones spawn the plan runner, whose plan answers its open " +
+			"the scaffold runner and the close runner after it; later milestones spawn the plan runner, whose plan answers its open " +
 			"questions with the recommended options and lists them as decisions. When the first runner " +
 			"of a milestone in progress failed or stopped, start runs it again.",
 		Example: `  herdr-runner-kit project milestone start M0
@@ -1265,8 +1271,66 @@ func startMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	} else {
 		fmt.Fprintf(out, "%s %s is in progress since %s; recorded with the next commit point\n", id, oneLineText(m.Title), m.Started.Format(time.DateOnly))
 	}
-	_, err = fmt.Fprintln(out, spawnLine(t))
-	return err
+	if _, err := fmt.Fprintln(out, spawnLine(t)); err != nil {
+		return err
+	}
+	if id == project.ScaffoldMilestone && so.Branch != "" {
+		// The scaffold milestone has no plan: its close runner follows the
+		// scaffold runner straight away.
+		if closer := latestStageTask(tasks, p.Name, project.CloseStage(id)); closer == nil || (closer.Status.Terminal() && closer.Status != task.Done) {
+			step, err := project.CloseStep(p.Name, id, "scaffold", so.Branch, m.Branch, tasks,
+				func(b string) bool { return runner.BranchExists(ctx, p.Path, b) })
+			if err != nil {
+				return fmt.Errorf("%s started, but its close runner cannot: %w", t.ID, err)
+			}
+			ct, err := spawnClose(ctx, r, p, rec, m, def, step, []string{t.ID}, o)
+			if err != nil {
+				return fmt.Errorf("%s started, but its close runner did not: %w", t.ID, err)
+			}
+			if _, err := fmt.Fprintln(out, spawnLine(ct)); err != nil {
+				return err
+			}
+		}
+	}
+	parallelNote(r.Store, p.Name, o.Warn)
+	return nil
+}
+
+// latestStageTask returns the newest task of project name in stage, or nil.
+func latestStageTask(tasks []*task.Task, name, stage string) *task.Task {
+	var latest *task.Task
+	for _, t := range tasks {
+		if t.Project == name && t.Stage == stage {
+			latest = t
+		}
+	}
+	return latest
+}
+
+// spawnClose spawns the close runner of milestone m laid out in step, after
+// the tasks in after.
+func spawnClose(ctx context.Context, r *runner.Runner, p state.Project, rec project.Record, m project.Milestone, def string,
+	step project.ChainStep, after []string, o milestoneRun,
+) (*task.Task, error) {
+	stage, err := project.LoadStage(project.NodeTemplate(step.Node))
+	if err != nil {
+		return nil, err
+	}
+	h, err := stageHarness(r, stage, o.Agent)
+	if err != nil {
+		return nil, err
+	}
+	if !r.Config.Kinds[stage.Kind].Worktree {
+		return nil, fmt.Errorf("the close runner runs as kind %s, which the config runs without a worktree; it needs one for its release branch", stage.Kind)
+	}
+	data := project.NewStageData(rec, p.Path, project.Tools{}, "", time.Now())
+	project.MilestoneData(&data, rec, m, def)
+	project.NodeData(&data, step)
+	so := stageRun{
+		Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+		TaskStage: step.Stage, Warn: o.Warn, After: after, Branch: step.Branch, Base: step.Base,
+	}
+	return spawnStage(ctx, r, so, p, stage, h, data, p.Name+" "+step.Stage+": "+stage.Title)
 }
 
 func newMilestoneChainCommand() *cobra.Command {
@@ -1277,9 +1341,11 @@ func newMilestoneChainCommand() *cobra.Command {
 		Long: "chain reads the yaml block of the milestone's committed plan once its plan runner is " +
 			"done, and refuses while an open question has no answer. A feature has at most one parent " +
 			"and an integrate node any number; a final integrate node over every leaf is added when " +
-			"the plan does not end in one. Runners are spawned in dependency order with --after their " +
-			"parents: root features and integrate nodes start from the default branch, a feature with " +
-			"a parent from its parent's branch. Backlog items the plan takes are marked planned. Run it " +
+			"the plan does not end in one, and a close runner after it. Runners are spawned in " +
+			"dependency order with --after their parents: root features and integrate nodes start from " +
+			"the default branch, a feature with a parent from its parent's branch, and the close runner " +
+			"from the final integrate node's branch. Integrate nodes work on integrate/<M>-<id>, the " +
+			"close runner on release/<M>. Backlog items the plan takes are marked planned. Run it " +
 			"again after a runner failed: done nodes are kept, a failed node whose runner created its " +
 			"branch continues on <branch>-r<k> from that branch, and any other existing branch is " +
 			"refused before anything is spawned.",
@@ -1327,6 +1393,7 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	steps, err := project.PlanChain(project.ChainInput{
 		Project: p.Name, Milestone: id, Plan: plan, Tasks: tasks, DefaultBranch: def, Slug: runner.Slug,
 		BranchExists: func(b string) bool { return runner.BranchExists(ctx, p.Path, b) },
+		Merged:       rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })].Branch,
 	})
 	if err != nil {
 		return err
@@ -1395,5 +1462,162 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		_, err := fmt.Fprintf(out, "every node of %s is done\n", id)
 		return err
 	}
+	parallelNote(r.Store, p.Name, o.Warn)
+	return nil
+}
+
+func newMilestoneDoneCommand() *cobra.Command {
+	var o milestoneRun
+	var merged string
+	cmd := &cobra.Command{
+		Use:   "done <M>",
+		Short: "Record a milestone done once you merged its release branch, and tag it locally",
+		Long: "done fetches origin when there is one and looks for the close runner's release branch " +
+			"in the local default branch. It refuses until you merged that branch through your pull " +
+			"request and pulled, while the main checkout is on another branch, behind origin, in the " +
+			"middle of a merge, or holds changes to the files the kit renders. Then it imports the " +
+			"release's roadmap update, if any, records the milestone done, commits the records in one " +
+			"commit and creates the annotated tag tagFormat (v0.N.0 by default) on it. The tag is " +
+			"local: push it yourself if you want it on origin. After a squash or rebase merge, pass " +
+			"the merged commit, which must hold the release notes.",
+		Example: `  herdr-runner-kit project milestone done M1
+  herdr-runner-kit project milestone done M2 --merged-commit 3f9c2ab`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return finishMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], merged, o)
+			})
+		},
+	}
+	cmd.Flags().StringVar(&o.Project, "project", "", projectFlagHelp)
+	cmd.Flags().StringVar(&merged, "merged-commit", "", "after a squash or rebase merge: the commit on the default branch that holds the release")
+	return cmd
+}
+
+// finishMilestone records milestone id of p done after its merge and tags
+// it locally.
+func finishMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id, merged string, o milestoneRun) error {
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	d, err := project.FinishMilestone(ctx, r.Store, p, id, tasks, project.FinishOptions{MergedCommit: merged})
+	if d.Fetch != "" {
+		o.Warn("note: could not fetch origin (" + d.Fetch + "); checked against what was fetched before")
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s %s is done: %s is merged into %s\n", id, oneLineText(d.Milestone.Title), d.Branch, d.DefaultBranch)
+	if d.Roadmap > 0 {
+		fmt.Fprintf(out, "roadmap: updated %d milestone(s) from %s\n", d.Roadmap, project.RoadmapUpdatePath(id))
+	}
+	fmt.Fprintf(out, "records: committed in %s\n", shortCommit(d.Commit))
+	fmt.Fprintf(out, "tag: %s on %s, local only; push it yourself when you want it on origin: git push origin %s\n", d.Tag, shortCommit(d.Commit), d.Tag)
+	_, err = fmt.Fprintf(out, "next: herdr-runner-kit project status %s\n", p.Name)
+	return err
+}
+
+func shortCommit(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+func newMilestoneReopenCommand() *cobra.Command {
+	var o milestoneRun
+	var reason string
+	cmd := &cobra.Command{
+		Use:   "reopen <M> --reason WHY",
+		Short: "Put a done milestone back in progress for fixes, deleting its local tag",
+		Long: "reopen refuses when the milestone's tag is on origin, since a pushed tag is not taken " +
+			"back, while another milestone is in progress, and once a later milestone is done. It " +
+			"deletes the local tag, sets the milestone in progress and keeps the reason in the decision " +
+			"log, committed with the next commit point. The merged release stays on the default " +
+			"branch: revert it through a pull request if it must come out. After the fixes, close " +
+			"prepares a new release branch.",
+		Example: `  herdr-runner-kit project milestone reopen M1 --reason "export drops the last row"`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return reopenMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], reason)
+			})
+		},
+	}
+	cmd.Flags().StringVar(&o.Project, "project", "", projectFlagHelp)
+	cmd.Flags().StringVar(&reason, "reason", "", "why the milestone is reopened; kept in the decision log")
+	return cmd
+}
+
+// reopenMilestone puts done milestone id of p back in progress.
+func reopenMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id, reason string) error {
+	re, err := project.ReopenMilestone(ctx, r.Store, p, id, reason, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s %s is in progress again; recorded with the next commit point\n", id, oneLineText(re.Milestone.Title))
+	switch {
+	case re.Deleted:
+		fmt.Fprintf(out, "tag: deleted the local tag %s\n", re.Tag)
+	case re.Tag != "":
+		fmt.Fprintf(out, "tag: %s was not in %s\n", re.Tag, p.Path)
+	}
+	if re.Milestone.Branch != "" {
+		fmt.Fprintf(out, "%s stays merged; if its work must come out, revert that merge through a pull request: the kit never does\n", re.Milestone.Branch)
+	}
+	_, err = fmt.Fprintf(out, "next: fix on the branch the release came from, then prepare a new release: herdr-runner-kit project milestone close %s --project %s\n", id, p.Name)
+	return err
+}
+
+func newMilestoneCloseCommand() *cobra.Command {
+	var o milestoneRun
+	cmd := &cobra.Command{
+		Use:   "close <M>",
+		Short: "Spawn a new close runner after a reopen or a failed close",
+		Long: "close spawns a new close runner on release/<M>-r<k>, from the current branch of the " +
+			"step the last close runner waited for (the final integrate node, or M0's scaffold), so " +
+			"the new release holds the fixes made there. It is refused unless the milestone is in " +
+			"progress and its close runner failed, stopped, or prepared a release merged before the " +
+			"milestone was reopened.",
+		Example: `  herdr-runner-kit project milestone close M1`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
+				return recloseMilestone(cmd.Context(), cmd.OutOrStdout(), r, p, args[0], o)
+			})
+		},
+	}
+	milestoneFlags(cmd, &o)
+	return cmd
+}
+
+// recloseMilestone spawns a new close runner of milestone id.
+func recloseMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) error {
+	rec, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return err
+	}
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	step, parent, err := project.Reclose(rec, p.Name, id, tasks, func(b string) bool { return runner.BranchExists(ctx, p.Path, b) })
+	if err != nil {
+		return err
+	}
+	def, err := project.DefaultBranch(ctx, p.Path)
+	if err != nil {
+		return err
+	}
+	m := rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })]
+	t, err := spawnClose(ctx, r, p, rec, m, def, step, []string{parent.ID}, o)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, spawnLine(t)); err != nil {
+		return err
+	}
+	parallelNote(r.Store, p.Name, o.Warn)
 	return nil
 }

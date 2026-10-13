@@ -114,6 +114,16 @@ type StageData struct {
 	Features       string
 	Backlog        string
 	Reference      string
+	// The close runner's inputs: the milestone's planned and start dates,
+	// the start as Unix seconds, the files it writes, and its change
+	// requests and the backlog items it took, fenced as untrusted data.
+	Planned           string
+	Started           string
+	StartedUnix       int64
+	ReleaseNotesPath  string
+	RoadmapUpdatePath string
+	Changes           string
+	Taken             string
 	// Node and NodeType name the plan node a chain runner builds;
 	// NodeBlock holds its plan entry fenced as untrusted data.
 	Node      string
