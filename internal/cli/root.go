@@ -29,6 +29,7 @@ func NewRootCommand() *cobra.Command {
 		newFocusCommand(),
 		newGCCommand(),
 		newCleanupCommand(),
+		newSyncCommand(),
 		newReportCommand(),
 		newAfterCommand(),
 		newTurnEndCommand(),
