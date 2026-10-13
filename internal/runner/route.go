@@ -2,11 +2,13 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -38,6 +40,16 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		waiting, err := r.waitingForHuman()
 		if err != nil {
 			return "", err
+		}
+		if name, ok, err := r.projectStatusRequest(text); err != nil {
+			return "", err
+		} else if ok {
+			// A runner waiting for a human may have asked something that
+			// "status <name>" answers, so never take its reply away.
+			if len(waiting) == 0 {
+				return "meta: project status " + name, nil
+			}
+			return `ambiguous: "status ` + name + `" could be an answer for ` + strings.Join(waiting, ", ") + "; ask, or show project status", nil
 		}
 		switch len(waiting) {
 		case 0:
@@ -80,6 +92,23 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		return "", fmt.Errorf("%s waits on the %s dialog in its herdr tab; it cannot be answered from Telegram", id, t.Error)
 	}
 	return "", fmt.Errorf("%s is %s; nothing to answer", id, t.Status)
+}
+
+// projectStatusRequest reports whether text is "status <name>" for a
+// registered project, and returns the name.
+func (r *Runner) projectStatusRequest(text string) (string, bool, error) {
+	f := strings.Fields(strings.ToLower(strings.TrimRight(text, "?")))
+	if len(f) != 2 || f[0] != "status" || state.CheckProjectName(f[1]) != nil {
+		return "", false, nil
+	}
+	p, err := r.Store.ProjectByName(f[1])
+	switch {
+	case errors.Is(err, state.ErrUnknownProject):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	}
+	return p.Name, !p.Reserved, nil
 }
 
 // waitingForHuman lists tasks that a reply can resolve: a runner's question

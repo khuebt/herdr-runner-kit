@@ -154,3 +154,106 @@ func TestAutoarmWakesForProjectNews(t *testing.T) {
 		t.Fatalf("code %d, %q", code, stderr.String())
 	}
 }
+
+func TestProjectStatus(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", stateDir)
+	t.Setenv("HRK_TASK", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// herdr is down: status never asks it.
+	t.Setenv("PATH", t.TempDir()+string(os.PathListSeparator)+os.Getenv("PATH"))
+	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(elsewhere)
+
+	if out, err := runCLI("project", "status"); err != nil || !strings.HasPrefix(out, "no project is registered") {
+		t.Fatalf("no projects: %q %v", out, err)
+	}
+	repos := map[string]string{}
+	for _, name := range []string{"demo-app", "demo-cli"} {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "https://user:secret@example.com/team/" + name + ".git"}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v %s", args, err, out)
+			}
+		}
+		if _, err := runCLI("project", "register", dir, "--name", name); err != nil {
+			t.Fatal(err)
+		}
+		repos[name] = dir
+	}
+	store, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range []*task.Task{
+		{
+			Kind: "research", Agent: "claude", Prompt: "x", Title: "read brief", Owner: task.ProjectOwner("demo-app"),
+			Project: "demo-app", Stage: "intake", Gate: task.GateAuto, Status: task.Running,
+		},
+		{
+			Kind: "research", Agent: "claude", Prompt: "x", Title: "other", Owner: task.ProjectOwner("demo-cli"),
+			Project: "demo-cli", Stage: "spec", Gate: task.GateAuto, Status: task.NeedsHuman, Question: "Which?",
+		},
+	} {
+		if err := store.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Two projects and a folder outside both: one line per project.
+	out, err := runCLI("project", "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "NAME") ||
+		strings.Join(strings.Fields(lines[1]), " ") != "demo-app "+repos["demo-app"]+" intake none yet 1" ||
+		strings.Join(strings.Fields(lines[2]), " ") != "demo-cli "+repos["demo-cli"]+" spec none yet 1" {
+		t.Fatalf("list:\n%s", out)
+	}
+
+	// Inside a project, its status; the remote shows no credentials.
+	t.Chdir(repos["demo-app"])
+	out, err = runCLI("project", "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"demo-app · unknown/standard · " + repos["demo-app"] + "\n",
+		"remote: https://example.com/team/demo-app.git\n",
+		"stage: intake\n",
+		"runners:\n  t1 running · stage intake · read brief\n",
+		"waiting on you: none\n",
+		"next: wait for the 1 runner(s) at work",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "secret") || strings.Contains(out, "demo-cli") || strings.Contains(out, "t2") {
+		t.Errorf("status shows another project or a credential:\n%s", out)
+	}
+
+	// A lost record prints the fix.
+	if err := os.Remove(filepath.Join(store.ProjectDir("demo-cli"), "record.json")); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI("project", "status", "demo-cli")
+	if err != nil || !strings.Contains(out, "record: missing\n") ||
+		!strings.Contains(out, "herdr-runner-kit project register "+repos["demo-cli"]+" --name demo-cli") {
+		t.Errorf("missing record: %q %v", out, err)
+	}
+	if _, err := runCLI("project", "status", "nope"); err == nil {
+		t.Error("status of an unknown project")
+	}
+	if _, err := runCLI("events", "--project", "demo-app"); err == nil || !strings.Contains(err.Error(), "--learning") {
+		t.Errorf("events --project without --learning: %v", err)
+	}
+}

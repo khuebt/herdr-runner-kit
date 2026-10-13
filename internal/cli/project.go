@@ -3,7 +3,11 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,7 +26,7 @@ func newProjectCommand() *cobra.Command {
 			"from any folder.",
 		Args: cobra.NoArgs,
 	}
-	cmd.AddCommand(newProjectRegisterCommand(), newProjectForgetCommand())
+	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand())
 	return cmd
 }
 
@@ -107,6 +111,134 @@ func printCreated(cmd *cobra.Command, c project.Created) {
 	}
 	fmt.Fprintf(w, "brief: original kept untracked at %s\n", c.Brief)
 	fmt.Fprintf(w, "next: herdr-runner-kit project status %s\n", c.Name)
+}
+
+func newProjectStatusCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status [name]",
+		Short: "Show where a project stands and the one step to take next",
+		Long: "status reads the kit's record of the project and its tasks, never herdr, so " +
+			"it works with herdr down; it changes nothing. Without a name it shows the " +
+			"project holding the current folder, else the only registered project, else " +
+			"one line per registered project.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := openStore()
+			if err != nil {
+				return err
+			}
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			p, err := resolveProject(store, name, cwd)
+			if errors.Is(err, errNoProjectResolved) {
+				return printProjectList(cmd.OutOrStdout(), store)
+			}
+			if err != nil {
+				return err
+			}
+			r, err := projectReport(store, p)
+			if err != nil {
+				return err
+			}
+			if _, err := os.Stat(p.Path); errors.Is(err, os.ErrNotExist) {
+				r.PathMissing = true
+			} else {
+				r.Remote = project.Origin(cmd.Context(), p.Path)
+			}
+			_, err = io.WriteString(cmd.OutOrStdout(), r.Text())
+			return err
+		},
+	}
+}
+
+// errNoProjectResolved is returned by resolveProject when no name was given
+// and neither the current folder nor a single registration picks one.
+var errNoProjectResolved = errors.New("no project picked")
+
+// resolveProject picks the project a command works on: the one named, else
+// the registered project holding cwd, else the only registered project.
+// Projects still being set up are never picked without their name.
+func resolveProject(s *state.Store, name, cwd string) (state.Project, error) {
+	if name != "" {
+		return s.ProjectByName(name)
+	}
+	if p, ok, err := s.ProjectFor(cwd); err != nil || ok {
+		return p, err
+	}
+	list, err := s.Projects()
+	if err != nil {
+		return state.Project{}, err
+	}
+	var names []string
+	var only state.Project
+	for _, p := range list {
+		if !p.Reserved {
+			names = append(names, p.Name)
+			only = p
+		}
+	}
+	switch len(names) {
+	case 0:
+		return state.Project{}, fmt.Errorf("%w: no project is registered; start one with herdr-runner-kit new, or add one with herdr-runner-kit project register", errNoProjectResolved)
+	case 1:
+		return only, nil
+	}
+	return state.Project{}, fmt.Errorf("%w: name one of %s", errNoProjectResolved, strings.Join(names, ", "))
+}
+
+// projectReport builds the status of p from the kit's record and tasks. A
+// missing record is part of the report, not an error.
+func projectReport(s *state.Store, p state.Project) (project.Report, error) {
+	var rec *project.Record
+	loaded, err := project.Load(s, p.Name)
+	switch {
+	case errors.Is(err, project.ErrNoRecord):
+	case err != nil:
+		return project.Report{}, err
+	default:
+		rec = &loaded
+	}
+	tasks, err := s.List()
+	if err != nil {
+		return project.Report{}, err
+	}
+	return project.Status(rec, p, tasks, time.Now()), nil
+}
+
+// printProjectList prints one line per registered project.
+func printProjectList(out io.Writer, s *state.Store) error {
+	list, err := s.Projects()
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		_, err := fmt.Fprintln(out, "no project is registered; start one with herdr-runner-kit new, or add one with herdr-runner-kit project register")
+		return err
+	}
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tPATH\tSTAGE\tMILESTONE\tACTIVE")
+	for _, p := range list {
+		if p.Reserved {
+			fmt.Fprintf(w, "%s\t%s\t(being set up)\t-\t-\n", p.Name, p.Path)
+			continue
+		}
+		r, err := projectReport(s, p)
+		if err != nil {
+			return err
+		}
+		stage := r.Stage
+		if r.Record == nil {
+			stage = "(no record)"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", p.Name, p.Path, stage, r.Milestone(), len(r.Runners)+len(r.Waiting))
+	}
+	return w.Flush()
 }
 
 func newProjectRegisterCommand() *cobra.Command {
