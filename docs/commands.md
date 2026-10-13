@@ -29,10 +29,10 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
 | `list [--all]`, `show <id>` | Stored status, herdr's live state, and the TAB column: `open` (with when `gc` closes it), `kept`, `closed`, or `-` before a tab exists; one task in full. |
 | `events [--since 1h] [--task ID] [--follow] [--timings]` | The event log, or the measured latencies per task. |
-| `events --learning [--since 1h] [--task ID]` | Per task: kind, agents, status, attempts, nudges, sends, answers, `needs-human` reports, unreported turns, agent switches, duration and time waited on a human. Every number comes from the event log. |
+| `events --learning [--since 1h] [--task ID]` | Per task: kind, agents, status, attempts (starts, plus sends that reopened a finished task), nudges, sends, answers, `needs-human` reports, unreported turns, agent switches, duration from spawn to last finish, and time waited on a human after the spawn. Every number comes from the event log. |
 | `focus <id>` | Switches herdr to the runner's tab. |
 | `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. `gc` closes those that finished at least 30 minutes ago (`--older-than`), except kept runners (see `keep`) and a runner whose agent is working or blocked because someone kept using its tab; `wait` does the same for its owner's runners while it watches, and the auto re-arm hook once nothing is left to watch. Worktrees and branches are kept unless removal is asked; `gc --remove-worktree` also closes kept runners. |
-| `sync <id> [--from REF] [--no-send]` | Merges the default branch, or `--from REF`, into the branch checked out in the task's worktree, then asks the runner to re-run its checks and report. See [Syncing a branch](#syncing-a-branch). |
+| `sync <id> [--from REF] [--no-send]` | Merges origin's default branch (such as `origin/main`), or `--from REF`, into the branch checked out in the task's worktree, then asks the runner to re-run its checks and report. See [Syncing a branch](#syncing-a-branch). |
 | `keep <id> [--off]` | Keeps a finished runner's tab open until `keep --off` or `stop`. `--off` lets `gc` close it again, at once when its close time has passed. |
 | `cleanup [id]... [--yes] [--no-fetch]` | Fetches origin, then lists your finished worktree tasks whose worktree or branch is still there, as `merged`, `unmerged`, `dirty` or `kept`. `--yes` removes the worktree and deletes the local branch of each merged one, or of the given ids. See [Cleaning up](#cleaning-up). |
 
@@ -48,11 +48,15 @@ A worktree branch is named `hrk/<id>-<slug>` unless `spawn --branch NAME` names 
 
 ## Syncing a branch
 
-`sync <id>` fetches origin and merges the default branch into a worktree task's branch, so a runner that fell behind can re-run its checks. It refuses while the task is starting or its agent is busy, when the worktree has uncommitted changes, and when the worktree has left the task's branch. A branch that already holds the ref is left as it is. A conflicting merge is aborted, the branch is unchanged, and `sync` prints the conflicting files and the text to hand the merge to the runner with `send`. `--no-send` merges without telling the runner. `sync` never pushes, rebases or touches another branch, and a runner cannot run it.
+`sync <id>` merges origin's default branch, such as `origin/main` where pull requests merged on the remote land, into a worktree task's branch, so a runner that fell behind can re-run its checks. It refuses while the task is starting, while its agent is busy, runs background work or cannot be checked through herdr, when the worktree has uncommitted changes, and when the worktree has left the task's branch. Only after these checks does it fetch origin, without pruning. The output names the ref merged; when the local default branch has commits origin lacks, it also suggests `--from main` (or the local branch's name) to merge those. A branch that already holds the ref is left as it is. A conflicting merge is aborted, the branch is unchanged, and `sync` prints the conflicting files and the text to hand the merge to the runner with `send`. A merge git refuses to start, for example because it would overwrite an untracked file, is reported as an error and changes nothing. `--no-send` merges without telling the runner. `sync` never pushes, rebases or touches another branch, and a runner cannot run it.
 
 ## Usage limits
 
-When a runner's agent shows a usage limit, the task switches to the next agent in the config's [`quotaFallback`](config.md#keys) list. The new agent starts in the same tab and checkout, with the first prompt and a note to continue from the partial work. The event log gets an `agent-switched` event, and `events --learning` lists the agents the task went through. With no fallback left, or none configured, the task fails with `usage limit reached for <agent>`, and its waiting dependents fail too.
+When a runner's agent hits a usage limit, the task switches to the next agent in the config's [`quotaFallback`](config.md#keys) list. The new agent starts in the same tab and checkout, with the first prompt and a note to continue from the partial work. The event log gets an `agent-switched` event, and `events --learning` lists the agents the task went through.
+
+Claude reports the limit itself: its turn ends in a `StopFailure` hook with a rate-limit error and its limit message. With no fallback left, or none configured, that task fails with `usage limit reached for <agent>`, and its waiting dependents fail too.
+
+Codex only shows the limit on screen, as its own `■ You've hit your usage limit …` error line; the same words in the conversation or in a tool's output never count. Such a line switches the agent when a fallback is left. Otherwise the task is not failed: the runner is nudged as for any unreported turn, and the main session gets `usage-limit` news saying the runner appears to be at its usage limit.
 
 ## Cleaning up
 
@@ -71,7 +75,7 @@ While `wait` runs, it fetches origin at most every 10 minutes and reports each n
 
 The main agent runs `wait` in the background. In the session `main --exec` starts, the auto re-arm hook that `setup` installs also runs it after every turn, so no news is missed when the agent forgets to rerun it.
 
-`wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped`, `turn-ended-unreported` and `cleanable`. Other events, such as `started`, only move its cursor.
+`wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped`, `turn-ended-unreported`, `usage-limit` and `cleanable`. Other events, such as `started`, only move its cursor.
 
 ```
 t3 done · fix login · git: on hrk/t3-fix-login, 1 commit, no upstream · tab closes 15:42 · Login fixed; tests pass · out: /…/tasks/t3/out/notes.md

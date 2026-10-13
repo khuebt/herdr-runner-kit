@@ -96,6 +96,8 @@ func Message(ev state.Event, t *task.Task) string {
 		lines = []string{tag + " is stalled" + title, ev.Summary, "Check its herdr tab, or reply: " + tag + " <instruction>"}
 	case "turn-ended-unreported":
 		lines = []string{tag + " stopped without reporting" + title, ev.Summary, "Reply: " + tag + " <instruction>"}
+	case "usage-limit":
+		lines = []string{tag + " is out of usage" + title, ev.Summary, "Check its herdr tab, or reply: " + tag + " <instruction>"}
 	case "done":
 		lines = []string{tag + " done" + title, ev.Summary, gitLine(ev)}
 		if len(ev.Outputs) > 0 {

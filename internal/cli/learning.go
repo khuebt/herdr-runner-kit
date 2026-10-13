@@ -35,8 +35,11 @@ func (l *learning) observe(ev state.Event) {
 		l.tabAnswer()
 	case "sent":
 		l.sends++
-		if l.lastStatus.Terminal() {
-			l.attempts++ // a send to a finished task reopens it
+		if l.lastStatus.Terminal() && ev.Status != "" && !ev.Status.Terminal() {
+			// The send reopened a finished task, which has not finished
+			// again yet.
+			l.attempts++
+			l.ended = time.Time{}
 		}
 		l.awaitingAnswer = false
 	case "answered":
@@ -63,7 +66,9 @@ func (l *learning) observe(ev state.Event) {
 	if ev.Status == "" {
 		return
 	}
-	waiting := ev.Status == task.NeedsHuman || ev.Status == task.Held
+	// Waiting counts from the spawn on, so it stays within the duration:
+	// time held or queued before it is not the runner's.
+	waiting := !l.spawned.IsZero() && (ev.Status == task.NeedsHuman || ev.Status == task.Held)
 	switch {
 	case waiting && l.waitingSince.IsZero():
 		l.waitingSince = ev.TS
@@ -84,11 +89,12 @@ func (l *learning) tabAnswer() {
 }
 
 // printLearning prints, per task with events, how much steering it took:
-// attempts (starts plus reopens by send), nudges, sends, answers (from the
-// main session or in the tab), needs-human reports, unreported turns, agent
-// switches, the time from spawn to its last finish, and the time it waited
-// on a human. Every number comes from the events given; tasks only add the
-// kind, agents and current status. ids, when set, limits the rows.
+// attempts (starts plus sends that reopened a finished task), nudges,
+// sends, answers (from the main session or in the tab), needs-human
+// reports, unreported turns, agent switches, the time from spawn to its last
+// finish, and the time it waited on a human after its spawn. Every number
+// comes from the events given; tasks only add the kind, agents and current
+// status. ids, when set, limits the rows.
 func printLearning(out io.Writer, events []state.Event, tasks []*task.Task, ids []string, now time.Time) error {
 	byID := map[string]*task.Task{}
 	for _, t := range tasks {

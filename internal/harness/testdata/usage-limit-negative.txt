@@ -4,11 +4,11 @@
   account runs out, and Codex prints "You've hit your usage limit." I'll
   add both strings to the fixture table.
 
-⏺ Update(internal/quota/quota_test.go)
-  ⎿  Updated internal/quota/quota_test.go with 14 additions
+⏺ Update(internal/harness/harness_test.go)
+  ⎿  Updated internal/harness/harness_test.go with 14 additions
 
-⏺ Bash(go test ./internal/quota)
-  ⎿  ok  	example.com/app/internal/quota	0.208s
+⏺ Bash(go test ./internal/harness)
+  ⎿  ok  	github.com/khuebt/herdr-runner-kit/internal/harness	0.208s
 
 ⏺ Both messages are covered by the new table test.
 

@@ -80,7 +80,7 @@ func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]Cle
 		base, seen := bases[t.RepoRoot]
 		if !seen {
 			if fetch {
-				fetchOrigin(ctx, t.RepoRoot)
+				fetchOrigin(ctx, t.RepoRoot, true)
 			}
 			base = defaultBranch(ctx, t.RepoRoot)
 			bases[t.RepoRoot] = base
@@ -325,13 +325,19 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 	}
 }
 
-func fetchOrigin(ctx context.Context, root string) {
+// fetchOrigin fetches origin, if the repository has one, ignoring failure.
+// prune also drops remote-tracking branches deleted on origin.
+func fetchOrigin(ctx context.Context, root string, prune bool) {
 	if gitOut(ctx, root, "remote", "get-url", "origin") == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	_ = exec.CommandContext(ctx, "git", "-C", root, "fetch", "--quiet", "--prune", "origin").Run()
+	args := []string{"-C", root, "fetch", "--quiet"}
+	if prune {
+		args = append(args, "--prune")
+	}
+	_ = exec.CommandContext(ctx, "git", append(args, "origin")...).Run()
 }
 
 // defaultBranch returns the ref merged work lands on: origin's HEAD, else

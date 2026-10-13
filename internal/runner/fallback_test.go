@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
-	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -23,36 +23,6 @@ func fixture(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return string(data)
-}
-
-func adapterFor(t *testing.T, h task.Harness) harness.Adapter {
-	t.Helper()
-	a, err := harness.For(h)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a
-}
-
-func TestDetectUsageLimitFixtures(t *testing.T) {
-	claude, codex := adapterFor(t, task.Claude), adapterFor(t, task.Codex)
-	if !detectUsageLimit(claude, fixture(t, "usage-limit-claude.txt")) {
-		t.Error("claude usage-limit screen not detected")
-	}
-	if !detectUsageLimit(codex, fixture(t, "usage-limit-codex.txt")) {
-		t.Error("codex usage-limit screen not detected")
-	}
-	negative := fixture(t, "usage-limit-negative.txt")
-	if detectUsageLimit(claude, negative) || detectUsageLimit(codex, negative) {
-		t.Error("phrases quoted above the last lines were detected")
-	}
-	// Trailing blank rows below the agent's output do not push it out.
-	if !detectUsageLimit(claude, fixture(t, "usage-limit-claude.txt")+strings.Repeat("   \n", 30)) {
-		t.Error("claude screen with blank rows below not detected")
-	}
-	if detectUsageLimit(claude, "❯ \n") || detectUsageLimit(codex, "") {
-		t.Error("an ordinary screen was detected")
-	}
 }
 
 // limitRunner returns a runner whose panes show screen, with the given
@@ -134,12 +104,27 @@ func TestTurnEndSwitchesCodexOnUsageLimit(t *testing.T) {
 	}
 }
 
-func TestUsageLimitWithoutFallbackFails(t *testing.T) {
-	r, _, launched := limitRunner(t, fixture(t, "usage-limit-claude.txt"))
+func TestClaudeStopFailureSwitchesAgent(t *testing.T) {
+	r, _, launched := limitRunner(t, "❯ \n", config.Fallback{Agent: "codex"})
+	tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	*launched = nil
+	block, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, []byte(fixture(t, "stop-failure-claude.json")))
+	if err != nil || block != "" {
+		t.Fatalf("TurnEnd = %q, %v", block, err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Starting || got.Agent != "codex" || len(*launched) != 1 {
+		t.Errorf("task = %s %s, launchers %v", got.Status, got.Agent, *launched)
+	}
+}
+
+func TestClaudeStopFailureWithoutFallbackFails(t *testing.T) {
+	r, _, launched := limitRunner(t, "❯ \n")
 	tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
 	child := spawnQueued(t, r, tk.ID)
 	*launched = nil
-	if block, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, nil); err != nil || block != "" {
+	block, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, []byte(fixture(t, "stop-failure-claude.json")))
+	if err != nil || block != "" {
 		t.Fatalf("TurnEnd = %q, %v", block, err)
 	}
 	got, _ := r.Store.Get(tk.ID)
@@ -154,7 +139,67 @@ func TestUsageLimitWithoutFallbackFails(t *testing.T) {
 	}
 }
 
-func TestUsageLimitExhaustedFallbacksFail(t *testing.T) {
+func TestClaudeOtherStopFailureIsIgnored(t *testing.T) {
+	r, _, launched := limitRunner(t, fixture(t, "usage-limit-claude.txt"), config.Fallback{Agent: "codex"})
+	tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	*launched = nil
+	payload := `{"hook_event_name":"StopFailure","error":"server_error","last_assistant_message":"API Error: 500"}`
+	if block, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, []byte(payload)); err != nil || block != "" {
+		t.Fatalf("TurnEnd = %q, %v", block, err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Running || got.Agent != tk.Agent || got.Unreported != 0 || len(*launched) != 0 {
+		t.Errorf("task = %s %s unreported %d, launchers %v", got.Status, got.Agent, got.Unreported, *launched)
+	}
+}
+
+// A limit seen only on the screen never fails a task: without a fallback
+// the runner is nudged as usual and the main session gets usage-limit news.
+func TestScreenUsageLimitWithoutFallbackIsNews(t *testing.T) {
+	r, fake, launched := limitRunner(t, fixture(t, "usage-limit-codex.txt"))
+	tk := running(t, r, SpawnOptions{Kind: "research", Agent: "codex", Prompt: "x", Cwd: plainDir(t)})
+	*launched = nil
+	turn := `{"type":"agent-turn-complete","thread-id":"main","input-messages":["x"]}`
+	for range 2 {
+		if _, err := r.TurnEnd(context.Background(), tk.ID, task.Codex, []byte(turn)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Running || got.Agent != "codex" || len(*launched) != 0 {
+		t.Errorf("task = %s %s %q, launchers %v", got.Status, got.Agent, got.Error, *launched)
+	}
+	if fake.count("agent", "prompt") != 1 {
+		t.Errorf("nudges typed = %d, want 1", fake.count("agent", "prompt"))
+	}
+	ev := events(t, r, tk.ID)
+	if !slices.Equal(ev[len(ev)-3:], []string{"nudged", "usage-limit", "turn-ended-unreported"}) {
+		t.Errorf("events = %v", ev)
+	}
+	if last := lastEvent(t, r); !strings.Contains(last.Summary, "usage limit") {
+		t.Errorf("last event = %+v", last)
+	}
+}
+
+// The phrase in a tool's output at the bottom of the screen is no limit.
+func TestUsageLimitPhraseInToolOutputIsIgnored(t *testing.T) {
+	r, fake, launched := limitRunner(t, fixture(t, "usage-limit-codex-tool-output.txt"), config.Fallback{Agent: "claude"})
+	tk := running(t, r, SpawnOptions{Kind: "research", Agent: "codex", Prompt: "x", Cwd: plainDir(t)})
+	*launched = nil
+	turn := `{"type":"agent-turn-complete","thread-id":"main","input-messages":["x"]}`
+	if _, err := r.TurnEnd(context.Background(), tk.ID, task.Codex, []byte(turn)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Running || got.Agent != "codex" || len(*launched) != 0 || fake.count("agent", "prompt") != 1 {
+		t.Errorf("task = %s %s, launchers %v, prompts %d", got.Status, got.Agent, *launched, fake.count("agent", "prompt"))
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "usage-limit") || slices.Contains(ev, "agent-switched") {
+		t.Errorf("events = %v", ev)
+	}
+}
+
+func TestUsageLimitExhaustedFallbacks(t *testing.T) {
 	r, _, launched := limitRunner(t, fixture(t, "usage-limit-codex.txt"), config.Fallback{Agent: "claude"}, config.Fallback{Agent: "codex"})
 	tk := running(t, r, SpawnOptions{Agent: "codex", Prompt: "x", Cwd: plainDir(t)})
 	*launched = nil
@@ -165,7 +210,15 @@ func TestUsageLimitExhaustedFallbacksFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	tk, _ = r.Store.Get(tk.ID)
-	if err := r.switchAgent(tk); err != nil {
+	// Seen only on the screen, the limit changes nothing.
+	if err := r.switchAgent(tk, false); !errors.Is(err, errNoFallback) {
+		t.Fatalf("unconfirmed switch = %v, want errNoFallback", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running {
+		t.Errorf("unconfirmed limit left the task %s", got.Status)
+	}
+	// Confirmed by the agent, it fails the task.
+	if err := r.switchAgent(tk, true); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := r.Store.Get(tk.ID)
@@ -186,7 +239,7 @@ func TestConcurrentDetectorsSwitchOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := r.switchAgent(tk); err != nil {
+			if err := r.switchAgent(tk, true); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -211,7 +264,7 @@ func TestLaunchSwitchedTaskReusesPane(t *testing.T) {
 	}
 	r.StartLauncher = func(string) (int, error) { return 5151, nil }
 	tk, _ = r.Store.Get(tk.ID)
-	if err := r.switchAgent(tk); err != nil {
+	if err := r.switchAgent(tk, true); err != nil {
 		t.Fatal(err)
 	}
 

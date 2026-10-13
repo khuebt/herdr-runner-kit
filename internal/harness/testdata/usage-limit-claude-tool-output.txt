@@ -1,0 +1,15 @@
+⏺ Bash(tail -n 3 internal/harness/testdata/usage-limit-claude.txt)
+  ⎿  You've hit your session limit · resets 3:10pm (Asia/Bangkok)
+     /upgrade to increase your usage limit.
+
+⏺ Bash(go test ./internal/runner -run UsageLimit)
+  ⎿  --- FAIL: TestDetectUsageLimitFixtures (0.00s)
+         fallback_test.go:41: missed "  ⎿  You've hit your session limit · resets 3pm"
+     FAIL
+
+✻ Worked for 52s
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

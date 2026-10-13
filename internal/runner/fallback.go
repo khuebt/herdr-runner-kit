@@ -5,18 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
-
-// usageLimitLines is how many of the pane's last non-blank lines are
-// searched for a usage-limit phrase. The agent draws the limit at the end of
-// its output, so the same words quoted higher up in the conversation never
-// count.
-const usageLimitLines = 12
 
 // resumeNote follows the first prompt when a runner continues on a
 // fallback agent.
@@ -24,31 +17,19 @@ const resumeNote = "The previous agent hit its usage limit. The checkout may hol
 	"inspect `git status` and `git log` and continue."
 
 var (
-	// errUsageLimit means the agent's screen shows a usage limit.
+	// errUsageLimit means the agent's screen shows a usage limit and a
+	// fallback agent is left to switch to.
 	errUsageLimit = errors.New("usage limit reached")
 	// errSwitched means the task no longer runs the agent the caller saw:
 	// another detector switched it, or it moved on.
 	errSwitched = errors.New("the agent was already switched")
+	// errNoFallback means no fallback agent is left for a limit seen only
+	// on the screen, which never fails the task.
+	errNoFallback = errors.New("no fallback agent left")
 )
 
-// detectUsageLimit reports whether the last lines of screen show one of the
-// adapter's usage-limit phrases.
-func detectUsageLimit(a harness.Adapter, screen string) bool {
-	lines := strings.Split(strings.TrimRight(screen, " \t\r\n"), "\n")
-	if len(lines) > usageLimitLines {
-		lines = lines[len(lines)-usageLimitLines:]
-	}
-	text := harness.Normalize(strings.Join(lines, "\n"))
-	for _, p := range a.UsageLimit() {
-		if phrase := harness.Normalize(p); phrase != "" && strings.Contains(text, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-// usageLimited reads t's pane and reports whether its agent shows a usage
-// limit. A screen that cannot be read counts as no limit.
+// usageLimited reads t's pane and reports whether its agent shows its own
+// usage-limit line. A screen that cannot be read counts as no limit.
 func (r *Runner) usageLimited(ctx context.Context, t *task.Task) bool {
 	spec, err := task.ParseAgentSpec(t.Agent)
 	if err != nil {
@@ -59,7 +40,13 @@ func (r *Runner) usageLimited(ctx context.Context, t *task.Task) bool {
 		return false
 	}
 	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
-	return err == nil && detectUsageLimit(adapter, screen)
+	return err == nil && adapter.ShowsUsageLimit(screen)
+}
+
+// switchable reports whether t has a fallback agent left to switch to.
+func (r *Runner) switchable(t *task.Task) bool {
+	_, _, ok := r.nextFallback(t)
+	return ok
 }
 
 // agentKey names an agent as FallbackFrom records it: the agent spec, and
@@ -100,10 +87,10 @@ func (r *Runner) nextFallback(t *task.Task) (agent, claudeDir string, ok bool) {
 // under the task lock. Only the first detector that saw a given agent
 // switches it; later ones get errSwitched. With toStarting the task goes
 // back to starting for a launcher to restart the agent in its pane. With no
-// fallback left the task fails with a usage-limit reason, its dependents
-// fail too, and claimSwitch returns errHandled.
-func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting bool) (*task.Task, error) {
-	errNoFallback := errors.New("no fallback")
+// fallback left, a limit the agent confirmed fails the task with a
+// usage-limit reason, fails its dependents too and returns errHandled; an
+// unconfirmed one returns errNoFallback and changes nothing.
+func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting, confirmed bool) (*task.Task, error) {
 	var prev, next string
 	nt, err := r.Store.Update(seen.ID, func(t *task.Task) error {
 		if !slices.Contains(from, t.Status) || t.Agent != seen.Agent ||
@@ -127,7 +114,7 @@ func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting boo
 		return nil
 	})
 	switch {
-	case errors.Is(err, errNoFallback):
+	case errors.Is(err, errNoFallback) && confirmed:
 		reason := "usage limit reached for " + prev + "; no fallback configured"
 		if len(r.Config.QuotaFallback) > 0 {
 			reason = "usage limit reached for " + prev + "; every quotaFallback agent was tried"
@@ -149,9 +136,10 @@ func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting boo
 // and starts the fallback in the same pane and checkout. It never quits the
 // agent itself, because it may run inside that agent's turn-end hook. A
 // switch another detector made first, or a task failed for want of a
-// fallback, returns nil.
-func (r *Runner) switchAgent(t *task.Task) error {
-	nt, err := r.claimSwitch(t, []task.Status{task.Running, task.NeedsHuman}, true)
+// fallback, returns nil. A limit only seen on the screen (confirmed false)
+// with no fallback left returns errNoFallback.
+func (r *Runner) switchAgent(t *task.Task, confirmed bool) error {
+	nt, err := r.claimSwitch(t, []task.Status{task.Running, task.NeedsHuman}, true, confirmed)
 	if errors.Is(err, errSwitched) || errors.Is(err, errHandled) {
 		return nil
 	}

@@ -99,7 +99,8 @@ After you spawn, answer, send or release, run `herdr-runner-kit wait` with the B
 
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail.
 - `git: …` on a `done` or `failed` line: remind the user about uncommitted or untracked work, commits not pushed, or a branch diverged from its upstream. `repo state` means the main checkout, not a worktree.
-- `failed` with `usage limit reached`: every configured fallback agent was used up. Offer a new `spawn` with another `--agent` or `--claude-config`, and mention the config's `quotaFallback` list. A switch that worked shows as an `agent-switched` event in `show <id>`.
+- `failed` with `usage limit reached`: the agent reported its usage limit and no configured fallback agent was left. Offer a new `spawn` with another `--agent` or `--claude-config`, and mention the config's `quotaFallback` list. A switch that worked shows as an `agent-switched` event in `show <id>`.
+- `usage-limit`: the runner's screen shows its agent's usage limit and no fallback agent is left; the task is still open. Tell the user, and offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the limit to reset.
 - `tab closes HH:MM` or `tab kept` on a `done` line: mention it, and offer `herdr-runner-kit keep <id>` when the user wants to come back to the tab later.
 - `timeout`: rerun `wait` silently.
 - `already waiting`: another wait already holds the cursor, usually the auto re-arm hook. Do nothing and do not rerun.

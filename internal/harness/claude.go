@@ -58,22 +58,51 @@ func (claude) Dialogs() []Dialog {
 	}
 }
 
-// UsageLimit holds the "You've hit your <limit>" lines Claude Code 2.1.296
-// draws for each limit it names, and its out-of-extra-usage line.
-func (claude) UsageLimit() []string {
-	return []string{
-		"You've hit your session limit",
-		"You've hit your weekly limit",
-		"You've hit your Opus limit",
-		"You've hit your Sonnet limit",
-		"You've hit your Fable limit",
-		"You've hit your usage credit limit",
-		"You're out of extra usage",
-	}
+// claudeLimits are the starts of the messages Claude Code 2.1.296 shows
+// for an account limit, as its own usage-limit check lists them.
+var claudeLimits = []string{
+	"You've hit your",
+	"You've reached your",
+	"You're out of extra usage",
+	"You're out of usage credits",
 }
 
-// ClaudeSettings returns the per-task settings file content: one Stop hook
-// that calls `<bin> __turn-end`. Claude merges it with the user's own hooks.
+// claudeLimit is the line Claude draws under a turn its account limit
+// stopped: "  ⎿  You've hit your session limit · resets 3pm (Asia/Bangkok)"
+// with "/upgrade …" wrapped below. A tool's output starts with the same
+// glyph, but right under the tool's own line rather than after a blank one.
+var claudeLimit = limitLine{
+	marker:     "⎿",
+	indent:     2,
+	afterBlank: true,
+	phrases:    claudeLimits,
+	context:    []string{"resets", "upgrade"},
+}
+
+func (claude) ShowsUsageLimit(screen string) bool { return claudeLimit.shown(screen) }
+
+// ClaudeUsageLimit reads a Claude hook input and returns the message of a
+// StopFailure that a usage limit caused: Claude ends such a turn with a
+// rate_limit or billing_error and its limit message instead of calling the
+// Stop hook. It reports whether payload is a StopFailure at all.
+func ClaudeUsageLimit(payload []byte) (message string, stopFailure bool) {
+	var in struct {
+		Event   string `json:"hook_event_name"`
+		Error   string `json:"error"`
+		Message string `json:"last_assistant_message"`
+	}
+	if json.Unmarshal(payload, &in) != nil || in.Event != "StopFailure" {
+		return "", false
+	}
+	if (in.Error == "rate_limit" || in.Error == "billing_error") && containsAny(Normalize(in.Message), claudeLimits) {
+		return strings.TrimSpace(in.Message), true
+	}
+	return "", true
+}
+
+// ClaudeSettings returns the per-task settings file content: Stop and
+// StopFailure hooks that call `<bin> __turn-end`, which tells the two apart
+// by the hook input. Claude merges them with the user's own hooks.
 func ClaudeSettings(bin string) ([]byte, error) {
 	if !filepath.IsAbs(bin) {
 		return nil, fmt.Errorf("hook binary must be an absolute path, got %q", bin)
@@ -81,7 +110,8 @@ func ClaudeSettings(bin string) ([]byte, error) {
 	hook := map[string]any{"type": "command", "command": ShellQuote(bin) + " __turn-end --harness claude"}
 	settings := map[string]any{
 		"hooks": map[string]any{
-			"Stop": []any{map[string]any{"hooks": []any{hook}}},
+			"Stop":        []any{map[string]any{"hooks": []any{hook}}},
+			"StopFailure": []any{map[string]any{"hooks": []any{hook}}},
 		},
 	}
 	return json.MarshalIndent(settings, "", "  ")

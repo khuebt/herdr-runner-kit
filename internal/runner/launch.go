@@ -83,9 +83,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 
 	spec, adapter, files, err := r.startAgent(ctx, t, name, loc.PaneID)
 	for errors.Is(err, errUsageLimit) {
-		// Each switch records the agent it leaves, so this ends once the
-		// fallbacks run out and the task fails.
-		if t, err = r.claimSwitch(t, []task.Status{task.Starting}, false); err != nil {
+		// errUsageLimit comes only while a fallback is left, and each switch
+		// records the agent it leaves, so this ends once they run out.
+		if t, err = r.claimSwitch(t, []task.Status{task.Starting}, false, false); err != nil {
 			return err
 		}
 		if err := r.clearPane(ctx, t); err != nil {
@@ -134,7 +134,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 
 // startAgent writes the runner files for t's agent, prepares its trust and
 // starts it in pane until it is ready for the first prompt. It returns
-// errUsageLimit when the agent shows a usage limit at startup.
+// errUsageLimit when the agent shows a usage limit at startup and a
+// fallback agent is left; without one the prompt goes in, and the agent's
+// own turn-end reports the limit.
 func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string) (task.AgentSpec, harness.Adapter, runnerFiles, error) {
 	spec, err := task.ParseAgentSpec(t.Agent)
 	if err != nil {
@@ -158,7 +160,7 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 	if err := r.settleStartup(ctx, t, adapter, pane, err); err != nil {
 		return spec, nil, runnerFiles{}, err
 	}
-	if screen, err := r.Herdr.PaneRead(ctx, pane, 40); err == nil && detectUsageLimit(adapter, screen) {
+	if screen, err := r.Herdr.PaneRead(ctx, pane, 40); err == nil && adapter.ShowsUsageLimit(screen) && r.switchable(t) {
 		return spec, nil, runnerFiles{}, errUsageLimit
 	}
 	return spec, adapter, files, nil
@@ -329,7 +331,7 @@ func (r *Runner) settleStartup(ctx context.Context, t *task.Task, a harness.Adap
 	case startErr == nil, notReady:
 	case herdr.HasCode(startErr, herdr.CodeTimeout):
 		screen, _ := r.Herdr.PaneRead(ctx, pane, 40)
-		if detectUsageLimit(a, screen) {
+		if a.ShowsUsageLimit(screen) && r.switchable(t) {
 			return errUsageLimit
 		}
 		if line := errorLine(screen); line != "" {

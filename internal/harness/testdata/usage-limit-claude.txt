@@ -1,15 +1,15 @@
-⏺ I'll start with the failing test in internal/store.
+⏺ I'll start with the failing test in internal/state.
 
-⏺ Read(internal/store/store_test.go)
+⏺ Read(internal/state/store_test.go)
   ⎿  Read 212 lines
 
-⏺ Update(internal/store/store.go)
-  ⎿  Updated internal/store/store.go with 6 additions and 2 removals
+⏺ Update(internal/state/store.go)
+  ⎿  Updated internal/state/store.go with 6 additions and 2 removals
 
-⏺ Bash(go test ./internal/store)
-  ⎿  ok  	example.com/app/internal/store	0.412s
+⏺ Bash(go test ./internal/state)
+  ⎿  ok  	github.com/khuebt/herdr-runner-kit/internal/state	0.412s
 
-  ⎿  You've hit your session limit · resets 3pm (Asia/Bangkok)
+  ⎿  You've hit your session limit · resets 3:10pm (Asia/Bangkok)
      /upgrade to increase your usage limit.
 
 ✻ Worked for 4m 12s

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -36,10 +37,26 @@ func hasBackgroundWork(screen string) bool {
 // becomes news, and later ones are ignored until the main session prompts
 // the runner again. For Claude, block holds the nudge text that the Stop
 // hook returns; for Codex the nudge is typed into the pane.
+//
+// A usage limit switches the runner to its next fallback agent. Claude
+// confirms it through its StopFailure hook, and with no fallback left the
+// task fails. Codex only shows it on screen, so a limit seen there switches
+// when a fallback is left and otherwise becomes usage-limit news next to
+// the nudge.
 func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload []byte) (block string, err error) {
 	t, err := r.Store.Get(id)
 	if err != nil {
 		return "", err
+	}
+	if h == task.Claude {
+		if message, stopFailure := harness.ClaudeUsageLimit(payload); stopFailure {
+			// Any other API failure ends the turn with nothing the kit can
+			// act on, and Claude ignores a StopFailure hook's output.
+			if message == "" || t.Herdr.PaneID == "" {
+				return "", nil
+			}
+			return "", r.switchAgent(t, true)
+		}
 	}
 	if h == task.Codex {
 		if ignore, err := r.ignoreCodexTurn(t, payload); ignore || err != nil {
@@ -49,10 +66,12 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if t.Status != task.Running || t.Herdr.PaneID == "" {
 		return "", nil
 	}
-	// An agent out of usage cannot act on a nudge: hand the task to the
-	// next fallback agent instead.
-	if r.usageLimited(ctx, t) {
-		return "", r.switchAgent(t)
+	limited := h == task.Codex && r.usageLimited(ctx, t)
+	if limited {
+		// An agent out of usage cannot act on a nudge.
+		if err := r.switchAgent(t, false); !errors.Is(err, errNoFallback) {
+			return "", err
+		}
 	}
 	if h == task.Claude {
 		if screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 8); err == nil && hasBackgroundWork(screen) {
@@ -81,13 +100,23 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 			}
 		}
 		r.emit(t, "nudged", "turn ended without a report; asked the runner to report", "")
+		if limited {
+			r.emit(t, "usage-limit", limitNews, "")
+		}
 		return nudge, nil
 	case 2:
-		r.emit(t, "turn-ended-unreported",
-			"ended its turn again without reporting; it may wait for background work or need input", "")
+		summary := "ended its turn again without reporting; it may wait for background work or need input"
+		if limited {
+			summary = "ended its turn again without reporting; " + limitNews
+		}
+		r.emit(t, "turn-ended-unreported", summary, "")
 	}
 	return "", nil
 }
+
+// limitNews tells the main session about a usage limit seen on a runner's
+// screen that no fallback agent can take over.
+const limitNews = "the runner appears to be at its usage limit, and no quotaFallback agent is left to switch to"
 
 var errNotRunning = errors.New("not running")
 

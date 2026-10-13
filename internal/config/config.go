@@ -65,7 +65,7 @@ type Config struct {
 }
 
 // NotifyEvents lists the event types the telegram.notify key accepts.
-var NotifyEvents = []string{"needs-human", "failed", "stalled", "held", "done", "turn-ended-unreported"}
+var NotifyEvents = []string{"needs-human", "failed", "stalled", "held", "done", "turn-ended-unreported", "usage-limit"}
 
 // The file types use pointers so that an absent key keeps its default.
 type fileConfig struct {

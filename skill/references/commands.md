@@ -19,8 +19,8 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `keep <id> [--off]` | Keep a finished runner's tab open instead of letting `gc` close it. `--off` lets `gc` close it again. |
 | `cleanup [id]... [--yes]` | List finished worktrees and branches left behind: merged, unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
-| `events --learning [--task ID]` | Per task: agents, attempts, nudges, sends, answers, agent switches, duration and time waited on a human. |
-| `sync <id> [--from REF] [--no-send]` | Merge the default branch, or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent or a dirty worktree; a conflict is aborted and the text to `send` is printed. |
+| `events --learning [--task ID]` | Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration and time waited on a human after the spawn. |
+| `sync <id> [--from REF] [--no-send]` | Merge origin's default branch (such as `origin/main`), or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent, background work, an agent herdr cannot check, or a dirty worktree, and fetches only after those checks; a conflict is aborted and the text to `send` is printed. When it suggests `--from main`, local main has commits origin lacks. |
 
 ## spawn flags
 
@@ -53,5 +53,6 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. |
 | `tN stalled` | The agent waits on a prompt in its pane | Tell the user to look at it (`focus`). |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |
+| `tN usage-limit` | The runner's screen shows its agent's usage limit and no `quotaFallback` agent is left | Tell the user; offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the reset. |
 | `tN stopped` | Stopped by `stop` | Relay it. |
 | `tN cleanable` | Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
