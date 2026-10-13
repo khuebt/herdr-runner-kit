@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/khuebt/herdr-runner-kit/compare/v0.7.0...v0.7.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* remove the empty repository folder after the last worktree goes ([#26](https://github.com/khuebt/herdr-runner-kit/issues/26)) ([bae141b](https://github.com/khuebt/herdr-runner-kit/commit/bae141b213577cb5fa853c6343afca2daa249037))
+
 ## [0.7.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.6.0...v0.7.0) (2026-10-13)
 
 
