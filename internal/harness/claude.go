@@ -58,6 +58,20 @@ func (claude) Dialogs() []Dialog {
 	}
 }
 
+// UsageLimit holds the "You've hit your <limit>" lines Claude Code 2.1.296
+// draws for each limit it names, and its out-of-extra-usage line.
+func (claude) UsageLimit() []string {
+	return []string{
+		"You've hit your session limit",
+		"You've hit your weekly limit",
+		"You've hit your Opus limit",
+		"You've hit your Sonnet limit",
+		"You've hit your Fable limit",
+		"You've hit your usage credit limit",
+		"You're out of extra usage",
+	}
+}
+
 // ClaudeSettings returns the per-task settings file content: one Stop hook
 // that calls `<bin> __turn-end`. Claude merges it with the user's own hooks.
 func ClaudeSettings(bin string) ([]byte, error) {

@@ -61,6 +61,12 @@ func (codex) Dialogs() []Dialog {
 	}
 }
 
+// UsageLimit holds the lines codex-cli 0.162.1 shows when the account's
+// usage limit stops a turn.
+func (codex) UsageLimit() []string {
+	return []string{"You've hit your usage limit", "You've reached your usage limit"}
+}
+
 // CodexConfigPath returns ${CODEX_HOME:-~/.codex}/config.toml.
 func CodexConfigPath() (string, error) {
 	if dir := os.Getenv("CODEX_HOME"); dir != "" {

@@ -49,6 +49,11 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if t.Status != task.Running || t.Herdr.PaneID == "" {
 		return "", nil
 	}
+	// An agent out of usage cannot act on a nudge: hand the task to the
+	// next fallback agent instead.
+	if r.usageLimited(ctx, t) {
+		return "", r.switchAgent(t)
+	}
 	if h == task.Claude {
 		if screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 8); err == nil && hasBackgroundWork(screen) {
 			return "", nil

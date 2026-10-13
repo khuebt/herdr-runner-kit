@@ -1,0 +1,20 @@
+⏺ I'll start with the failing test in internal/store.
+
+⏺ Read(internal/store/store_test.go)
+  ⎿  Read 212 lines
+
+⏺ Update(internal/store/store.go)
+  ⎿  Updated internal/store/store.go with 6 additions and 2 removals
+
+⏺ Bash(go test ./internal/store)
+  ⎿  ok  	example.com/app/internal/store	0.412s
+
+  ⎿  You've hit your session limit · resets 3pm (Asia/Bangkok)
+     /upgrade to increase your usage limit.
+
+✻ Worked for 4m 12s
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

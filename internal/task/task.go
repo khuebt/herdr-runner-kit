@@ -139,6 +139,9 @@ type Task struct {
 	// CodexThread is the thread of the runner's first Codex turn. Notify
 	// calls from other threads, such as title generation, are ignored.
 	CodexThread string `json:"codexThread,omitempty"`
+	// FallbackFrom lists, in order, the agents that hit a usage limit on
+	// this task before it switched to its current one.
+	FallbackFrom []string `json:"fallbackFrom,omitempty"`
 	// Stalled is set while herdr reports the agent blocked on a prompt.
 	Stalled bool `json:"stalled,omitempty"`
 	// Language is the language the runner writes its report summaries and

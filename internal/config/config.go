@@ -38,6 +38,16 @@ type Telegram struct {
 	Notify   []string // event types that send a message
 }
 
+// Fallback is an agent a runner switches to when its agent hits a usage
+// limit.
+type Fallback struct {
+	Agent string
+	// ClaudeConfig is the Claude config folder, as a path or a bare name
+	// such as claude2, resolved when the runner switches. Empty keeps the
+	// runner's own.
+	ClaudeConfig string
+}
+
 // Config is the effective configuration after merging the file over Default.
 type Config struct {
 	SchemaVersion        int
@@ -49,6 +59,9 @@ type Config struct {
 	// Language is the language runners write report summaries and
 	// questions in, as free text such as "Vietnamese". Empty adds no rule.
 	Language string
+	// QuotaFallback lists, in order, the agents a runner switches to when
+	// its agent hits a usage limit. Empty fails the task instead.
+	QuotaFallback []Fallback
 }
 
 // NotifyEvents lists the event types the telegram.notify key accepts.
@@ -63,6 +76,12 @@ type fileConfig struct {
 	Telegram             *fileTelegram       `yaml:"telegram"`
 	UpdateCheck          *bool               `yaml:"updateCheck"`
 	Language             *string             `yaml:"language"`
+	QuotaFallback        []fileFallback      `yaml:"quotaFallback"`
+}
+
+type fileFallback struct {
+	Agent        string `yaml:"agent"`
+	ClaudeConfig string `yaml:"claudeConfig"`
 }
 
 type fileKind struct {
@@ -143,6 +162,12 @@ func Parse(data []byte) (Config, error) {
 	if file.Language != nil {
 		cfg.Language = strings.TrimSpace(*file.Language)
 	}
+	if file.QuotaFallback != nil {
+		cfg.QuotaFallback = make([]Fallback, len(file.QuotaFallback))
+		for i, f := range file.QuotaFallback {
+			cfg.QuotaFallback[i] = Fallback{Agent: strings.TrimSpace(f.Agent), ClaudeConfig: strings.TrimSpace(f.ClaudeConfig)}
+		}
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -188,6 +213,21 @@ func (c Config) Validate() error {
 	}
 	if err := CheckLanguage(c.Language); err != nil {
 		return fmt.Errorf("language: %w", err)
+	}
+	for i, f := range c.QuotaFallback {
+		if f.Agent == "" {
+			return fmt.Errorf("quotaFallback[%d].agent is required", i)
+		}
+		spec, err := task.ParseAgentSpec(f.Agent)
+		if err != nil {
+			return fmt.Errorf("quotaFallback[%d].agent: %w", i, err)
+		}
+		if f.ClaudeConfig != "" && spec.Harness != task.Claude {
+			return fmt.Errorf("quotaFallback[%d].claudeConfig needs a Claude agent, not %s", i, spec.Harness)
+		}
+		if strings.ContainsFunc(f.ClaudeConfig, unicode.IsControl) {
+			return fmt.Errorf("quotaFallback[%d].claudeConfig %q must be one line", i, f.ClaudeConfig)
+		}
 	}
 	for _, ev := range c.Telegram.Notify {
 		if !slices.Contains(NotifyEvents, ev) {

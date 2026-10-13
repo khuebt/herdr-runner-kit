@@ -69,6 +69,9 @@ type Adapter interface {
 	FirstPrompt(skill, prompt, contract string) string
 	// Dialogs lists the known startup dialogs.
 	Dialogs() []Dialog
+	// UsageLimit lists the phrases the agent shows when its account hit a
+	// usage limit, compared after Normalize.
+	UsageLimit() []string
 }
 
 // For returns the adapter for harness h.

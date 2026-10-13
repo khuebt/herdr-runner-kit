@@ -11,12 +11,21 @@ import (
 
 // WatchAgent follows a live runner's agent through herdr until ctx ends or
 // the task finishes. An agent that disappears fails the task, and an agent
-// blocked on a prompt in its pane emits stalled once per block.
+// blocked on a prompt in its pane emits stalled once per block, unless its
+// screen shows a usage limit: then the task switches to its next fallback
+// agent.
 func (r *Runner) WatchAgent(ctx context.Context, id string) {
 	for ctx.Err() == nil {
 		t, err := r.Store.Get(id)
 		if err != nil || t.Status.Terminal() || t.Herdr.PaneID == "" || t.Herdr.Closed {
 			return
+		}
+		if t.Status == task.Starting {
+			// A launcher is restarting the agent after a usage limit.
+			if !sleepCtx(ctx, time.Second) {
+				return
+			}
+			continue
 		}
 		until := "blocked"
 		if t.Stalled {
@@ -31,6 +40,12 @@ func (r *Runner) WatchAgent(ctx context.Context, id string) {
 		case ctx.Err() != nil:
 			return
 		case isGone(err):
+			if cur, err := r.Store.Get(id); err == nil && cur.Status == task.Starting {
+				continue // the agent was quit for a fallback
+			}
+			if r.usageLimited(ctx, t) && r.switchAgent(t) == nil {
+				continue
+			}
 			r.fail(id, "the agent exited without reporting")
 			return
 		case err != nil:
@@ -38,6 +53,9 @@ func (r *Runner) WatchAgent(ctx context.Context, id string) {
 			if !sleepCtx(ctx, time.Second) {
 				return
 			}
+			continue
+		}
+		if status == "blocked" && r.usageLimited(ctx, t) && r.switchAgent(t) == nil {
 			continue
 		}
 		r.setStalled(id, status == "blocked")
