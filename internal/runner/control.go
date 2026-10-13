@@ -26,6 +26,11 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	}
 	if t, err = r.Store.Update(id, func(t *task.Task) error {
 		t.Unreported = 0
+		// A message to a finished runner is new work. Reopen the task, so its
+		// next report counts, unreported turns are nudged, and wait watches it.
+		if t.Status == task.Done {
+			t.Status, t.FinishedAt = task.Running, time.Time{}
+		}
 		return nil
 	}); err != nil {
 		return false, err

@@ -12,7 +12,7 @@ import (
 func Contract(t *task.Task, bin, outDir string) string {
 	return fmt.Sprintf(`You are runner %[1]s of herdr-runner-kit (report contract v%[2]d). The main session started you and is waiting for your report. Work on your task without asking for confirmation.
 
-When you finish, report exactly once with one of these commands:
+When you finish, report once with one of these commands. A later message from the main session is new work: report again when it is done.
   %[3]s report done --summary "<one or two sentences>" [--output <path>]...
   %[3]s report needs-human --question "<one concrete question, with your recommended option>" [--summary "<context>"]
   %[3]s report failed --summary "<what failed and why>"

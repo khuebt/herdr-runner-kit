@@ -25,7 +25,7 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | `answer <id> <text>` | Answers a runner that reported `needs-human`. It continues in the same session. |
 | `answer --from-telegram --stdin` | Routes a Telegram reply by its `#id` tag, or to the only waiting task. See [telegram.md](telegram.md). |
 | `main [--exec]` | Prints, or runs, the command that starts the main session with the skill and the Telegram channel. |
-| `send <id> <text>` | Types a new prompt into a live runner. |
+| `send <id> <text>` | Types a new prompt into a live runner. A `done` task becomes `running` again, and its next report wakes `wait`. |
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
 | `list [--all]`, `show <id>` | Stored status and herdr's live state; one task in full. |
 | `events [--since 1h] [--task ID] [--follow] [--timings]` | The event log, or the measured latencies per task. |
