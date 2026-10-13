@@ -180,10 +180,27 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 	if base == "" {
 		base = "HEAD"
 	}
+	// A queued or held task waited; the branch may have appeared since spawn
+	// checked it. Never adopt a branch this task did not create.
+	if BranchExists(ctx, t.RepoRoot, t.Worktree.Branch) {
+		return herdr.Location{}, fmt.Errorf("branch %s already exists", t.Worktree.Branch)
+	}
 	loc, err := r.Herdr.WorktreeCreate(ctx, herdr.WorktreeOptions{
 		Workspace: repoWS, Cwd: t.RepoRoot, Branch: t.Worktree.Branch, Base: base, Label: label,
 	})
 	if err != nil {
+		return loc, err
+	}
+	// Record the worktree at once, so cleanup finds it even when a later
+	// launch step fails.
+	if _, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		t.Herdr.WorkspaceID, t.Herdr.TabID, t.Herdr.PaneID = loc.WorkspaceID, loc.TabID, loc.PaneID
+		if loc.Path != "" {
+			t.Worktree.Path = loc.Path
+		}
+		t.Worktree.BranchCreated = new(true)
+		return nil
+	}); err != nil {
 		return loc, err
 	}
 	// worktree create has no --env, so export in the root pane's shell.

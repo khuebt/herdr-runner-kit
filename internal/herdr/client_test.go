@@ -55,3 +55,43 @@ func TestUnexpectedOutputIsAnError(t *testing.T) {
 		t.Fatal("want error for non-JSON output")
 	}
 }
+
+func TestWorkspaceCheckout(t *testing.T) {
+	var got []string
+	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		got = args
+		return []byte(`{"result":{"type":"workspace_info","workspace":{"workspace_id":"w2","worktree":{"checkout_path":"/wt/t1","is_linked_worktree":true,"repo_root":"/repo"}}}}`), nil, nil
+	}}
+	path, err := c.WorkspaceCheckout(context.Background(), "w2")
+	if err != nil || path != "/wt/t1" {
+		t.Fatalf("path = %q, %v", path, err)
+	}
+	if strings.Join(got, " ") != "workspace get w2" {
+		t.Errorf("argv = %q", got)
+	}
+
+	c.Exec = fakeExec(`{"result":{"workspace":{"workspace_id":"w3"}}}`, "", nil)
+	if path, err := c.WorkspaceCheckout(context.Background(), "w3"); err != nil || path != "" {
+		t.Errorf("non-git workspace: %q, %v", path, err)
+	}
+	c.Exec = fakeExec("", `{"error":{"code":"workspace_not_found","message":"no such workspace"}}`, errors.New("exit status 1"))
+	if _, err := c.WorkspaceCheckout(context.Background(), "w4"); !HasCode(err, "workspace_not_found") {
+		t.Errorf("closed workspace: %v", err)
+	}
+}
+
+func TestRepoWorkspaceSkipsLinkedWorktrees(t *testing.T) {
+	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		switch strings.Join(args, " ") {
+		case "workspace list":
+			return []byte(`{"result":{"workspaces":[{"workspace_id":"w1"},{"workspace_id":"w2"}]}}`), nil, nil
+		case "workspace get w1":
+			return []byte(`{"result":{"workspace":{"worktree":{"checkout_path":"/wt/a","is_linked_worktree":true,"repo_root":"/repo"}}}}`), nil, nil
+		default:
+			return []byte(`{"result":{"workspace":{"worktree":{"checkout_path":"/repo","is_linked_worktree":false,"repo_root":"/repo"}}}}`), nil, nil
+		}
+	}}
+	if ws, err := c.RepoWorkspace(context.Background(), "/repo"); err != nil || ws != "w2" {
+		t.Errorf("RepoWorkspace = %q, %v", ws, err)
+	}
+}

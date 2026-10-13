@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,11 +33,22 @@ type CleanupItem struct {
 	Task    *task.Task
 	Verdict string
 	Detail  string
-	// Worktree and Branch report what is left to remove.
+	// Worktree and Branch report what is left to remove. Branch is set only
+	// for a branch the task created.
 	Worktree, Branch bool
-	// Untracked counts files that removing the worktree would delete.
-	Untracked int
+	// Scratch counts untracked files under plans/, and Ignored the ignored
+	// paths, that removing a merged worktree deletes.
+	Scratch, Ignored int
+	// base is the default branch the verdict compared with.
+	base string
 }
+
+// scratchDir holds the plan files runners write. Untracked files there are
+// the only untracked files cleanup may delete.
+const scratchDir = "plans/"
+
+// maxListedPaths is how many untracked paths a dirty verdict names.
+const maxListedPaths = 5
 
 // Cleanable lists the owner's finished worktree tasks with a worktree or
 // branch left, and whether removing them is safe. With fetch it first
@@ -55,7 +67,8 @@ func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]Cle
 		it := CleanupItem{
 			Task:     t,
 			Worktree: !t.Worktree.Removed && isDir(t.Worktree.Path),
-			Branch:   !t.Worktree.BranchDeleted && BranchExists(ctx, t.RepoRoot, t.Worktree.Branch),
+			Branch: !t.Worktree.BranchDeleted && t.Worktree.OwnsBranch() &&
+				BranchExists(ctx, t.RepoRoot, t.Worktree.Branch),
 		}
 		if !it.Worktree && !it.Branch {
 			continue
@@ -68,6 +81,7 @@ func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]Cle
 			base = defaultBranch(ctx, t.RepoRoot)
 			bases[t.RepoRoot] = base
 		}
+		it.base = base
 		it.Verdict, it.Detail = verdict(ctx, t, base, &it)
 		items = append(items, it)
 	}
@@ -76,23 +90,18 @@ func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]Cle
 
 func verdict(ctx context.Context, t *task.Task, base string, it *CleanupItem) (string, string) {
 	if it.Worktree {
-		status, err := exec.CommandContext(ctx, "git", "-C", t.Worktree.Path, "status", "--porcelain").Output()
+		st, err := readStatus(ctx, t.Worktree.Path)
 		if err != nil {
 			return Dirty, "git status failed in " + t.Worktree.Path
 		}
-		changed := 0
-		for _, line := range strings.Split(strings.TrimRight(string(status), "\n"), "\n") {
-			switch {
-			case line == "":
-			case strings.HasPrefix(line, "??"):
-				it.Untracked++
-			default:
-				changed++
-			}
+		if len(st.Changed) > 0 {
+			return Dirty, plural(fmt.Sprint(len(st.Changed)), "changed file") + " in the worktree"
 		}
-		if changed > 0 {
-			return Dirty, plural(fmt.Sprint(changed), "changed file") + " in the worktree"
+		scratch, other := splitUntracked(st.Untracked)
+		if len(other) > 0 {
+			return Dirty, "untracked: " + listPaths(other)
 		}
+		it.Scratch, it.Ignored = len(scratch), st.Ignored
 	}
 	if base == "" {
 		return Unmerged, "no default branch found to compare with"
@@ -111,15 +120,44 @@ func verdict(ctx context.Context, t *task.Task, base string, it *CleanupItem) (s
 		}
 	}
 	detail := "merged into " + base
-	if it.Untracked > 0 {
-		detail += "; " + plural(fmt.Sprint(it.Untracked), "untracked file") + " in the worktree will be deleted"
+	var deleted []string
+	if it.Scratch > 0 {
+		deleted = append(deleted, plural(fmt.Sprint(it.Scratch), "plan file"))
+	}
+	if it.Ignored > 0 {
+		deleted = append(deleted, plural(fmt.Sprint(it.Ignored), "ignored file"))
+	}
+	if len(deleted) > 0 {
+		detail += "; " + strings.Join(deleted, " and ") + " will be deleted"
 	}
 	return Merged, detail
 }
 
+// splitUntracked separates untracked plan files from every other untracked
+// file, which is work cleanup must keep.
+func splitUntracked(paths []string) (scratch, other []string) {
+	for _, p := range paths {
+		if strings.HasPrefix(p, scratchDir) {
+			scratch = append(scratch, p)
+		} else {
+			other = append(other, p)
+		}
+	}
+	return scratch, other
+}
+
+// listPaths names the first few paths and counts the rest.
+func listPaths(paths []string) string {
+	if len(paths) <= maxListedPaths {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(paths[:maxListedPaths], ", "), len(paths)-maxListedPaths)
+}
+
 // Cleanup removes the worktree and branch of each merged item: it quits the
-// runner if still open, removes the worktree, and deletes the local branch.
-// Items that are not merged are skipped. It returns the ids it cleaned.
+// runner if still open, removes the worktree, and deletes the local branch
+// the task created. Items that are not merged are skipped. It returns the ids
+// it cleaned.
 func (r *Runner) Cleanup(ctx context.Context, items []CleanupItem) ([]string, error) {
 	var cleaned []string
 	var errs []error
@@ -142,40 +180,90 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 		return err
 	}
 	if it.Worktree {
-		force := it.Untracked > 0
-		if err := r.Herdr.WorktreeRemove(ctx, t.Herdr.WorkspaceID, force); err != nil {
-			// The workspace may be closed already; remove the worktree with git.
-			args := []string{"-C", t.RepoRoot, "worktree", "remove", t.Worktree.Path}
-			if force {
-				args = append(args, "--force")
-			}
-			if out, gerr := exec.CommandContext(ctx, "git", args...).CombinedOutput(); gerr != nil {
-				return fmt.Errorf("remove worktree: %w; git: %s", err, strings.TrimSpace(string(out)))
-			}
+		force, err := recheckWorktree(ctx, t.Worktree.Path, it.base)
+		if err != nil {
+			return err
+		}
+		if err := r.removeWorktree(ctx, t, force); err != nil {
+			return fmt.Errorf("remove worktree: %w", err)
 		}
 	}
+	branchGone := false
 	if it.Branch {
-		// -D, because the branch is merged into the remote default branch,
-		// which the local checkout may not have pulled yet.
-		if out, err := exec.CommandContext(ctx, "git", "-C", t.RepoRoot, "branch", "-D", t.Worktree.Branch).CombinedOutput(); err != nil {
-			return fmt.Errorf("delete branch: %s", strings.TrimSpace(string(out)))
+		var err error
+		if branchGone, err = deleteMergedBranch(ctx, t.RepoRoot, t.Worktree.Branch, it.base); err != nil {
+			return err
 		}
 	}
 	t, err := r.Store.Update(t.ID, func(t *task.Task) error {
-		t.Worktree.Removed, t.Worktree.BranchDeleted = true, true
+		t.Worktree.Removed = true
+		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	r.emit(t, "cleaned", "removed worktree and branch "+t.Worktree.Branch, "")
+	summary := "removed worktree and branch " + t.Worktree.Branch
+	if !branchGone {
+		summary = "removed the worktree; kept branch " + t.Worktree.Branch
+	}
+	r.emit(t, "cleaned", summary, "")
 	return nil
+}
+
+// recheckWorktree reads the worktree again right before removal, since its
+// tab may have been used after the check. It reports whether removal must
+// force past untracked plan files, the only untracked files it may delete.
+func recheckWorktree(ctx context.Context, path, base string) (bool, error) {
+	st, err := readStatus(ctx, path)
+	if err != nil {
+		return false, err
+	}
+	scratch, other := splitUntracked(st.Untracked)
+	if len(st.Changed) > 0 || len(other) > 0 || !isAncestor(ctx, path, "HEAD", base) {
+		return false, errors.New("worktree changed since the check")
+	}
+	return len(scratch) > 0, nil
+}
+
+// deleteMergedBranch deletes branch if it is still merged into base, and
+// reports whether it is gone. It uses -D, because the branch may be merged
+// into the remote default branch only, which the local checkout may not have
+// pulled yet. A branch another worktree has checked out is kept: that
+// worktree's task, which shares the branch, deletes it.
+func deleteMergedBranch(ctx context.Context, root, branch, base string) (bool, error) {
+	if !BranchExists(ctx, root, branch) {
+		return true, nil
+	}
+	if !isAncestor(ctx, root, branch, base) {
+		return false, fmt.Errorf("branch %s moved since the check", branch)
+	}
+	if checkedOut(ctx, root, branch) {
+		return false, nil
+	}
+	if out, err := exec.CommandContext(ctx, "git", "-C", root, "branch", "-D", branch).CombinedOutput(); err != nil {
+		return false, fmt.Errorf("delete branch: %s", strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
+
+// checkedOut reports whether any worktree of the repository at root has
+// branch checked out.
+func checkedOut(ctx context.Context, root, branch string) bool {
+	list := gitOut(ctx, root, "worktree", "list", "--porcelain")
+	return slices.Contains(strings.Split(list, "\n"), "branch refs/heads/"+branch)
 }
 
 // NoticeCleanable emits one cleanable event for each of the owner's merged
 // worktrees that was not offered before, so the main session can ask the
-// user. It runs at most once per CleanupCheckEvery for an owner.
+// user. It runs at most once per CleanupCheckEvery for an owner, and never
+// alongside another check for that owner.
 func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
+	unlock, err := r.Store.LockCursor(state.CursorName(owner) + "-cleanup")
+	if err != nil {
+		return // another wait is checking, or the lock is unusable
+	}
+	defer unlock()
 	mark := filepath.Join(r.Store.Dir(), state.CursorName(owner)+"-cleanup")
 	if info, err := os.Stat(mark); err == nil && time.Since(info.ModTime()) < CleanupCheckEvery {
 		return
@@ -189,17 +277,39 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 	if err != nil {
 		return
 	}
+	errOffered := errors.New("offered")
 	for _, it := range items {
-		if it.Verdict != Merged || it.Task.Worktree.Offered {
+		if it.Verdict != Merged {
 			continue
 		}
-		t, err := r.Store.Update(it.Task.ID, func(t *task.Task) error {
+		// The list is a snapshot; another process may have offered it since.
+		t, err := r.Store.Get(it.Task.ID)
+		if err != nil || t.Worktree == nil || t.Worktree.Offered {
+			continue
+		}
+		removes := "the worktree and branch"
+		switch {
+		case !it.Branch:
+			removes = "the worktree"
+		case !it.Worktree:
+			removes = "the branch"
+		}
+		ev := state.Event{
+			Task: t.ID, Owner: t.Owner, Type: "cleanable", Status: t.Status,
+			Summary: "branch " + t.Worktree.Branch + " is " + it.Detail + "; cleanup removes " + removes,
+		}
+		if err := r.record(ev); err != nil {
+			// Not marked offered, so the next check offers it again.
+			fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: write event: %v\n", t.ID, err)
+			continue
+		}
+		_, _ = r.Store.Update(t.ID, func(t *task.Task) error {
+			if t.Worktree == nil || t.Worktree.Offered {
+				return errOffered
+			}
 			t.Worktree.Offered = true
 			return nil
 		})
-		if err == nil {
-			r.emit(t, "cleanable", "branch "+t.Worktree.Branch+" is "+it.Detail+"; cleanup removes the worktree and branch", "")
-		}
 	}
 }
 

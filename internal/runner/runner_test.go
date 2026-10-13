@@ -32,6 +32,7 @@ func newFakeHerdr() *fakeHerdr {
 	f.on("tab create", ok(`{"result":{"root_pane":{"pane_id":"w1:p9","tab_id":"w1:t9","workspace_id":"w1"}}}`))
 	f.on("worktree create", ok(`{"result":{"root_pane":{"pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"},"worktree":{"path":"/wt/t1","branch":"hrk/t1-x"}}}`))
 	f.on("workspace list", ok(`{"result":{"workspaces":[]}}`))
+	f.on("workspace get", ok(`{"result":{"workspace":{"workspace_id":"w2","worktree":{"checkout_path":"/wt/t1","is_linked_worktree":true}}}}`))
 	f.on("agent start", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
 	f.on("agent wait", ok(`{"result":{"agent":{"agent_status":"working"}}}`))
 	f.on("pane read", ok("❯ \n"))

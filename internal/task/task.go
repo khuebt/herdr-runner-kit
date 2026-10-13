@@ -64,6 +64,20 @@ type Worktree struct {
 	// Offered is set once the main session was told the worktree and
 	// branch can be cleaned up, so it is told only once.
 	Offered bool `json:"offered,omitempty"`
+	// BranchCreated is set to true once the launcher created the branch
+	// with the worktree, and is false before that. Tasks from older
+	// versions have no value.
+	BranchCreated *bool `json:"branchCreated,omitempty"`
+}
+
+// OwnsBranch reports whether the task created its branch, so cleanup may
+// delete it. A task from an older version owns it when a worktree path was
+// recorded, since the launcher created the branch with the worktree.
+func (w *Worktree) OwnsBranch() bool {
+	if w.BranchCreated != nil {
+		return *w.BranchCreated
+	}
+	return w.Path != ""
 }
 
 // Herdr holds the herdr handles of the runner. They are filled in by the

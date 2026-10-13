@@ -129,7 +129,7 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 			return nil, fmt.Errorf("branch %s already exists in %s", branch, t.RepoRoot)
 		}
 		if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
-			t.Worktree = &task.Worktree{Branch: branch, Base: base}
+			t.Worktree = &task.Worktree{Branch: branch, Base: base, BranchCreated: new(false)}
 			return nil
 		}); err != nil {
 			return nil, err

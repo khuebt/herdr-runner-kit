@@ -217,7 +217,7 @@ func (r *Runner) closeRunner(ctx context.Context, t *task.Task, removeWorktree b
 	}
 	removed := false
 	if t.Worktree != nil && removeWorktree && !t.Worktree.Removed {
-		if err := r.Herdr.WorktreeRemove(ctx, t.Herdr.WorkspaceID, false); err != nil {
+		if err := r.removeWorktree(ctx, t, false); err != nil {
 			return fmt.Errorf("remove worktree (the branch is kept): %w", err)
 		}
 		removed = true

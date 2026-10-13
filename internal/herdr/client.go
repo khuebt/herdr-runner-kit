@@ -193,6 +193,40 @@ func (c *Client) WorktreeRemove(ctx context.Context, workspace string, force boo
 	return c.runJSON(ctx, DefaultTimeout, nil, args...)
 }
 
+// workspaceWorktree is the git checkout herdr reports for a workspace.
+type workspaceWorktree struct {
+	CheckoutPath string `json:"checkout_path"`
+	RepoRoot     string `json:"repo_root"`
+	Linked       bool   `json:"is_linked_worktree"`
+}
+
+// workspaceWorktree returns the checkout of workspace id, or nil when the
+// workspace is not in a git repository.
+func (c *Client) workspaceWorktree(ctx context.Context, id string) (*workspaceWorktree, error) {
+	var get struct {
+		Result struct {
+			Workspace struct {
+				Worktree *workspaceWorktree `json:"worktree"`
+			} `json:"workspace"`
+		} `json:"result"`
+	}
+	if err := c.runJSON(ctx, DefaultTimeout, &get, "workspace", "get", id); err != nil {
+		return nil, err
+	}
+	return get.Result.Workspace.Worktree, nil
+}
+
+// WorkspaceCheckout returns the path of the git checkout workspace id is
+// open in, or "" when it is not in a git repository. herdr reuses the ids of
+// closed workspaces, so callers check this before acting on an old id.
+func (c *Client) WorkspaceCheckout(ctx context.Context, id string) (string, error) {
+	wt, err := c.workspaceWorktree(ctx, id)
+	if err != nil || wt == nil {
+		return "", err
+	}
+	return wt.CheckoutPath, nil
+}
+
 // RepoWorkspace returns the open, non-linked workspace of the repository at
 // root, or "" when none is open.
 func (c *Client) RepoWorkspace(ctx context.Context, root string) (string, error) {
@@ -207,20 +241,11 @@ func (c *Client) RepoWorkspace(ctx context.Context, root string) (string, error)
 		return "", err
 	}
 	for _, ws := range list.Result.Workspaces {
-		var get struct {
-			Result struct {
-				Workspace struct {
-					Worktree *struct {
-						RepoRoot string `json:"repo_root"`
-						Linked   bool   `json:"is_linked_worktree"`
-					} `json:"worktree"`
-				} `json:"workspace"`
-			} `json:"result"`
-		}
-		if err := c.runJSON(ctx, DefaultTimeout, &get, "workspace", "get", ws.ID); err != nil {
+		wt, err := c.workspaceWorktree(ctx, ws.ID)
+		if err != nil {
 			continue // closed in between
 		}
-		if wt := get.Result.Workspace.Worktree; wt != nil && !wt.Linked && wt.RepoRoot == root {
+		if wt != nil && !wt.Linked && wt.RepoRoot == root {
 			return ws.ID, nil
 		}
 	}

@@ -233,7 +233,8 @@ func TestIdleWaitOffersMergedWorktree(t *testing.T) {
 	}
 	tk := addTask(t, r, task.Done, repo)
 	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
-		t.RepoRoot, t.Worktree = repo, &task.Worktree{Branch: "hrk/t1-a", Removed: true}
+		t.RepoRoot = repo
+		t.Worktree = &task.Worktree{Path: repo + "-wt", Branch: "hrk/t1-a", Removed: true, BranchCreated: new(true)}
 		return nil
 	}); err != nil {
 		t.Fatal(err)

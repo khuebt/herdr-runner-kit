@@ -75,3 +75,22 @@ func TestStatusTerminal(t *testing.T) {
 		t.Error("unknown status reported valid")
 	}
 }
+
+func TestWorktreeOwnsBranch(t *testing.T) {
+	tests := []struct {
+		name string
+		w    Worktree
+		want bool
+	}{
+		{"created", Worktree{Path: "/wt", BranchCreated: new(true)}, true},
+		{"not created yet", Worktree{BranchCreated: new(false)}, false},
+		{"existing branch with a path", Worktree{Path: "/wt", BranchCreated: new(false)}, false},
+		{"older version with a path", Worktree{Path: "/wt"}, true},
+		{"older version without a path", Worktree{}, false},
+	}
+	for _, tt := range tests {
+		if got := tt.w.OwnsBranch(); got != tt.want {
+			t.Errorf("%s: OwnsBranch = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
