@@ -114,17 +114,20 @@ func verdict(ctx context.Context, t *task.Task, base string, it *CleanupItem) (s
 	if base == "" {
 		return Unmerged, "no default branch found to compare with"
 	}
-	refs := map[string]string{}
+	// The branch is checked before the worktree's HEAD, so the detail names
+	// the branch whenever it is the one not merged.
+	type gitRef struct{ ref, dir string }
+	var refs []gitRef
 	if it.Branch {
-		refs[t.Worktree.Branch] = t.RepoRoot
+		refs = append(refs, gitRef{t.Worktree.Branch, t.RepoRoot})
 	}
 	if it.Worktree {
-		refs["HEAD"] = t.Worktree.Path // the runner may have left another branch checked out
+		refs = append(refs, gitRef{"HEAD", t.Worktree.Path}) // the runner may have left another branch checked out
 	}
-	for ref, dir := range refs {
-		if !isAncestor(ctx, dir, ref, base) {
-			n := gitOut(ctx, dir, "rev-list", "--count", base+".."+ref)
-			return Unmerged, fmt.Sprintf("%s on %s not in %s", plural(n, "commit"), ref, base)
+	for _, r := range refs {
+		if !isAncestor(ctx, r.dir, r.ref, base) {
+			n := gitOut(ctx, r.dir, "rev-list", "--count", base+".."+r.ref)
+			return Unmerged, fmt.Sprintf("%s on %s not in %s", plural(n, "commit"), r.ref, base)
 		}
 	}
 	detail := "merged into " + base
