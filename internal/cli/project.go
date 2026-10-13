@@ -628,7 +628,7 @@ func newProjectShareCommand() *cobra.Command {
 				}
 				*target, changed = on, true
 				rec.Decisions = append(rec.Decisions, project.Decision{
-					At: time.Now().UTC(), Text: "share " + args[0] + " switched " + args[1] + " by the user",
+					At: time.Now(), Text: "share " + args[0] + " switched " + args[1] + " by the user",
 				})
 				return nil
 			}); err != nil && !errors.Is(err, errUnchanged) {
@@ -1206,7 +1206,10 @@ func newMilestoneStartCommand() *cobra.Command {
 		Short: "Start a milestone: M0's scaffold runner, or a later milestone's plan runner",
 		Long: "start refuses until the pack is approved (or waived on the lite track), while the pack " +
 			"needs a new approval after a scope change, and until the milestone before it in roadmap " +
-			"order is done; reordering goes through a change request and a new pack approval. It marks " +
+			"order is done; reordering goes through a change request and a new pack approval. With the pack " +
+			"waived on the lite track, M0 needs no roadmap, and the first start that finds the roadmap " +
+			"proposal committed imports it, as a pack approval would; M1 and later refuse until it is " +
+			"(herdr-runner-kit project run roadmap). It marks " +
 			"the milestone in progress in the record, committed when the milestone is done. M0 spawns " +
 			"the scaffold runner and the close runner after it; later milestones spawn the plan runner, whose plan answers its open " +
 			"questions with the recommended options and lists them as decisions. When the first runner " +
@@ -1231,6 +1234,10 @@ func startMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	if err != nil {
 		return err
 	}
+	before, err := project.Load(r.Store, p.Name)
+	if err != nil {
+		return err
+	}
 	m, again, err := project.StartMilestone(ctx, r.Store, p, id, tasks, time.Now())
 	if err != nil {
 		return err
@@ -1238,6 +1245,9 @@ func startMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	rec, err := project.Load(r.Store, p.Name)
 	if err != nil {
 		return err
+	}
+	if !project.HasRoadmap(before) && project.HasRoadmap(rec) {
+		fmt.Fprintf(out, "imported the roadmap from %s (%d milestones), the pack gate being waived\n", project.RoadmapProposalPath, len(rec.Milestones))
 	}
 	stage, err := project.LoadStage(project.FirstTemplate(id))
 	if err != nil {

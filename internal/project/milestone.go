@@ -109,13 +109,12 @@ func milestoneStage(stage string) (milestone, template string, ok bool) {
 // started, so it can run again. A new milestone starts only after the
 // gates passed, with no re-approval pending, and once the milestone before
 // it in roadmap order is done: reordering goes through a change request
-// and a new pack approval.
+// and a new pack approval. While the pack is waived and the record holds
+// no roadmap, start imports the committed roadmap proposal first; without
+// one, only the scaffold milestone may start, and it starts bare.
 func StartMilestone(ctx context.Context, s *state.Store, p state.Project, id string, tasks []*task.Task, now time.Time) (Milestone, *task.Task, error) {
 	rec, err := Load(s, p.Name)
 	if err != nil {
-		return Milestone{}, nil, err
-	}
-	if _, err := findMilestone(rec, id); err != nil {
 		return Milestone{}, nil, err
 	}
 	for _, g := range []string{GateSpec, GatePack} {
@@ -123,9 +122,16 @@ func StartMilestone(ctx context.Context, s *state.Store, p state.Project, id str
 			return Milestone{}, nil, fmt.Errorf("milestone %s: %w", id, err)
 		}
 	}
+	roadmap, err := waivedRoadmap(ctx, p.Path, rec, id)
+	if err != nil {
+		return Milestone{}, nil, err
+	}
 	first := latestTask(tasks, p.Name, FirstStage(id))
 	var again *task.Task
 	rec, err = update(s, p.Name, func(rec *Record) error {
+		if err := adoptRoadmap(rec, roadmap, id, now); err != nil {
+			return err
+		}
 		i, err := findMilestone(*rec, id)
 		if err != nil {
 			return err
@@ -159,7 +165,7 @@ func StartMilestone(ctx context.Context, s *state.Store, p state.Project, id str
 			return fmt.Errorf("milestone %s starts after %s, which is %s; to change the order, raise a change request (herdr-runner-kit project run change --stdin) and approve a new pack",
 				id, prev.ID, orDash(prev.Status))
 		}
-		m.Status, m.Started = MilestoneInProgress, now.UTC()
+		m.Status, m.Started = MilestoneInProgress, stamp(now)
 		rec.Pending++
 		return nil
 	})
@@ -179,13 +185,91 @@ func StartMilestone(ctx context.Context, s *state.Store, p state.Project, id str
 	return rec.Milestones[i], again, nil
 }
 
+// scaffoldTitle is the title of the scaffold milestone a project starts
+// before it has a roadmap.
+const scaffoldTitle = "Scaffold"
+
+// HasRoadmap reports whether rec holds a roadmap, imported from the
+// roadmap proposal or a roadmap update, rather than nothing or only the
+// bare scaffold milestone a project with a waived pack starts before it
+// has one.
+func HasRoadmap(rec Record) bool {
+	switch len(rec.Milestones) {
+	case 0:
+		return false
+	case 1:
+		return !bareScaffold(rec.Milestones[0])
+	}
+	return true
+}
+
+// bareScaffold reports whether m is the scaffold milestone as start adds
+// it without a roadmap: no plan date and no features.
+func bareScaffold(m Milestone) bool {
+	return m.ID == ScaffoldMilestone && m.Title == scaffoldTitle && m.Planned.IsZero() && len(m.Features) == 0
+}
+
+// importsOnStart reports whether a milestone start imports the roadmap of
+// rec: the pack gate is waived, so no pack approval imported it, and the
+// record holds none yet. A graduated project keeps its roadmap in the
+// record.
+func importsOnStart(rec Record) bool {
+	return rec.Gates.Pack.Waived && rec.Gates.Pack.Status != GateApproved && rec.Graduated == nil && !HasRoadmap(rec)
+}
+
+// waivedRoadmap returns the committed roadmap proposal a start of
+// milestone id imports, or nil when it imports none. Without a committed
+// proposal only the scaffold milestone may start.
+func waivedRoadmap(ctx context.Context, root string, rec Record, id string) ([]byte, error) {
+	if !importsOnStart(rec) {
+		return nil, nil
+	}
+	data, ok, err := committedFile(ctx, root, RoadmapProposalPath)
+	switch {
+	case err != nil:
+		return nil, err
+	case ok:
+		return data, nil
+	case id == ScaffoldMilestone:
+		return nil, nil
+	}
+	return nil, fmt.Errorf("project %s has no roadmap yet: with the pack waived, a milestone start imports the committed %s, and HEAD holds none; write it with herdr-runner-kit project run roadmap --project %s, then start %s again",
+		rec.Name, RoadmapProposalPath, rec.Name, id)
+}
+
+// adoptRoadmap imports roadmap, the committed roadmap proposal, into rec
+// when it holds no roadmap yet, with a decision that says so; with no
+// proposal it adds the bare scaffold milestone when id is the scaffold
+// and rec holds no milestone.
+func adoptRoadmap(rec *Record, roadmap []byte, id string, now time.Time) error {
+	if !importsOnStart(*rec) {
+		return nil
+	}
+	if roadmap == nil {
+		if id == ScaffoldMilestone && len(rec.Milestones) == 0 {
+			rec.Milestones = []Milestone{{ID: ScaffoldMilestone, Title: scaffoldTitle, Status: MilestonePlanned}}
+		}
+		return nil
+	}
+	b, err := ParseBlock(roadmap, RoadmapProposal, *rec)
+	if err != nil {
+		return fmt.Errorf("%s: %w", RoadmapProposalPath, err)
+	}
+	n, deps := applyRoadmap(rec, b)
+	rec.Decisions = append(rec.Decisions, Decision{At: stamp(now), Text: fmt.Sprintf(
+		"roadmap imported from %s at the start of %s, the pack gate being waived: %d milestone(s), %d dependenc(ies)",
+		RoadmapProposalPath, id, n, deps)})
+	return nil
+}
+
 // errUnchangedRecord stops a record update that has nothing to change.
 var errUnchangedRecord = errors.New("record unchanged")
 
 // findMilestone returns the index of milestone id in rec's roadmap.
 func findMilestone(rec Record, id string) (int, error) {
 	if len(rec.Milestones) == 0 {
-		return 0, fmt.Errorf("project %s has no roadmap yet; it is imported when the pack is approved", rec.Name)
+		return 0, fmt.Errorf("project %s has no roadmap yet; it is imported from %s when the pack is approved, or when a milestone starts if the pack was waived",
+			rec.Name, RoadmapProposalPath)
 	}
 	i := slices.IndexFunc(rec.Milestones, func(m Milestone) bool { return m.ID == id })
 	if i < 0 {

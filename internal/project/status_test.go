@@ -67,6 +67,10 @@ func TestStatusNextStep(t *testing.T) {
 	packed.Gates.Pack = Gate{Status: GateApproved, Version: "v1", At: decided}
 	waived := approved
 	waived.Gates.Pack = Gate{Waived: true, At: decided}
+	scaffolded := waived
+	scaffolded.Milestones = []Milestone{{ID: ScaffoldMilestone, Title: scaffoldTitle, Status: MilestoneDone}}
+	waivedCR := waived
+	waivedCR.Reapproval = Reapproval{Needed: true, Reason: "CR-1"}
 	graduated := waived
 	graduated.Graduated = &Graduated{At: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)}
 	running := []*task.Task{{ID: "t1", Project: "demo-app", Status: task.Running}}
@@ -115,7 +119,10 @@ func TestStatusNextStep(t *testing.T) {
 		},
 		{"pack changes not sent", &packChanges, []*task.Task{stage("pack", task.Done, before)}, false, "revise the pack with the feedback: herdr-runner-kit project run pack --project demo-app --stdin"},
 		{"pack approved", &packed, nil, false, "spawn a runner for the next piece of work"},
-		{"pack waived", &waived, nil, false, "spawn a runner for the next piece of work"},
+		{"pack waived", &waived, []*task.Task{specDone}, false, "start the scaffold milestone M0: herdr-runner-kit project milestone start M0 --project demo-app"},
+		{"waived, scaffold done", &scaffolded, nil, false, "M0 is done and there is no roadmap yet: write the roadmap proposal: herdr-runner-kit project run roadmap --project demo-app"},
+		{"waived, roadmap written", &scaffolded, []*task.Task{stage("roadmap", task.Done, after)}, false, "imports the committed roadmap proposal first: herdr-runner-kit project milestone start M1 --project demo-app"},
+		{"waived, re-approval", &waivedCR, nil, false, "the pack needs a new approval before the next milestone starts: herdr-runner-kit project run pack --project demo-app"},
 		{"held for a dependency", &packed, reasoned, false, "release t2 once this is settled: needs D1; then: herdr-runner-kit release t2"},
 		{
 			"change assessed", &assessed,

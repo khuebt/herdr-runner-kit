@@ -446,7 +446,7 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 		if gate.Status != "" && gate.Version == d.Version {
 			d.Replaced = gate.Status
 		}
-		*gate = Gate{Status: status, Version: d.Version, By: o.By, At: o.Now.UTC(), Note: o.Note, Waived: gate.Waived, Content: content}
+		*gate = Gate{Status: status, Version: d.Version, By: o.By, At: stamp(o.Now), Note: o.Note, Waived: gate.Waived, Content: content}
 		text := fmt.Sprintf("%s %s %s by %s", o.Gate, d.Version, strings.ReplaceAll(status, "-", " "), o.By)
 		if d.Replaced != "" {
 			text += fmt.Sprintf("; its content changed since it was %s, which this outcome replaces", strings.ReplaceAll(d.Replaced, "-", " "))
@@ -460,7 +460,7 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 			}
 		}
 		if o.WaivePack {
-			rec.Gates.Pack = Gate{Waived: true, By: o.By, At: o.Now.UTC(), Note: "lite track: pack waived at spec " + d.Version + " approval"}
+			rec.Gates.Pack = Gate{Waived: true, By: o.By, At: stamp(o.Now), Note: "lite track: pack waived at spec " + d.Version + " approval"}
 			text += "; the pack gate is waived for the lite track by the user's choice"
 		}
 		if o.Gate == GatePack && status == GateApproved {
@@ -477,7 +477,7 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 		if o.Note != "" {
 			text += ": " + o.Note
 		}
-		rec.Decisions = append(rec.Decisions, Decision{At: o.Now.UTC(), Text: text})
+		rec.Decisions = append(rec.Decisions, Decision{At: stamp(o.Now), Text: text})
 		return nil
 	}); err != nil {
 		return Decided{}, err
@@ -615,6 +615,9 @@ func missing(ctx context.Context, root, rel string) (bool, error) {
 // by hand keeps its owner and secret location. It returns how many of each
 // the block held.
 func applyRoadmap(rec *Record, b Block) (milestones, dependencies int) {
+	// The bare scaffold milestone, started before there was a roadmap,
+	// takes its title, date and features from the first roadmap.
+	bare := !HasRoadmap(*rec)
 	old := map[string]Milestone{}
 	for _, m := range rec.Milestones {
 		old[m.ID] = m
@@ -622,7 +625,7 @@ func applyRoadmap(rec *Record, b Block) (milestones, dependencies int) {
 	next := make([]Milestone, 0, len(b.Milestones))
 	for _, bm := range b.Milestones {
 		m := old[bm.ID]
-		if m.Status != MilestoneDone && m.Status != MilestoneInProgress {
+		if bare || (m.Status != MilestoneDone && m.Status != MilestoneInProgress) {
 			m.ID, m.Title, m.Features = bm.ID, bm.Title, bm.Features
 			m.Planned = time.Time{}
 			if bm.Planned != "" {
@@ -696,7 +699,7 @@ func AddDecision(s *state.Store, name, text string, now time.Time) error {
 		return errors.New("the decision is empty")
 	}
 	_, err := Update(s, name, func(rec *Record) error {
-		rec.Decisions = append(rec.Decisions, Decision{At: now.UTC(), Text: text})
+		rec.Decisions = append(rec.Decisions, Decision{At: stamp(now), Text: text})
 		return nil
 	})
 	return err

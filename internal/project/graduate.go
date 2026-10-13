@@ -183,7 +183,7 @@ func Graduate(ctx context.Context, s *state.Store, p state.Project, o GraduateOp
 	if out, err := gitLocked(ctx, p.Path, "rm", "-r", "-q", "--", DiscoveryDir); err != nil {
 		return g, undoGraduate(ctx, s, p, export, nil, Decision{}, fmt.Errorf("git rm: %s", firstLine(out, err)))
 	}
-	decision := Decision{At: o.Now.UTC(), Text: fmt.Sprintf(
+	decision := Decision{At: stamp(o.Now), Text: fmt.Sprintf(
 		"graduated: %s/ left the tree; its committed files stay in git history, archived at tag %s", DiscoveryDir, plan.Tag)}
 	var before []Change
 	if _, err := update(s, p.Name, func(r *Record) error {
@@ -191,7 +191,7 @@ func Graduate(ctx context.Context, s *state.Store, p state.Project, o GraduateOp
 			return fmt.Errorf("%s graduated already", p.Name)
 		}
 		before = slices.Clone(r.Changes)
-		r.Graduated = &Graduated{At: o.Now.UTC(), Tag: plan.Tag, Export: plan.Export}
+		r.Graduated = &Graduated{At: stamp(o.Now), Tag: plan.Tag, Export: plan.Export}
 		for i, c := range r.Changes {
 			if to, ok := plan.Moved[c.ID]; ok {
 				r.Changes[i].Path = to

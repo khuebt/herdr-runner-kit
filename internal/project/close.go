@@ -274,7 +274,7 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 			return Finished{}, err
 		}
 	}
-	decision := Decision{At: o.Now.UTC(), Text: fmt.Sprintf("%s done: %s is merged into %s; tagged %s locally", id, d.Branch, d.DefaultBranch, d.Tag)}
+	decision := Decision{At: stamp(o.Now), Text: fmt.Sprintf("%s done: %s is merged into %s; tagged %s locally", id, d.Branch, d.DefaultBranch, d.Tag)}
 	var before []Milestone
 	if _, err := update(s, p.Name, func(rec *Record) error {
 		before = slices.Clone(rec.Milestones)
@@ -294,7 +294,7 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 		if ms.Status != MilestoneInProgress {
 			return fmt.Errorf("milestone %s is %s", id, orDash(ms.Status))
 		}
-		ms.Status, ms.Closed, ms.Tag, ms.Branch = MilestoneDone, o.Now.UTC(), d.Tag, d.Branch
+		ms.Status, ms.Closed, ms.Tag, ms.Branch = MilestoneDone, stamp(o.Now), d.Tag, d.Branch
 		ms.Released = append(slices.Clone(ms.Released), notes)
 		if roadmapID != "" {
 			ms.RoadmapUpdate = roadmapID
@@ -563,7 +563,7 @@ func ReopenMilestone(ctx context.Context, s *state.Store, p state.Project, id, r
 		}
 		ms := &rec.Milestones[slices.IndexFunc(rec.Milestones, func(m Milestone) bool { return m.ID == id })]
 		ms.Status, ms.Tag, ms.Closed = MilestoneInProgress, "", time.Time{}
-		rec.Decisions = append(rec.Decisions, Decision{At: now.UTC(), Text: text})
+		rec.Decisions = append(rec.Decisions, Decision{At: stamp(now), Text: text})
 		rec.Pending++
 		return nil
 	})

@@ -347,6 +347,9 @@ func (r Report) Next() string {
 func (r Report) milestoneNext() string {
 	rec := r.Record
 	m := r.Running
+	if m == nil && importsOnStart(*rec) {
+		return r.waivedNext()
+	}
 	if m == nil {
 		for _, next := range rec.Milestones {
 			if next.Status == MilestoneDone {
@@ -400,6 +403,25 @@ func (r Report) milestoneNext() string {
 		}
 	}
 	return fmt.Sprintf("every feature runner of %s is done", m.ID)
+}
+
+// waivedNext is the next step while the pack is waived and the record
+// holds no roadmap: start the scaffold milestone M0, then write the
+// roadmap proposal, which the next milestone start imports.
+func (r Report) waivedNext() string {
+	rec := r.Record
+	scaffoldDone := len(rec.Milestones) > 0 && rec.Milestones[0].Status == MilestoneDone
+	switch {
+	case rec.Reapproval.Needed:
+		return fmt.Sprintf("the pack needs a new approval before the next milestone starts: %s, then approve it", r.command("run pack", ""))
+	case !scaffoldDone:
+		return fmt.Sprintf("start the scaffold milestone %s: %s; later milestones need the roadmap (%s), which a milestone start imports",
+			ScaffoldMilestone, r.command("milestone start "+ScaffoldMilestone, ""), r.command("run roadmap", ""))
+	case !r.done("roadmap"):
+		return fmt.Sprintf("%s is done and there is no roadmap yet: write the roadmap proposal: %s; the next milestone start imports it",
+			ScaffoldMilestone, r.command("run roadmap", ""))
+	}
+	return fmt.Sprintf("start M1; the start imports the committed roadmap proposal first: %s", r.command("milestone start M1", ""))
 }
 
 // ActiveRunners counts the runners of project name that may be working

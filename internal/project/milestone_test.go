@@ -98,6 +98,117 @@ func TestMilestoneStartWithAWaivedPack(t *testing.T) {
 	}
 }
 
+// litePackWaived returns a registered lite project whose spec is approved
+// with the pack waived, and no roadmap.
+func litePackWaived(t *testing.T) (*state.Store, state.Project) {
+	t.Helper()
+	dir := newRepo(t)
+	s := registered(t, dir)
+	commitSpec(t, dir, 1, "lite")
+	if _, err := decide(s, GateSpec, "approve", func(o *DecideOptions) { o.WaivePack = true }); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.ProjectByName("demo-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, p
+}
+
+func commitProposal(t *testing.T, dir, yamlText string) {
+	t.Helper()
+	writeFile(t, dir, RoadmapProposalPath, string(markdown(yamlText)))
+	run(t, dir, "add", RoadmapProposalPath)
+	run(t, dir, "commit", "-q", "-m", "docs(discovery): roadmap proposal")
+}
+
+func TestMilestoneStartScaffoldWithoutARoadmap(t *testing.T) {
+	s, p := litePackWaived(t)
+	if HasRoadmap(load(t, s)) {
+		t.Fatal("a waived pack imported a roadmap")
+	}
+	if _, _, err := start(s, p, "M1"); err == nil || !strings.Contains(err.Error(), "project run roadmap --project demo-app") {
+		t.Fatalf("M1 without a roadmap: %v", err)
+	}
+	m, _, err := start(s, p, "M0")
+	if err != nil || m.Status != MilestoneInProgress || m.Title != scaffoldTitle {
+		t.Fatalf("M0 without a roadmap: %+v %v", m, err)
+	}
+	setMilestone(t, s, "M0", MilestoneDone)
+	if _, _, err := start(s, p, "M1"); err == nil || !strings.Contains(err.Error(), "HEAD holds none") {
+		t.Fatalf("M1 before the roadmap is written: %v", err)
+	}
+	// The next start imports the committed proposal; the done scaffold
+	// takes its title, date and features and stays done.
+	commitProposal(t, p.Path, roadmapYAML)
+	m, _, err = start(s, p, "M1")
+	if err != nil || m.Status != MilestoneInProgress || len(m.Features) != 2 {
+		t.Fatalf("M1 with a committed proposal: %+v %v", m, err)
+	}
+	rec := load(t, s)
+	if !HasRoadmap(rec) || len(rec.Milestones) != 2 || len(rec.Dependencies) != 1 {
+		t.Fatalf("roadmap = %+v %+v", rec.Milestones, rec.Dependencies)
+	}
+	if m0 := rec.Milestones[0]; m0.Status != MilestoneDone || day(m0.Planned) != "2026-11-01" {
+		t.Errorf("M0 = %+v", m0)
+	}
+	if last := rec.Decisions[len(rec.Decisions)-1].Text; !strings.Contains(last, "roadmap imported from "+RoadmapProposalPath+" at the start of M1") {
+		t.Errorf("decision = %q", last)
+	}
+}
+
+func TestMilestoneStartImportsTheProposalWhenThePackIsWaived(t *testing.T) {
+	s, p := litePackWaived(t)
+	commitProposal(t, p.Path, roadmapYAML)
+	m, _, err := start(s, p, "M0")
+	if err != nil || m.Status != MilestoneInProgress || day(m.Planned) != "2026-11-01" {
+		t.Fatalf("M0 with a committed proposal: %+v %v", m, err)
+	}
+	if rec := load(t, s); len(rec.Milestones) != 2 || rec.Milestones[1].Status != MilestonePlanned {
+		t.Fatalf("roadmap = %+v", rec.Milestones)
+	}
+	// Once imported, a new proposal is not imported again by a start.
+	commitProposal(t, p.Path, strings.Replace(roadmapYAML, "title: Lists", "title: Boards", 1))
+	setMilestone(t, s, "M0", MilestoneDone)
+	if m, _, err := start(s, p, "M1"); err != nil || m.Title != "Lists" {
+		t.Fatalf("M1: %+v %v", m, err)
+	}
+}
+
+func TestRecordDatesAreLocal(t *testing.T) {
+	// 00:30 in Bangkok is still the day before in UTC.
+	bangkok := time.FixedZone("ICT", 7*60*60)
+	at := time.Date(2026, 10, 15, 0, 30, 0, 0, bangkok)
+	dir := newRepo(t)
+	s := registered(t, dir)
+	commitSpec(t, dir, 1, "lite")
+	if _, err := decide(s, GateSpec, "approve", func(o *DecideOptions) { o.WaivePack = true; o.Now = at }); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.ProjectByName("demo-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := StartMilestone(context.Background(), s, p, "M0", nil, at); err != nil {
+		t.Fatal(err)
+	}
+	rec := load(t, s)
+	for name, got := range map[string]time.Time{
+		"spec gate": rec.Gates.Spec.At, "pack waiver": rec.Gates.Pack.At,
+		"decision": rec.Decisions[len(rec.Decisions)-1].At, "M0 start": rec.Milestones[0].Started,
+	} {
+		if day(got) != "2026-10-15" || !got.Equal(at) {
+			t.Errorf("%s at %s, dated %s; want 2026-10-15", name, got.Format(time.RFC3339), day(got))
+		}
+	}
+	if line := gateLine(rec.Gates.Spec); !strings.Contains(line, "on 2026-10-15") {
+		t.Errorf("gate line %q", line)
+	}
+	if got := run(t, dir, "show", "HEAD:"+DecisionsPath); !strings.Contains(got, "2026-10-15") || strings.Contains(got, "2026-10-14") {
+		t.Errorf("decisions.md:\n%s", got)
+	}
+}
+
 func TestMilestoneStartOrderAndReapproval(t *testing.T) {
 	s, p := packApprovedProject(t)
 	if _, _, err := start(s, p, "M9"); err == nil || !strings.Contains(err.Error(), "want one of M0, M1") {

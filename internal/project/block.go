@@ -315,7 +315,8 @@ func (b Block) check(rec Record) error {
 
 // checkMilestones checks ids, dates and feature dependencies, that every
 // done milestone of rec is in the block unchanged, and that the running
-// one is still in it.
+// one is still in it. The bare scaffold milestone, started before there
+// was a roadmap, must be in the block but may change.
 func (b Block) checkMilestones(rec Record) error {
 	ids := map[string][]string{}
 	features := map[string][]string{}
@@ -361,7 +362,7 @@ func (b Block) checkMilestones(rec Record) error {
 			return fmt.Errorf("milestones: %s is %s and cannot be removed", kept.ID, kept.Status)
 		}
 		m := b.Milestones[i]
-		if kept.Status == MilestoneDone && (m.Title != kept.Title || m.Planned != dateOrEmpty(kept.Planned) || !sameFeatures(m.Features, kept.Features)) {
+		if kept.Status == MilestoneDone && HasRoadmap(rec) && (m.Title != kept.Title || m.Planned != dateOrEmpty(kept.Planned) || !sameFeatures(m.Features, kept.Features)) {
 			return fmt.Errorf("milestones[%d]: %s is done and cannot be changed", i, kept.ID)
 		}
 	}

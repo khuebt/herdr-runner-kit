@@ -80,7 +80,7 @@ Runners never share work outside this machine (Stitch, hosted Lavish) until the 
 Two gates stop the project: the spec and the stakeholder pack. Only the user passes them.
 
 1. Spec done: present it and ask. Record the answer with `project approve spec --by <name>`, `project changes spec --by <name> --stdin` with the feedback, or `project reject spec --by <name> --note WHY`.
-2. On a lite-track project, add `--waive-pack` to `approve spec` only when the user chooses to skip the pack; it is refused once the pack has an outcome.
+2. On a lite-track project, add `--waive-pack` to `approve spec` only when the user chooses to skip the pack; it is refused once the pack has an outcome. With the pack waived, M0 starts without a roadmap; before M1, run `project run roadmap`: the next `milestone start` imports the committed roadmap proposal.
 3. Pack done: point the user to `pack.html` and `pack.pdf` in its output; the user shares them with the stakeholders. Record their outcome the same way with `pack`. Approving the pack imports the roadmap.
 4. A gate that says the spec or pack changed since its approval is open again: present the changed artifact and record the user's new outcome.
 

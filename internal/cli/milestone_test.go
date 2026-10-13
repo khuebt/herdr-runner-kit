@@ -388,3 +388,48 @@ func TestParallelNoteAfterProjectSpawns(t *testing.T) {
 		t.Errorf("notes = %v", notes)
 	}
 }
+
+func TestMilestoneStartOnALiteProjectWithThePackWaived(t *testing.T) {
+	r, dir := stageRunner(t)
+	gitIn(t, dir, "branch", "-M", "main")
+	commitFiles(t, dir, map[string]string{project.SpecPath: "---\nversion: 1\ntype: cli\ntrack: lite\n---\n# Spec\n"})
+	p, err := r.Store.ProjectByName("demo-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := project.Decide(t.Context(), r.Store, "demo-app", project.DecideOptions{
+		Gate: project.GateSpec, Outcome: "approve", By: "Lan", WaivePack: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := startMilestone(t.Context(), &out, r, p, "M0", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	if m0 := projectTasks(t, r, "M0/"); len(m0) != 2 || m0[0].Stage != "M0/scaffold" {
+		t.Fatalf("M0 tasks = %v", m0)
+	}
+	if strings.Contains(out.String(), "imported the roadmap") {
+		t.Errorf("output without a proposal:\n%s", out.String())
+	}
+	if _, err := project.Update(r.Store, "demo-app", func(rec *project.Record) error {
+		rec.Milestones[0].Status = project.MilestoneDone
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := startMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err == nil || !strings.Contains(err.Error(), "project run roadmap") {
+		t.Fatalf("M1 without a roadmap: %v", err)
+	}
+	commitFiles(t, dir, map[string]string{project.RoadmapProposalPath: roadmapProposal})
+	out.Reset()
+	if err := startMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "imported the roadmap from "+project.RoadmapProposalPath+" (2 milestones)") {
+		t.Errorf("output:\n%s", out.String())
+	}
+	if plan := projectTasks(t, r, "M1/"); len(plan) != 1 || !strings.Contains(plan[0].Prompt, "- F1 Add a list") {
+		t.Fatalf("plan task = %+v", plan)
+	}
+}

@@ -232,9 +232,14 @@ func gateLine(g Gate) string {
 	return strings.Join(parts, " ")
 }
 
-// day formats a time as its UTC date, so a snapshot renders the same on
-// every machine.
-func day(t time.Time) string { return t.UTC().Format(time.DateOnly) }
+// day formats a time as its date in the zone it was recorded in: the
+// user's local date, the same on every machine that renders the snapshot.
+func day(t time.Time) string { return t.Format(time.DateOnly) }
+
+// stamp is the time a record keeps: t in the zone it was taken in, the
+// user's local zone, so its date is the local date, without the monotonic
+// clock reading.
+func stamp(t time.Time) time.Time { return t.Round(0) }
 
 // oneLine keeps a record text on one markdown line.
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
