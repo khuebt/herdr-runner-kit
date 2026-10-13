@@ -2,6 +2,7 @@ package project
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -88,6 +89,10 @@ type StageData struct {
 	Share       Share
 	Notes       string
 	Today       string
+	// PackVersion is the version the pack stage writes.
+	PackVersion int
+	// Docx asks the pack stage for a DOCX export as well.
+	Docx bool
 }
 
 // NewStageData builds the template data of rec's project in root.
@@ -195,20 +200,13 @@ func (s Stage) RenderOutputs(d StageData) ([]string, error) {
 	return out, nil
 }
 
-// CheckRequires refuses a stage while a gate it requires is not approved
-// in rec.
-func CheckRequires(rec Record, s Stage) error {
+// CheckRequires refuses a stage while a gate it requires has not passed.
+// Gates are read from the artifacts committed in root, not from the
+// record alone.
+func CheckRequires(ctx context.Context, root string, rec Record, s Stage) error {
 	for _, g := range s.Requires {
-		gate := rec.Gates.Spec
-		if g == GatePack {
-			gate = rec.Gates.Pack
-		}
-		if gate.Status != "approved" && !gate.Waived {
-			status := gate.Status
-			if status == "" {
-				status = "pending"
-			}
-			return fmt.Errorf("stage %s needs the %s gate approved, and it is %s", s.Name, g, status)
+		if err := RequireGate(ctx, root, rec, g); err != nil {
+			return fmt.Errorf("stage %s: %w", s.Name, err)
 		}
 	}
 	return nil

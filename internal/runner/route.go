@@ -36,6 +36,11 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		if slices.Contains(metaMessages, strings.ToLower(text)) {
 			return "meta: not for a runner; answer it yourself", nil
 		}
+		// A gate approval is the user's call, recorded by the main session;
+		// it never releases or answers a runner.
+		if line, ok := r.gateApproval(text); ok {
+			return line, nil
+		}
 		waiting, err := r.waitingForHuman()
 		if err != nil {
 			return "", err
@@ -104,6 +109,25 @@ func (r *Runner) projectStatusRequest(text string) (string, bool) {
 		return "", false
 	}
 	return p.Name, !p.Reserved
+}
+
+// gateApprovalPattern matches "approve spec <name>" and
+// "approve pack <name>".
+var gateApprovalPattern = regexp.MustCompile(`(?i)^approve\s+(spec|pack)\s+(\S+?)[.!]?$`)
+
+// gateApproval returns the meta line for an untagged gate approval.
+func (r *Runner) gateApproval(text string) (string, bool) {
+	m := gateApprovalPattern.FindStringSubmatch(text)
+	if m == nil {
+		return "", false
+	}
+	gate, name := strings.ToLower(m[1]), strings.ToLower(m[2])
+	if state.CheckProjectName(name) == nil {
+		if p, err := r.Store.ProjectByName(name); err == nil && !p.Reserved {
+			return fmt.Sprintf("meta: user approves %s of %s; confirm and run project approve %s --project %s", gate, p.Name, gate, p.Name), true
+		}
+	}
+	return fmt.Sprintf("meta: user approves %s of %q, which is not a registered project; ask which project they mean", gate, name), true
 }
 
 // waitingForHuman lists tasks that a reply can resolve: a runner's question

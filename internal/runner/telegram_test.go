@@ -205,6 +205,28 @@ func TestRouteTelegram(t *testing.T) {
 			t.Fatalf("%q %v", line, err)
 		}
 	})
+	t.Run("gate approval is meta", func(t *testing.T) {
+		r, _, dir := setup(t)
+		if _, err := r.Store.ReserveProject("demo-app", plainDir(t)); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Store.CommitProject("demo-app"); err != nil {
+			t.Fatal(err)
+		}
+		held := spawnStarting(t, r, SpawnOptions{Prompt: "cook", Cwd: dir, Gate: task.GateHuman})
+		for text, want := range map[string]string{
+			"approve spec demo-app":  "meta: user approves spec of demo-app; confirm and run project approve spec --project demo-app",
+			"Approve Pack demo-app.": "meta: user approves pack of demo-app; confirm and run project approve pack --project demo-app",
+			"approve spec other-app": `meta: user approves spec of "other-app", which is not a registered project; ask which project they mean`,
+		} {
+			if line, err := r.RouteTelegram(ctx, text); err != nil || line != want {
+				t.Errorf("%q: %q %v", text, line, err)
+			}
+		}
+		if got, _ := r.Store.Get(held.ID); got.Status != task.Held || got.Prompt != "cook" {
+			t.Errorf("a gate approval reached the held task: %+v", got)
+		}
+	})
 	t.Run("held approval and note", func(t *testing.T) {
 		r, _, dir := setup(t)
 		h1 := spawnStarting(t, r, SpawnOptions{Prompt: "cook", Cwd: dir, Gate: task.GateHuman})

@@ -28,7 +28,7 @@ func fullRecord() Record {
 	rec.Type, rec.Track, rec.ReferenceRepo = "ui", "lite", "../reference-app"
 	rec.Share = Share{Stitch: true}
 	rec.Gates.Spec = Gate{Status: "approved", Version: "v2", By: "Lan", At: at, Note: "ok"}
-	rec.Gates.Pack = Gate{Status: "waived", At: at, Waived: true}
+	rec.Gates.Pack = Gate{At: at, Waived: true}
 	rec.Reapproval = Reapproval{Needed: true, Reason: "scope grew"}
 	rec.Milestones = []Milestone{{
 		ID: "M1", Title: "Reading lists", Status: "active", Planned: at, Started: at, Branch: "release/M1",

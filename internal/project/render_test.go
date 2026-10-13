@@ -24,7 +24,7 @@ func TestRenderSnapshot(t *testing.T) {
 - Track: lite
 - Reference: ../reference-app
 - Spec gate: approved v2 by Lan on 2026-10-14
-- Pack gate: waived on 2026-10-14 waived
+- Pack gate: waived on 2026-10-14
 - Re-approval needed: scope grew
 - Milestone: M1 Reading lists (active)
 - Graduated: 2026-10-14 v0.3.0
@@ -90,7 +90,7 @@ func TestRenderEmptyRecord(t *testing.T) {
 		DecisionsPath: "None yet.",
 		BacklogPath:   "Empty.",
 		RoadmapPath:   "No milestones yet.",
-		SnapshotPath:  "- Spec gate: pending\n- Pack gate: pending\n",
+		SnapshotPath:  "- Spec gate: open\n- Pack gate: open\n",
 	} {
 		if got := render(t, rec, path); !strings.Contains(got, want) || !strings.Contains(got, "written by herdr-runner-kit") {
 			t.Errorf("%s:\n%s", path, got)

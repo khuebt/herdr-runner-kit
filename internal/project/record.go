@@ -182,6 +182,14 @@ func (r *Record) Validate() error {
 	if r.ParallelWarning < 0 {
 		return fmt.Errorf("parallelWarning %d is negative", r.ParallelWarning)
 	}
+	for name, g := range map[string]Gate{GateSpec: r.Gates.Spec, GatePack: r.Gates.Pack} {
+		if g.Status != "" && !slices.Contains([]string{GateApproved, GateChangesRequested, GateRejected}, g.Status) {
+			return fmt.Errorf("%s gate status %q: want %s, %s or %s", name, g.Status, GateApproved, GateChangesRequested, GateRejected)
+		}
+	}
+	if r.Gates.Spec.Waived {
+		return errors.New("the spec gate cannot be waived")
+	}
 	return nil
 }
 

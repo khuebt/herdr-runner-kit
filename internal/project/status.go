@@ -34,19 +34,26 @@ type Report struct {
 	// Runners are the project's tasks at work or about to start; Waiting
 	// are those waiting on the user.
 	Runners, Waiting []*task.Task
-	Now              time.Time
+	// Latest holds the latest task of each stage. Tasks only hint at the
+	// next step; gates are decided from committed artifacts.
+	Latest map[string]*task.Task
+	Now    time.Time
 }
 
 // Status builds the report of a registered project from its record (nil
 // when there is none) and the tasks of every project.
 func Status(rec *Record, reg state.Project, tasks []*task.Task, now time.Time) Report {
-	r := Report{Name: reg.Name, Path: reg.Path, Record: rec, Reserved: reg.Reserved, Stage: "intake", Now: now}
+	r := Report{
+		Name: reg.Name, Path: reg.Path, Record: rec, Reserved: reg.Reserved, Stage: "intake",
+		Latest: map[string]*task.Task{}, Now: now,
+	}
 	for _, t := range tasks {
 		if t.Project != reg.Name {
 			continue
 		}
 		if t.Stage != "" {
 			r.Stage = t.Stage // tasks come in creation order: the last one wins
+			r.Latest[t.Stage] = t
 		}
 		switch t.Status {
 		case task.NeedsHuman, task.Held:
@@ -182,10 +189,72 @@ func (r Report) Next() string {
 		return "nothing; the project has graduated"
 	case len(r.Runners) > 0:
 		return fmt.Sprintf("wait for the %d runner(s) at work: herdr-runner-kit wait", len(r.Runners))
-	case rec.Gates.Spec.Status != "approved":
-		return fmt.Sprintf("start discovery from the brief in %s: herdr-runner-kit spawn --project %s --stdin", BriefDir, r.Name)
+	case rec.Gates.Spec.Status != GateApproved:
+		return r.specNext()
+	case rec.Gates.Pack.Status != GateApproved && !rec.Gates.Pack.Waived:
+		return r.packNext()
 	}
 	return fmt.Sprintf("spawn a runner for the next piece of work: herdr-runner-kit spawn --project %s --stdin", r.Name)
+}
+
+// laterStages run between the spec and the pack, in the order status
+// suggests them.
+var laterStages = []string{"ux", "design", "architecture", "roadmap"}
+
+// specNext is the next step before the spec is approved.
+func (r Report) specNext() string {
+	spec := r.Latest["spec"]
+	switch {
+	case spec != nil && spec.Status == task.Done && r.revised(spec, r.Record.Gates.Spec):
+		return fmt.Sprintf("spec done: ask the user to approve it, then record the outcome: %s (or %s --stdin with the feedback)",
+			r.command("approve spec", "--by NAME"), r.command("changes spec", ""))
+	case spec != nil && spec.Status == task.Done:
+		return fmt.Sprintf("revise the spec with the feedback: %s", r.command("run spec", "--stdin"))
+	case spec != nil && spec.Status.Terminal():
+		return fmt.Sprintf("the spec runner %s %s; run it again: %s", spec.ID, spec.Status, r.command("run spec", ""))
+	case r.done("intake"):
+		return fmt.Sprintf("write the spec from the brief summary: %s", r.command("run spec", ""))
+	}
+	return fmt.Sprintf("start discovery from the brief in %s: %s", BriefDir, r.command("run intake", ""))
+}
+
+// packNext is the next step after the spec is approved and before the pack
+// is approved or waived.
+func (r Report) packNext() string {
+	pack := r.Latest["pack"]
+	switch {
+	case pack != nil && pack.Status == task.Done && r.revised(pack, r.Record.Gates.Pack):
+		return fmt.Sprintf("pack done: share pack.html / pack.pdf from %s/ with the stakeholders, then record the outcome: %s (or %s --stdin, or %s --note WHY)",
+			ApprovalDir, r.command("approve pack", "--by NAME"), r.command("changes pack", ""), r.command("reject pack", ""))
+	case pack != nil && pack.Status == task.Done:
+		return fmt.Sprintf("revise the pack with the feedback: %s", r.command("run pack", "--stdin"))
+	}
+	for _, stage := range laterStages {
+		if !r.done(stage) {
+			return fmt.Sprintf("run the next discovery stage: %s (chain the others with --after)", r.command("run "+stage, ""))
+		}
+	}
+	return fmt.Sprintf("assemble the stakeholder approval pack: %s", r.command("run pack", ""))
+}
+
+// revised reports whether t finished after the gate's last outcome, so it
+// holds a version still waiting for one.
+func (r Report) revised(t *task.Task, g Gate) bool {
+	return g.Status == "" || g.At.IsZero() || t.FinishedAt.After(g.At)
+}
+
+func (r Report) done(stage string) bool {
+	t := r.Latest[stage]
+	return t != nil && t.Status == task.Done
+}
+
+// command spells a project subcommand for this project.
+func (r Report) command(sub, extra string) string {
+	c := "herdr-runner-kit project " + sub + " --project " + r.Name
+	if extra != "" {
+		c += " " + extra
+	}
+	return c
 }
 
 // Origin returns the URL of the repository's origin remote, or "" when it

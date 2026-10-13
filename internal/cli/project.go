@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -30,7 +31,9 @@ func newProjectCommand() *cobra.Command {
 		Args: cobra.NoArgs,
 	}
 	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand(),
-		newProjectRunCommand(), newProjectShareCommand())
+		newProjectRunCommand(), newProjectShareCommand(),
+		newProjectGateCommand("approve"), newProjectGateCommand("changes"), newProjectGateCommand("reject"),
+		newProjectDecideCommand())
 	return cmd
 }
 
@@ -369,6 +372,7 @@ func newProjectRunCommand() *cobra.Command {
 	f.StringVar(&o.Agent, "agent", "", "agent spec harness[:model[:effort]], overriding the stage kind's default")
 	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of a Claude runner, as a path or a name such as claude2")
 	f.StringVar(&o.Language, "language", "", "language of the runner's report summaries and questions")
+	f.BoolVar(&o.Docx, "docx", false, "pack stage only: export the pack as DOCX too, with LibreOffice")
 	return cmd
 }
 
@@ -381,6 +385,8 @@ type stageRun struct {
 	Agent        string
 	ClaudeConfig string
 	Language     string
+	// Docx asks the pack stage for a DOCX export as well.
+	Docx bool
 	// Cwd picks the project when Project is empty.
 	Cwd   string
 	Tools project.Tools
@@ -405,8 +411,11 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 	if err != nil {
 		return nil, err
 	}
-	if err := project.CheckRequires(rec, stage); err != nil {
+	if err := project.CheckRequires(ctx, p.Path, rec, stage); err != nil {
 		return nil, err
+	}
+	if o.Docx && stage.Name != project.GatePack {
+		return nil, errors.New("--docx goes only with the pack stage")
 	}
 	kind, found := r.Config.Kinds[stage.Kind]
 	if !found {
@@ -420,7 +429,16 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 	if err != nil {
 		return nil, err
 	}
-	prompt, err := stage.Render(spec.Harness, project.NewStageData(rec, p.Path, o.Tools, o.Notes, time.Now()))
+	data := project.NewStageData(rec, p.Path, o.Tools, o.Notes, time.Now())
+	data.Docx = o.Docx
+	if stage.Name == project.GatePack {
+		n, err := project.CommittedPackVersion(ctx, p.Path)
+		if err != nil {
+			return nil, err
+		}
+		data.PackVersion = n + 1
+	}
+	prompt, err := stage.Render(spec.Harness, data)
 	if err != nil {
 		return nil, err
 	}
@@ -545,4 +563,222 @@ func openStore() (*state.Store, error) {
 		return nil, err
 	}
 	return state.Open(dir)
+}
+
+// gateVerbs describes the commands that record a gate outcome.
+var gateVerbs = map[string]struct{ use, short, long string }{
+	"approve": {
+		use:   "approve <spec|pack>",
+		short: "Record that the spec or the stakeholder pack is approved",
+		long: "approve records who approved which version, and when, then commits the project's " +
+			"records in one commit. The version is read from the committed artifact: the spec's " +
+			"version, or the highest committed pack folder. It refuses an artifact that is not " +
+			"committed, has uncommitted changes or already has an outcome. Approving the pack " +
+			"imports the roadmap from the committed roadmap proposal. A lite-track project may " +
+			"skip the pack only with --waive-pack at spec approval; the spec gate is never waived.",
+	},
+	"changes": {
+		use:   "changes <spec|pack> --stdin",
+		short: "Record that changes were requested, and send the feedback to the stage runner",
+		long: "changes records the outcome for the committed version, commits the records, and " +
+			"sends the feedback from stdin to the stage's runner when its tab is open, so it " +
+			"revises in the same session; otherwise it prints the command that starts a revision.",
+	},
+	"reject": {
+		use:   "reject <spec|pack> --note WHY",
+		short: "Record that the spec or the stakeholder pack was rejected",
+		long:  "reject records the outcome and its reason for the committed version, and commits the records.",
+	},
+}
+
+func newProjectGateCommand(verb string) *cobra.Command {
+	v := gateVerbs[verb]
+	o := project.DecideOptions{Outcome: verb}
+	var name string
+	var stdin bool
+	cmd := &cobra.Command{
+		Use: v.use, Short: v.short, Long: v.long,
+		Args:      cobra.ExactArgs(1),
+		ValidArgs: []string{project.GateSpec, project.GatePack},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			o.Gate = args[0]
+			feedback := ""
+			if verb == "changes" {
+				if !stdin {
+					return errors.New("give the feedback on stdin with --stdin")
+				}
+				var err error
+				if feedback, err = promptText(cmd, nil, true); err != nil {
+					return err
+				}
+				if feedback == "" {
+					return errors.New("the feedback on stdin is empty")
+				}
+				o.Note = feedback
+			}
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			p, err := resolveProject(r.Store, name, cwd)
+			if err != nil {
+				return err
+			}
+			if o.By == "" {
+				o.By = project.Approver(cmd.Context(), p.Path)
+			}
+			return decideGate(cmd, r, p, o, feedback)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&name, "project", "", "project of the gate (default: the project holding the current folder, else the only one)")
+	f.StringVar(&o.By, "by", "", "who decided (default: git's author name in the project)")
+	switch verb {
+	case "changes":
+		f.BoolVar(&stdin, "stdin", false, "read the feedback from stdin")
+	default:
+		f.StringVar(&o.Note, "note", "", "a short note kept with the outcome")
+	}
+	if verb == "approve" {
+		f.BoolVar(&o.WaivePack, "waive-pack", false, "with approve spec on a lite-track project: skip the stakeholder pack by your explicit choice")
+	}
+	return cmd
+}
+
+// decideGate records a gate outcome, then closes or reaches the stage's
+// runner: an approval or a rejection lets its kept tab close, and changes
+// go to it as a revision request.
+func decideGate(cmd *cobra.Command, r *runner.Runner, p state.Project, o project.DecideOptions, feedback string) error {
+	ctx, out := cmd.Context(), cmd.OutOrStdout()
+	d, err := project.Decide(ctx, r.Store, p.Name, o)
+	if d.Version == "" {
+		return err
+	}
+	fmt.Fprintf(out, "%s %s %s of %s by %s", o.Gate, d.Version, strings.ReplaceAll(d.Status, "-", " "), p.Name, oneLineText(o.By))
+	if d.Commit != "" {
+		fmt.Fprintf(out, "; records committed in %s", d.Commit[:min(12, len(d.Commit))])
+	}
+	fmt.Fprintln(out)
+	if err != nil {
+		return err
+	}
+	if d.Waived {
+		fmt.Fprintln(out, "pack gate: waived for the lite track by your choice; recorded in decisions.md")
+	}
+	if d.Gate == project.GatePack && d.Status == project.GateApproved {
+		fmt.Fprintf(out, "roadmap: imported %d milestone(s) and %d dependency(ies) from %s into %s\n",
+			d.Milestones, d.Dependencies, project.RoadmapProposalPath, project.RoadmapPath)
+	}
+	if d.Gate == project.GatePack && d.NoPDF {
+		fmt.Fprintf(out, "note: %s holds no %s\n", project.PackDir(versionOf(d.Version)), project.PackPDF)
+	}
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	var latest *task.Task
+	for _, t := range tasks {
+		if t.Project != p.Name || t.Stage != o.Gate {
+			continue
+		}
+		latest = t
+		if d.Status != project.GateChangesRequested && t.Keep {
+			if _, err := r.Keep(ctx, t.ID, false); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "note: %s keeps its tab open: %v\n", t.ID, err)
+			}
+		}
+	}
+	if d.Status == project.GateChangesRequested {
+		sendFeedback(cmd, r, p, latest, d, feedback)
+	}
+	rep, err := projectReport(r.Store, p)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "next: %s\n", rep.Next())
+	return err
+}
+
+// sendFeedback asks the stage's open runner to revise, else prints the
+// command that starts a revision.
+func sendFeedback(cmd *cobra.Command, r *runner.Runner, p state.Project, t *task.Task, d project.Decided, feedback string) {
+	out := cmd.OutOrStdout()
+	revise := "Revise " + project.SpecPath + ", raise its version by one, commit and report again."
+	if d.Gate == project.GatePack {
+		revise = fmt.Sprintf("Write the revision as %s/, commit it and report again; leave committed pack folders unchanged.",
+			project.PackDir(versionOf(d.Version)+1))
+	}
+	if t != nil && t.Herdr.PaneID != "" && !t.Herdr.Closed && t.Status != task.Stopped {
+		msg := fmt.Sprintf("The user requested changes to %s %s. Feedback:\n\n%s\n\n%s", d.Gate, d.Version, feedback, revise)
+		working, err := r.Send(cmd.Context(), t.ID, msg)
+		if err == nil {
+			how := "it is revising"
+			if !working {
+				how = "herdr has not seen it start a turn yet"
+			}
+			fmt.Fprintf(out, "feedback: sent to %s; %s\n", t.ID, how)
+			return
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "note: could not send the feedback to %s: %v\n", t.ID, err)
+	}
+	fmt.Fprintf(out, "feedback: no open %s runner; start a revision with the same feedback on stdin: herdr-runner-kit project run %s --project %s --stdin\n",
+		d.Gate, d.Gate, p.Name)
+}
+
+func versionOf(v string) int {
+	n, _ := strconv.Atoi(strings.TrimPrefix(v, "v")) // versions come from project.Version
+	return n
+}
+
+func oneLineText(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func newProjectDecideCommand() *cobra.Command {
+	var name string
+	var stdin bool
+	cmd := &cobra.Command{
+		Use:   "decide --stdin",
+		Short: "Keep a decision of yours in the project's decision log",
+		Long: "decide reads one decision from stdin and keeps it in the kit's record of the " +
+			"project. It reaches decisions.md with the next gate outcome or milestone commit.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
+				return err
+			}
+			if !stdin {
+				return errors.New("give the decision on stdin with --stdin")
+			}
+			text, err := promptText(cmd, nil, true)
+			if err != nil {
+				return err
+			}
+			store, err := openStore()
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("find the current folder: %w", err)
+			}
+			p, err := resolveProject(store, name, cwd)
+			if err != nil {
+				return err
+			}
+			if err := project.AddDecision(store, p.Name, text, time.Now()); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "recorded the decision for %s; it is committed with the next gate outcome\n", p.Name)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&name, "project", "", "project of the decision (default: the project holding the current folder, else the only one)")
+	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the decision from stdin")
+	return cmd
 }

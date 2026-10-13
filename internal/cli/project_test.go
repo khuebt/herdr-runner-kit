@@ -42,6 +42,15 @@ func TestProjectGuard(t *testing.T) {
 		{"project", "run", "ux", "--project", "demo-app", "--stdin"},
 		{"project", "share", "stitch", "on"},
 		{"project", "share", "lavish-hosted", "off", "--project", "demo-app"},
+		{"project", "run", "pack", "--docx"},
+		{"project", "approve", "spec"},
+		{"project", "approve", "spec", "--waive-pack", "--by", "Lan"},
+		{"project", "approve", "pack", "--project", "demo-app"},
+		{"project", "changes", "spec", "--stdin"},
+		{"project", "changes", "pack", "--stdin", "--project", "demo-app"},
+		{"project", "reject", "spec", "--note", "no"},
+		{"project", "reject", "pack", "--note", "no", "--by", "Lan"},
+		{"project", "decide", "--stdin"},
 	} {
 		if _, err := runCLI(args...); !errors.Is(err, project.ErrInsideRunner) {
 			t.Errorf("%v inside a runner: err = %v", args, err)

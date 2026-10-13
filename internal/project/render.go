@@ -192,10 +192,14 @@ func currentMilestone(rec Record) *Milestone {
 }
 
 func gateLine(g Gate) string {
-	if g.Status == "" {
-		return "pending"
+	status := g.Status
+	switch {
+	case status == "" && g.Waived:
+		status = "waived"
+	case status == "":
+		return GateOpen
 	}
-	parts := []string{g.Status}
+	parts := []string{status}
 	if g.Version != "" {
 		parts = append(parts, g.Version)
 	}
@@ -205,8 +209,8 @@ func gateLine(g Gate) string {
 	if !g.At.IsZero() {
 		parts = append(parts, "on "+day(g.At))
 	}
-	if g.Waived {
-		parts = append(parts, "waived")
+	if g.Waived && g.Status != "" {
+		parts = append(parts, "(waived)")
 	}
 	return strings.Join(parts, " ")
 }

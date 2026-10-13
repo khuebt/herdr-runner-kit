@@ -23,7 +23,7 @@ func TestTemplateEveryStageRendersForBothHarnesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"architecture", "design", "intake", "roadmap", "spec", "ux"}
+	want := []string{"architecture", "design", "intake", "pack", "roadmap", "spec", "ux"}
 	if got := StageNames(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("stages = %v, want %v", got, want)
 	}
@@ -132,29 +132,53 @@ func TestTemplateStitchNeedsShareAndKey(t *testing.T) {
 	}
 }
 
-func TestTemplateRequiresApprovedSpec(t *testing.T) {
-	ux, err := LoadStage("ux")
+func TestTemplatePackConverters(t *testing.T) {
+	s, err := LoadStage("pack")
 	if err != nil {
 		t.Fatal(err)
 	}
-	intake, err := LoadStage("intake")
-	if err != nil {
-		t.Fatal(err)
+	if !s.Keep || len(s.Requires) != 1 || s.Requires[0] != GateSpec {
+		t.Errorf("pack stage = %+v", s)
 	}
-	rec := NewRecord("demo-app")
-	if err := CheckRequires(rec, ux); err == nil || !strings.Contains(err.Error(), "spec gate approved, and it is pending") {
-		t.Errorf("ux before spec approval: %v", err)
-	}
-	if err := CheckRequires(rec, intake); err != nil {
-		t.Errorf("intake: %v", err)
-	}
-	rec.Gates.Spec.Status = "changes-requested"
-	if err := CheckRequires(rec, ux); err == nil {
-		t.Error("ux ran with changes requested on the spec")
-	}
-	rec.Gates.Spec.Status = "approved"
-	if err := CheckRequires(rec, ux); err != nil {
-		t.Errorf("ux after approval: %v", err)
+	for _, c := range []struct {
+		name         string
+		tools        Tools
+		docx, hosted bool
+		want, absent []string
+	}{
+		{
+			"chrome",
+			Tools{PDF: "google-chrome"},
+			false, false,
+			[]string{"google-chrome --headless", "pack-v3/pack.pdf", "do not upload or host it anywhere"},
+			[]string{"soffice", "needs-human"},
+		},
+		{"no browser", Tools{}, false, false, []string{"report needs-human asking the user to install chromium"}, []string{"--print-to-pdf=\""}},
+		{"docx", Tools{PDF: "chromium", Soffice: true}, true, false, []string{"soffice --headless --convert-to docx"}, []string{"needs-human"}},
+		{"docx without soffice", Tools{PDF: "chromium"}, true, false, []string{"LibreOffice (soffice) was not found: report needs-human"}, nil},
+		{"hosted", Tools{PDF: "chromium"}, false, true, []string{"switched hosted Lavish sharing on"}, []string{"do not upload"}},
+	} {
+		rec := NewRecord("demo-app")
+		rec.Share.LavishHosted = c.hosted
+		d := stageData(rec, "")
+		d.Tools, d.Docx, d.PackVersion = c.tools, c.docx, 3
+		got, err := s.Render(task.Codex, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: pack prompt lacks %q:\n%s", c.name, w, got)
+			}
+		}
+		for _, a := range c.absent {
+			if strings.Contains(got, a) {
+				t.Errorf("%s: pack prompt holds %q:\n%s", c.name, a, got)
+			}
+		}
+		if !strings.Contains(got, "$ak-frontend-design") || !strings.Contains(got, "no external requests") {
+			t.Errorf("%s: pack.html is not self-contained via frontend-design:\n%s", c.name, got)
+		}
 	}
 }
 
