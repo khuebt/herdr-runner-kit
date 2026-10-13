@@ -238,6 +238,42 @@ func TestRemoveWorktreeChecksWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestRemoveWorktreeRemovesEmptyRepoFolder(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	root := filepath.Join(t.TempDir(), "worktrees")
+	repo := gitRepo(t)
+	addWorktree := func(branch string) *task.Task {
+		wt := filepath.Join(root, "greet", strings.ReplaceAll(branch, "/", "-"))
+		git(t, repo, "worktree", "add", "-q", "-b", branch, wt)
+		return finishedTask(t, r, repo, &task.Worktree{Path: wt, Branch: branch})
+	}
+	a, b := addWorktree("hrk/t1-a"), addWorktree("hrk/t2-b")
+
+	if err := r.removeWorktree(context.Background(), a, false); err != nil {
+		t.Fatal(err)
+	}
+	if !isDir(filepath.Join(root, "greet")) {
+		t.Fatal("removed the repository folder while another worktree is in it")
+	}
+	if err := r.removeWorktree(context.Background(), b, false); err != nil {
+		t.Fatal(err)
+	}
+	if isDir(filepath.Join(root, "greet")) || !isDir(root) {
+		t.Errorf("repository folder left %v, worktree root gone %v", isDir(filepath.Join(root, "greet")), !isDir(root))
+	}
+}
+
+func TestRemoveWorktreeKeepsFolderOutsideHerdrLayout(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	tk, _ := worktreeTask(t, r, "hrk/t1-a")
+	if err := r.removeWorktree(context.Background(), tk, false); err != nil {
+		t.Fatal(err)
+	}
+	if !isDir(filepath.Dir(tk.Worktree.Path)) {
+		t.Error("removed a folder that is not in herdr's worktree root")
+	}
+}
+
 func TestQueuedTaskRechecksBranchAtLaunch(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	repo := gitRepo(t)
