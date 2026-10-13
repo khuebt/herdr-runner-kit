@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.1.1...v0.2.0) (2026-10-13)
+
+
+### Features
+
+* pick a Claude config folder per runner ([#12](https://github.com/khuebt/herdr-runner-kit/issues/12)) ([e4261fa](https://github.com/khuebt/herdr-runner-kit/commit/e4261facb0d7c6df02ef56cd69949d21c5f6743d))
+
 ## [0.1.1](https://github.com/khuebt/herdr-runner-kit/compare/v0.1.0...v0.1.1) (2026-10-12)
 
 
