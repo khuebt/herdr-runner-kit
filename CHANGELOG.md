@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.7.2...v0.8.0) (2026-10-14)
+
+
+### Features
+
+* **project:** ask a direction round before full ux wireframes and design prototype ([#30](https://github.com/khuebt/herdr-runner-kit/issues/30)) ([9ac01c1](https://github.com/khuebt/herdr-runner-kit/commit/9ac01c195a1e60c4859f669991bc2733c79066db))
+
 ## [0.7.2](https://github.com/khuebt/herdr-runner-kit/compare/v0.7.1...v0.7.2) (2026-10-14)
 
 
