@@ -28,7 +28,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 |---|---|
 | `new <path> (--brief FILE \| --stdin) [--remote URL] [--reference REPO] [--name NAME] [--allow-non-empty]` | Start a project: a git repository with the git-ignored original brief, the project record, one first commit and a herdr workspace. Never pushes. |
 | `project status [name]` | Where a project stands and the next step. Reads only the kit's record and tasks. |
-| `project register <path> [--name NAME]` | Register an existing git repository as a project. |
+| `project register <path> [--name NAME] [--reference PATH]` | Register an existing git repository as a project. A committed record names its reference repository without a local path; `--reference PATH` gives it. |
 | `project forget <name> [--yes]` | Drop a project from the registry; the repository is left alone. |
 | `project run <stage> [--stdin] [--after t1]` | Start a discovery stage runner from the kit's template. Refuses a stage whose gate is not approved yet. |
 | `project approve <spec\|pack> --by NAME [--note TEXT] [--waive-pack]` | Record the user's approval of the committed version and commit the project's records. |

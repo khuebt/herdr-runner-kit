@@ -276,13 +276,15 @@ func printProjectList(ctx context.Context, out io.Writer, s *state.Store) error 
 }
 
 func newProjectRegisterCommand() *cobra.Command {
-	var name string
+	var name, reference string
 	cmd := &cobra.Command{
 		Use:   "register <path>",
 		Short: "Register an existing git repository as a project",
 		Long: "register adds the repository to the kit's registry. It imports the record " +
 			"from a committed handbook/product/project.md when there is one, else it starts " +
-			"a fresh record. Nothing is written to the repository.",
+			"a fresh record. A committed record names its reference repository without a local " +
+			"path; pass --reference PATH to say where it is on this machine. Nothing is " +
+			"written to the repository.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
@@ -292,16 +294,21 @@ func newProjectRegisterCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, rec, err := project.Register(cmd.Context(), store, args[0], name)
+			p, rec, err := project.Register(cmd.Context(), store, args[0], name, reference)
 			if err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "registered %s at %s (%s, %s track); its runners report to %s\n",
 				p.Name, p.Path, rec.Type, rec.Track, task.ProjectOwner(p.Name))
+			if err == nil && project.ReferenceWithoutPath(rec) {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "note: the reference repository %s has no path on this machine; runners see its name only. to give one, run project forget, then register again with --reference PATH\n",
+					project.RedactURL(rec.ReferenceRepo))
+			}
 			return err
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "project name (default: the committed record's name, else the folder name)")
+	cmd.Flags().StringVar(&reference, "reference", "", "path or URL of the reference repository on this machine (default: the committed record's)")
 	return cmd
 }
 
@@ -713,7 +720,6 @@ func newProjectGateCommand(verb string) *cobra.Command {
 				if feedback == "" {
 					return errors.New("the feedback on stdin is empty")
 				}
-				o.Note = feedback
 			}
 			r, err := openRunner()
 			if err != nil {

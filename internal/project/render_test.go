@@ -1,6 +1,8 @@
 package project
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,5 +100,47 @@ func TestRenderEmptyRecord(t *testing.T) {
 	}
 	if _, err := Render(rec, "README.md"); err == nil {
 		t.Error("rendered a file the kit does not own")
+	}
+}
+
+func TestRenderKeepsLocalPathsAndSecretsOut(t *testing.T) {
+	isolateGit(t)
+	withRemote := filepath.Join(t.TempDir(), "with-remote")
+	plain := filepath.Join(t.TempDir(), "plain-repo")
+	for _, dir := range []string{withRemote, plain} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		run(t, dir, "init", "-q", "-b", "main")
+	}
+	run(t, withRemote, "remote", "add", "origin", "https://user:fake-token-123@example.com/team/with-remote.git")
+
+	for _, tc := range []struct{ ref, want string }{
+		{plain, "plain-repo"},
+		{withRemote, "https://example.com/team/with-remote.git"},
+		{"https://user:fake-token-123@example.com/team/ref.git", "https://example.com/team/ref.git"},
+		{"https://fake-token-123@example.com/team/ref.git", "https://example.com/team/ref.git"},
+		{"git@example.com:team/ref.git", "git@example.com:team/ref.git"},
+		{filepath.Join(t.TempDir(), "gone"), "gone"},
+		{"reading-app", "reading-app"},
+	} {
+		rec := fullRecord()
+		rec.ReferenceRepo = tc.ref
+		got := render(t, rec, SnapshotPath)
+		if !strings.Contains(got, "- Reference: "+tc.want+"\n") || !strings.Contains(got, "referenceRepo: "+tc.want+"\n") {
+			t.Errorf("reference %q: want %q in\n%s", tc.ref, tc.want, got)
+		}
+		leaks := []string{"fake-token-123", "user:"}
+		if filepath.IsAbs(tc.ref) {
+			leaks = append(leaks, filepath.Dir(tc.ref))
+		}
+		for _, leak := range leaks {
+			if strings.Contains(got, leak) {
+				t.Errorf("reference %q leaks %q:\n%s", tc.ref, leak, got)
+			}
+		}
+		if rec.ReferenceRepo != tc.ref {
+			t.Errorf("render changed the record's reference to %q", rec.ReferenceRepo)
+		}
 	}
 }
