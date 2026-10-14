@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/khuebt/herdr-runner-kit/compare/v0.7.1...v0.7.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* **project:** keep local paths, credentials and feedback out of committed project files ([#28](https://github.com/khuebt/herdr-runner-kit/issues/28)) ([168b8a9](https://github.com/khuebt/herdr-runner-kit/commit/168b8a984c45c351bde4ad1893111d43896c88e6))
+
 ## [0.7.1](https://github.com/khuebt/herdr-runner-kit/compare/v0.7.0...v0.7.1) (2026-10-13)
 
 
