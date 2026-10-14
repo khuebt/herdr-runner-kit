@@ -128,6 +128,35 @@ func Message(ev state.Event, t *task.Task) string {
 	return text
 }
 
+// maxChainSummary is how much of each finished task's summary a chain
+// message carries.
+const maxChainSummary = 200
+
+// ChainMessage tells the user that end finished as how (failed or stopped)
+// and so never reports its chain, and lists the chain tasks that finished
+// before it with their summaries, whose done news was held back.
+func ChainMessage(end *task.Task, how string, chain []*task.Task) string {
+	parts := make([]string, 0, len(chain))
+	for _, t := range chain {
+		part := "#" + t.ID
+		if t.Title != "" {
+			part += " " + t.Title
+		}
+		if s := strings.Join(strings.Fields(t.Summary), " "); s != "" {
+			if r := []rune(s); len(r) > maxChainSummary {
+				s = string(r[:maxChainSummary-1]) + "…"
+			}
+			part += ": " + s
+		}
+		parts = append(parts, part)
+	}
+	text := "#" + end.ID + " " + how + "; the chain before it finished: " + strings.Join(parts, "; ")
+	if r := []rune(text); len(r) > maxText {
+		text = string(r[:maxText-1]) + "…"
+	}
+	return text
+}
+
 // roundReply shows the reply format for a round of n questions: each
 // question's number followed by the chosen option, such as "1a 2b".
 func roundReply(n int) string {

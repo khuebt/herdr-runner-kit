@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
@@ -28,4 +29,11 @@ func lock(path string) (func(), error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
+}
+
+// Lock takes the store-wide lock name, blocking until it is free, and
+// returns the function that releases it. It serialises work that spans
+// several tasks, such as sending a chain's held-back news once.
+func (s *Store) Lock(name string) (func(), error) {
+	return lock(filepath.Join(s.dir, name+".lock"))
 }
