@@ -63,7 +63,7 @@ func finishedTask(t *testing.T, r *Runner, repo string, w *task.Worktree) *task.
 
 func cleanable(t *testing.T, r *Runner, owner string) CleanupItem {
 	t.Helper()
-	items, err := r.Cleanable(context.Background(), owner, true)
+	items, err := r.Cleanable(context.Background(), Owners{Owner: owner}, true)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("Cleanable = %+v, %v", items, err)
 	}
@@ -137,7 +137,7 @@ func TestCleanupRemovesOnlyMergedWorktrees(t *testing.T) {
 	if !got.Worktree.Removed || !got.Worktree.BranchDeleted {
 		t.Errorf("task = %+v", got.Worktree)
 	}
-	if items, _ := r.Cleanable(context.Background(), repo, false); len(items) != 0 {
+	if items, _ := r.Cleanable(context.Background(), Owners{Owner: repo}, false); len(items) != 0 {
 		t.Errorf("left after cleanup: %+v", items)
 	}
 }
@@ -352,7 +352,7 @@ func TestCleanupKeepsBranchItDidNotCreate(t *testing.T) {
 	if got, _ := r.Store.Get(tk.ID); got.Worktree.BranchDeleted {
 		t.Errorf("worktree = %+v", got.Worktree)
 	}
-	if items, _ := r.Cleanable(context.Background(), repo, false); len(items) != 0 {
+	if items, _ := r.Cleanable(context.Background(), Owners{Owner: repo}, false); len(items) != 0 {
 		t.Errorf("left after cleanup: %+v", items)
 	}
 }
@@ -368,7 +368,9 @@ func TestCleanupSkipsBranchMovedSinceCheck(t *testing.T) {
 	}
 	// Someone commits to the branch after the check.
 	git(t, repo, "checkout", "-q", "hrk/t1-a")
-	git(t, repo, "commit", "-q", "--allow-empty", "-m", "more")
+	writeFile(t, filepath.Join(repo, "b.txt"))
+	git(t, repo, "add", "b.txt")
+	git(t, repo, "commit", "-q", "-m", "more")
 	git(t, repo, "checkout", "-q", "main")
 
 	_, err := r.Cleanup(context.Background(), []CleanupItem{it})
@@ -386,7 +388,7 @@ func TestCleanupSharedBranch(t *testing.T) {
 	git(t, repo, "push", "-q", "origin", "hrk/t1-a:main")
 	t2 := finishedTask(t, r, repo, &task.Worktree{Path: filepath.Join(t.TempDir(), "gone"), Branch: "hrk/t1-a"})
 
-	items, err := r.Cleanable(context.Background(), repo, false)
+	items, err := r.Cleanable(context.Background(), Owners{Owner: repo}, false)
 	if err != nil || len(items) != 2 {
 		t.Fatalf("Cleanable = %+v, %v", items, err)
 	}
@@ -400,7 +402,7 @@ func TestCleanupSharedBranch(t *testing.T) {
 	if isDir(t1.Worktree.Path) || BranchExists(context.Background(), repo, "hrk/t1-a") {
 		t.Error("worktree or branch left")
 	}
-	if items, _ := r.Cleanable(context.Background(), repo, false); len(items) != 0 {
+	if items, _ := r.Cleanable(context.Background(), Owners{Owner: repo}, false); len(items) != 0 {
 		t.Errorf("left after cleanup: %+v", items)
 	}
 }

@@ -189,7 +189,7 @@ func newCleanupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cleanup [id]...",
 		Short: "List finished worktrees and branches left behind, and remove the merged ones with --yes",
-		Long: "cleanup fetches origin, then lists this main session's finished worktree tasks whose " +
+		Long: "cleanup fetches origin, then lists the finished worktree tasks of this main session and of every project whose " +
 			"worktree or branch is still there: merged (safe to remove), unmerged, dirty or kept. With --yes " +
 			"it removes the worktree and deletes the local branch of each merged one, or of the given " +
 			"ids. Unmerged branches and worktrees with changes are never removed.",
@@ -206,10 +206,13 @@ func newCleanupCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Without --owner, project tasks count along with the folder's,
+			// as in list.
+			owners := runner.Owners{Owner: owner}
 			if owner == "" {
-				owner = currentOwner(cmd)
+				owners = runner.Owners{Owner: currentOwner(cmd), Projects: true}
 			}
-			items, err := r.Cleanable(cmd.Context(), owner, !noFetch)
+			items, err := r.Cleanable(cmd.Context(), owners, !noFetch)
 			if err != nil {
 				return err
 			}
@@ -247,7 +250,7 @@ func newCleanupCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "remove the worktree and branch of each merged task")
 	cmd.Flags().BoolVar(&noFetch, "no-fetch", false, "compare with the local refs, without fetching origin")
-	cmd.Flags().StringVar(&owner, "owner", "", "main session whose tasks to clean (default: git top-level of the current folder)")
+	cmd.Flags().StringVar(&owner, "owner", "", "main session whose tasks to clean (default: git top-level of the current folder, plus the tasks of every project)")
 	return cmd
 }
 
