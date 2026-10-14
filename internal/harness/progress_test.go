@@ -85,3 +85,20 @@ func TestSelfResolvingPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeBackgroundWork(t *testing.T) {
+	for name, want := range map[string]int{"stop-background-running-claude.json": 2, "stop-background-none-claude.json": 0} {
+		if n, known := ClaudeBackgroundWork([]byte(readFixture(t, name))); !known || n != want {
+			t.Errorf("%s: %d %v", name, n, known)
+		}
+	}
+	finished := `{"background_tasks":[{"type":"shell","status":"completed"},{"type":"subagent","status":"running"}]}`
+	if n, known := ClaudeBackgroundWork([]byte(finished)); !known || n != 1 {
+		t.Errorf("one of two running: %d %v", n, known)
+	}
+	for _, in := range []string{`{}`, `not json`, `{"background_tasks":null}`} {
+		if _, known := ClaudeBackgroundWork([]byte(in)); known {
+			t.Errorf("%s: known", in)
+		}
+	}
+}

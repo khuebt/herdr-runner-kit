@@ -168,6 +168,28 @@ func ClaudeUsageLimit(payload []byte) (message string, stopFailure bool) {
 	return "", true
 }
 
+// ClaudeBackgroundWork reads the background_tasks list of a Claude Stop
+// hook input, which holds the session's shells and subagents with their
+// status, and returns how many are still running. Claude Code 2.1.300 sends
+// it; known is false when the input has no such list, as from an older
+// Claude, or does not parse.
+func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
+	var in struct {
+		Tasks *[]struct {
+			Status string `json:"status"`
+		} `json:"background_tasks"`
+	}
+	if json.Unmarshal(payload, &in) != nil || in.Tasks == nil {
+		return 0, false
+	}
+	for _, t := range *in.Tasks {
+		if t.Status == "running" || t.Status == "pending" {
+			running++
+		}
+	}
+	return running, true
+}
+
 // ClaudeSettings returns the per-task settings file content: Stop and
 // StopFailure hooks that call `<bin> __turn-end`, which tells the two apart
 // by the hook input. Claude merges them with the user's own hooks.

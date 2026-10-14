@@ -21,6 +21,19 @@ const codexTitlePrompt = "Generate a concise, single-line task title"
 // run. Claude ends its turn then and wakes on its own later.
 var backgroundWork = regexp.MustCompile(`(?i)\b\d+\s+(background\s+)?(shells?|bash(es)?|tasks?|agents?)\b`)
 
+// claudeWorksInBackground reports whether a Claude runner ended its turn
+// with shells or subagents still running, so it wakes on its own later. The
+// Stop hook input lists them; the mode line is read only when the input has
+// no list, because it draws no count for subagents that run no shell, nor
+// for a second or more after they start.
+func (r *Runner) claudeWorksInBackground(ctx context.Context, t *task.Task, payload []byte) bool {
+	if running, known := harness.ClaudeBackgroundWork(payload); known {
+		return running > 0
+	}
+	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 8)
+	return err == nil && hasBackgroundWork(screen)
+}
+
 // hasBackgroundWork looks only at Claude's mode line, so text in the
 // conversation can never match.
 func hasBackgroundWork(screen string) bool {
@@ -73,10 +86,8 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 			return "", err
 		}
 	}
-	if h == task.Claude {
-		if screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 8); err == nil && hasBackgroundWork(screen) {
-			return "", nil
-		}
+	if h == task.Claude && r.claudeWorksInBackground(ctx, t, payload) {
+		return "", nil
 	}
 	t, err = r.Store.Update(id, func(t *task.Task) error {
 		if t.Status != task.Running {
@@ -154,8 +165,9 @@ func (r *Runner) ignoreCodexTurn(t *task.Task, payload []byte) (bool, error) {
 
 func (r *Runner) nudgeText() string {
 	return fmt.Sprintf("You ended your turn without reporting to the main session. "+
-		"If the task is finished, run `%[1]s report done --summary \"...\"`. "+
-		"If you need a decision, run `%[1]s report needs-human --question \"...\"`. "+
-		"If it failed, run `%[1]s report failed --summary \"...\"`. "+
-		"If you are waiting for background work, wait for it, then report.", r.Bin)
+		"If background shells or agents are still running, end your turn now without reporting: "+
+		"you are woken when they finish. Never start sleep or heartbeat commands to stay awake. "+
+		"Otherwise report: if the task is finished, run `%[1]s report done --summary \"...\"`; "+
+		"if you need a decision, run `%[1]s report needs-human --question \"...\"`; "+
+		"if it failed, run `%[1]s report failed --summary \"...\"`.", r.Bin)
 }
