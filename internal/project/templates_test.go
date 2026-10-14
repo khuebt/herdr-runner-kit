@@ -255,6 +255,49 @@ func TestTemplateNotesStayInsideUntrustedBlock(t *testing.T) {
 	}
 }
 
+// The ux and design stages sample the main screens and ask one direction
+// round before building the rest, unless the notes skip it or give a design
+// system; Lavish is suggested for the samples only when it is installed.
+func TestTemplateDirectionRound(t *testing.T) {
+	for name, want := range map[string][]string{
+		"ux": {
+			"only the one or two main screens", "one question each on layout, navigation and information density",
+			"Wireframe the remaining screens", "the direction chosen in the round",
+		},
+		"design": {
+			"two or three clearly different visual directions", "/design/directions/",
+			"pick one direction, combine directions", "one more round of samples",
+			"Record in DESIGN.md which direction was chosen and why", "including design/directions/",
+		},
+	} {
+		s, err := LoadStage(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, "`report needs-human`", "say to skip the direction round or give a design system to follow")
+		for _, h := range harnesses {
+			for _, lavish := range []bool{false, true} {
+				rec := NewRecord("demo-app")
+				rec.Type = "ui"
+				d := stageData(rec, "")
+				d.Tools.Lavish = lavish
+				got, err := s.Render(h, d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, w := range want {
+					if !strings.Contains(got, w) {
+						t.Errorf("%s for %s misses %q:\n%s", name, h, w, got)
+					}
+				}
+				if has := strings.Contains(got, "view them with `lavish-axi <file>`"); has != lavish {
+					t.Errorf("%s for %s with lavish %v: lavish suggested = %v", name, h, lavish, has)
+				}
+			}
+		}
+	}
+}
+
 func TestTemplateStitchNeedsShareAndKey(t *testing.T) {
 	s, err := LoadStage("design")
 	if err != nil {
