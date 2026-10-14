@@ -15,7 +15,14 @@ import (
 // under the name of its committed snapshot, or its folder name. The record
 // is imported from the snapshot committed at HEAD when there is one, else it
 // starts fresh with an unknown type. Nothing is written to the repository.
-func Register(ctx context.Context, s *state.Store, path, name string) (state.Project, Record, error) {
+// A non-empty reference replaces the record's reference repository: the
+// committed snapshot keeps only its name or URL, so this is how a path on
+// this machine is given back.
+func Register(ctx context.Context, s *state.Store, path, name, reference string) (state.Project, Record, error) {
+	ref, err := checkReference(reference)
+	if err != nil {
+		return state.Project{}, Record{}, err
+	}
 	dir, err := state.CanonicalPath(path)
 	if err != nil {
 		return state.Project{}, Record{}, err
@@ -49,6 +56,9 @@ func Register(ctx context.Context, s *state.Store, path, name string) (state.Pro
 		rec = NewRecord(name)
 	}
 	rec.Name, rec.Pending = name, 0
+	if ref != "" {
+		rec.ReferenceRepo = ref
+	}
 	p, err := s.ReserveProject(name, top)
 	if err != nil {
 		return state.Project{}, Record{}, err
@@ -114,4 +124,11 @@ func Forget(s *state.Store, name string, force bool) error {
 		}
 	}
 	return s.ForgetProject(name)
+}
+
+// ReferenceWithoutPath reports whether the record's reference repository
+// is a bare name, as a committed snapshot keeps it, which a runner cannot
+// open on this machine.
+func ReferenceWithoutPath(rec Record) bool {
+	return rec.ReferenceRepo != "" && !isURL(rec.ReferenceRepo) && !filepath.IsAbs(rec.ReferenceRepo)
 }

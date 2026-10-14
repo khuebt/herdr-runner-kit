@@ -41,7 +41,7 @@ func stageRunner(t *testing.T) (*runner.Runner, string) {
 	}
 	gitIn(t, dir, "init", "-q")
 	gitIn(t, dir, "commit", "-q", "--allow-empty", "-m", "init")
-	if _, _, err := project.Register(context.Background(), store, dir, "demo-app"); err != nil {
+	if _, _, err := project.Register(context.Background(), store, dir, "demo-app", ""); err != nil {
 		t.Fatal(err)
 	}
 	r := runner.New(store, config.Default(), "/usr/local/bin/herdr-runner-kit")
@@ -300,7 +300,7 @@ func gateCmd(t *testing.T, r *runner.Runner, verb, gate, feedback string) (strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := project.DecideOptions{Gate: gate, Outcome: verb, By: project.Approver(t.Context(), p.Path), Note: feedback}
+	o := project.DecideOptions{Gate: gate, Outcome: verb, By: project.Approver(t.Context(), p.Path)}
 	if verb == "reject" && feedback == "" {
 		o.Note = "out of budget"
 	}
@@ -343,6 +343,11 @@ func TestProjectGateCommands(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("changes output lacks %q:\n%s", want, out)
 		}
+	}
+	if rec, err := project.Load(r.Store, "demo-app"); err != nil {
+		t.Fatal(err)
+	} else if last := rec.Decisions[len(rec.Decisions)-1].Text; last != "spec v1 changes requested by Lan Pham" || rec.Gates.Spec.Note != "" {
+		t.Errorf("the feedback reached the record: decision %q, note %q", last, rec.Gates.Spec.Note)
 	}
 	prompts := fake.prompts()
 	if len(prompts) != 1 || !strings.Contains(prompts[0], "Split admin and member stories.") ||

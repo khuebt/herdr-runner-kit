@@ -57,7 +57,7 @@ func newRepo(t *testing.T) string {
 func registered(t *testing.T, dir string) *state.Store {
 	t.Helper()
 	s := openStore(t)
-	if _, _, err := Register(context.Background(), s, dir, ""); err != nil {
+	if _, _, err := Register(context.Background(), s, dir, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return s

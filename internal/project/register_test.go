@@ -15,7 +15,7 @@ import (
 func TestRegisterFreshRecord(t *testing.T) {
 	dir := newRepo(t)
 	s := openStore(t)
-	p, rec, err := Register(context.Background(), s, filepath.Join(dir, "."), "")
+	p, rec, err := Register(context.Background(), s, filepath.Join(dir, "."), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestRegisterFreshRecord(t *testing.T) {
 	if out := run(t, dir, "status", "--porcelain", "--ignored"); out != "" {
 		t.Errorf("register wrote to the repository: %q", out)
 	}
-	if _, _, err := Register(context.Background(), s, dir, "other"); err == nil {
+	if _, _, err := Register(context.Background(), s, dir, "other", ""); err == nil {
 		t.Error("registered the same folder twice")
 	}
 }
@@ -50,14 +50,14 @@ func TestRegisterImportsCommittedSnapshot(t *testing.T) {
 	}
 	// Uncommitted, the snapshot is not trusted.
 	s := openStore(t)
-	if _, got, err := Register(context.Background(), s, dir, ""); err != nil || got.Type != "unknown" || got.Name != "demo-app" {
+	if _, got, err := Register(context.Background(), s, dir, "", ""); err != nil || got.Type != "unknown" || got.Name != "demo-app" {
 		t.Fatalf("uncommitted snapshot used: %+v %v", got, err)
 	}
 	run(t, dir, "add", SnapshotPath)
 	run(t, dir, "commit", "-q", "-m", "snapshot")
 
 	s = openStore(t)
-	p, got, err := Register(context.Background(), s, dir, "")
+	p, got, err := Register(context.Background(), s, dir, "", "")
 	if err != nil || p.Name != "reading-lists" || got.Type != "ui" || len(got.Milestones) != 1 {
 		t.Fatalf("import: %+v %+v %v", p, got, err)
 	}
@@ -66,7 +66,7 @@ func TestRegisterImportsCommittedSnapshot(t *testing.T) {
 	}
 
 	s = openStore(t)
-	if p, got, err := Register(context.Background(), s, dir, "renamed"); err != nil || p.Name != "renamed" || got.Name != "renamed" {
+	if p, got, err := Register(context.Background(), s, dir, "renamed", ""); err != nil || p.Name != "renamed" || got.Name != "renamed" {
 		t.Fatalf("--name: %+v %+v %v", p, got, err)
 	}
 
@@ -74,7 +74,7 @@ func TestRegisterImportsCommittedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	run(t, dir, "commit", "-q", "-am", "broken snapshot")
-	if _, _, err := Register(context.Background(), openStore(t), dir, ""); err == nil || !strings.Contains(err.Error(), "bogus") {
+	if _, _, err := Register(context.Background(), openStore(t), dir, "", ""); err == nil || !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("broken snapshot: %v", err)
 	}
 }
@@ -82,15 +82,15 @@ func TestRegisterImportsCommittedSnapshot(t *testing.T) {
 func TestRegisterRefusals(t *testing.T) {
 	dir := newRepo(t)
 	s := openStore(t)
-	if _, _, err := Register(context.Background(), s, t.TempDir(), "plain"); err == nil {
+	if _, _, err := Register(context.Background(), s, t.TempDir(), "plain", ""); err == nil {
 		t.Error("registered a folder outside git")
 	}
 	wt := filepath.Join(filepath.Dir(dir), "wt")
 	run(t, dir, "worktree", "add", "-q", "-b", "side", wt)
-	if _, _, err := Register(context.Background(), s, wt, "side"); err == nil || !strings.Contains(err.Error(), "linked worktree") {
+	if _, _, err := Register(context.Background(), s, wt, "side", ""); err == nil || !strings.Contains(err.Error(), "linked worktree") {
 		t.Errorf("linked worktree: %v", err)
 	}
-	if _, _, err := Register(context.Background(), s, dir, "Bad Name"); err == nil {
+	if _, _, err := Register(context.Background(), s, dir, "Bad Name", ""); err == nil {
 		t.Error("invalid name accepted")
 	}
 	if list, _ := s.Projects(); len(list) != 0 {
@@ -106,7 +106,7 @@ func TestRegisterAndCommitWithoutCommits(t *testing.T) {
 	}
 	run(t, dir, "init", "-q", "-b", "main")
 	s := openStore(t)
-	if _, _, err := Register(context.Background(), s, dir, ""); err != nil {
+	if _, _, err := Register(context.Background(), s, dir, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if sha, err := Commit(context.Background(), s, "fresh", "docs: start project", SnapshotPath, DecisionsPath); err != nil || sha == "" {
@@ -142,5 +142,41 @@ func TestForget(t *testing.T) {
 	}
 	if err := Forget(s, "demo-app", true); !errors.Is(err, state.ErrUnknownProject) {
 		t.Errorf("unknown project: %v", err)
+	}
+}
+
+func TestRegisterReferenceWithoutPath(t *testing.T) {
+	dir := newRepo(t)
+	rec := fullRecord()
+	rec.Name, rec.ReferenceRepo = "reading-lists", "reference-app"
+	data, err := Render(rec, SnapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := filepath.Join(dir, SnapshotPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "add", SnapshotPath)
+	run(t, dir, "commit", "-q", "-m", "snapshot")
+
+	_, got, err := Register(context.Background(), openStore(t), dir, "", "")
+	if err != nil || got.ReferenceRepo != "reference-app" || !ReferenceWithoutPath(got) {
+		t.Fatalf("name only: %+v %v", got, err)
+	}
+	local := t.TempDir()
+	s := openStore(t)
+	_, got, err = Register(context.Background(), s, dir, "", local)
+	if err != nil || got.ReferenceRepo != local || ReferenceWithoutPath(got) {
+		t.Fatalf("--reference: %+v %v", got, err)
+	}
+	if stored, err := Load(s, "reading-lists"); err != nil || stored.ReferenceRepo != local {
+		t.Fatalf("stored record: %+v %v", stored, err)
+	}
+	if _, _, err := Register(context.Background(), openStore(t), dir, "", "https://u:fake-token-123@example.com/r.git"); err == nil {
+		t.Error("registered a reference URL with credentials")
 	}
 }

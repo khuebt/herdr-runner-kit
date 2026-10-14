@@ -2,7 +2,9 @@ package project
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -40,10 +42,35 @@ func Render(rec Record, path string) ([]byte, error) {
 	return nil, fmt.Errorf("%s is not a file the kit renders", path)
 }
 
+// remoteTimeout bounds the local git call that reads a reference's origin.
+const remoteTimeout = 5 * time.Second
+
+// PortableReference is the reference repository in a form that is the same
+// on every machine, for the files committed to the repository: a URL
+// without credentials, a local path as its origin URL when it has one, else
+// as its folder name. The kit's own record keeps the path as given.
+func PortableReference(ref string) string {
+	switch {
+	case ref == "":
+		return ""
+	case isURL(ref):
+		return RedactURL(ref)
+	case !filepath.IsAbs(ref):
+		return ref // already a bare name, as an earlier snapshot rendered it
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remoteTimeout)
+	defer cancel()
+	if remote, err := git(ctx, ref, "remote", "get-url", "origin"); err == nil && remote != "" {
+		return RedactURL(remote)
+	}
+	return filepath.Base(ref)
+}
+
 // renderSnapshot writes the whole record as front matter, which
 // ParseSnapshot reads back, followed by a generated summary.
 func renderSnapshot(rec Record) ([]byte, error) {
 	rec.ManifestVersion = ManifestVersion
+	rec.ReferenceRepo = PortableReference(rec.ReferenceRepo)
 	var b bytes.Buffer
 	b.WriteString("---\n")
 	enc := yaml.NewEncoder(&b)
