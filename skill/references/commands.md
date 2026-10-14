@@ -73,6 +73,8 @@ At the start of a session that touches a project, and when the user asks "where 
 
 `project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held. Before UX or prototype work, run `herdr-runner-kit doctor --tools` and tell the user which optional tools are missing.
 
+The `ux` and `design` runners first sample the one or two main screens and ask one direction round through `needs-human`: layout, navigation and density for `ux`; for `design`, pick, combine or another round of at least two visual directions. Relay the sample paths and every option in one message, suggest viewing the samples with Lavish when it is installed, and pass the user's choice with `answer`. The round is a question, not a gate. Notes that ask to skip the round, or give a design system to follow, skip it.
+
 Runners never share work outside this machine (Stitch, hosted Lavish) until the user runs `project share … on` themselves.
 
 ### Gates
