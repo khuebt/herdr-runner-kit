@@ -12,10 +12,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
+	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 	"github.com/khuebt/herdr-runner-kit/internal/upgrade"
@@ -104,6 +106,40 @@ func TestUpgradeWaitsForRunnersBeforeAMigration(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(target); string(data) != "old" {
 		t.Fatalf("binary changed: %q", data)
+	}
+}
+
+func TestUpgradeRefreshesEveryConfigFolderWithTheSkill(t *testing.T) {
+	fakeRelease(t, 1)
+	t.Setenv("HRK_NO_SETUP", "")
+	home, c1, c2 := setupEnv(t)
+	c3 := filepath.Join(home, ".claude3")
+	for _, d := range []string{c2, c3} {
+		if err := os.MkdirAll(install.SkillDir(d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(install.SkillDir(d), "SKILL.md"), []byte("old skill\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".claude-backup"), 0o700); err != nil { // no skill: left alone
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", c3)
+	var argv []string
+	old := execSetup
+	execSetup = func(_ string, a []string, _ []string) error { argv = a; return nil }
+	t.Cleanup(func() { execSetup = old })
+
+	out := runCommand(t, "upgrade", "--claude-config", "~/.claude")
+	want := []string{"setup", "--claude-config", c1, "--claude-config", c3, "--claude-config", c2}
+	if len(argv) < 1 || !slices.Equal(argv[1:], want) {
+		t.Errorf("setup argv = %q, want %q", argv, want)
+	}
+	for _, d := range []string{c1, c2, c3} {
+		if strings.Count(out, "refreshing "+d+"\n") != 1 {
+			t.Errorf("output does not name %s once:\n%s", d, out)
+		}
 	}
 }
 

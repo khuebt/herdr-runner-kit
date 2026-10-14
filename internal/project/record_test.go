@@ -141,3 +141,38 @@ func TestRecordLoadSaveUpdate(t *testing.T) {
 		t.Fatalf("newer record: %v", err)
 	}
 }
+
+func TestLoadShortensOldLongDecisions(t *testing.T) {
+	s := openStore(t)
+	rec := fullRecord()
+	at := rec.Decisions[0].At
+	rec.Decisions = append(rec.Decisions, Decision{At: at, Text: strings.Repeat("feedback ", 230)})
+	if err := Save(s, NewRecord("demo-app")); err != nil {
+		t.Fatal(err)
+	}
+	if err := write(s, rec); err != nil { // written before notes were bounded
+		t.Fatal(err)
+	}
+	got, err := Load(s, "demo-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := []rune(got.Decisions[1].Text)
+	if len(long) != maxNote || long[len(long)-1] != '…' || got.Decisions[0].Text != "project created" || got.Pending != 1 {
+		t.Fatalf("loaded %d runes, pending %d", len(long), got.Pending)
+	}
+	if text := Status(&got, state.Project{Name: "demo-app", Path: "/work/demo-app"}, nil, time.Now()).Text(); !strings.Contains(text, "note: 1 old decision entries will be shortened at the next commit\n") {
+		t.Errorf("status lacks the note:\n%s", text)
+	}
+	// The next save writes the short entry, and later loads count nothing.
+	if _, err := Update(s, "demo-app", func(*Record) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(s, "demo-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Decisions[1].Text != got.Decisions[1].Text || again.Pending != 2 || again.clipped != 0 {
+		t.Errorf("after save: %q pending %d clipped %d", again.Decisions[1].Text, again.Pending, again.clipped)
+	}
+}

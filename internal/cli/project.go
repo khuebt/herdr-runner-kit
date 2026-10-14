@@ -398,6 +398,7 @@ func newProjectRunCommand() *cobra.Command {
 	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of a Claude runner, as a path or a name such as claude2")
 	f.StringVar(&o.Language, "language", "", "language of the runner's report summaries and questions")
 	f.BoolVar(&o.Docx, "docx", false, "pack stage only: export the pack as DOCX too, with LibreOffice")
+	f.StringVar(&o.Gate, "gate", "", "auto starts on its own; human waits for `release` (default: human for the pack stage given --after, else auto)")
 	return cmd
 }
 
@@ -412,6 +413,9 @@ type stageRun struct {
 	Language     string
 	// Docx asks the pack stage for a DOCX export as well.
 	Docx bool
+	// Gate is auto or human; empty means human for a pack stage given
+	// After, so the earlier stages are reviewed first, else auto.
+	Gate string
 	// TaskStage is the stage recorded on the task, such as "M2/F1";
 	// empty means the template's name.
 	TaskStage string
@@ -563,11 +567,15 @@ func spawnStage(ctx context.Context, r *runner.Runner, o stageRun, p state.Proje
 	if taskStage == "" {
 		taskStage = stage.Name
 	}
+	gate, reason := task.Gate(o.Gate), ""
+	if gate == "" && stage.Name == project.GatePack && len(o.After) > 0 {
+		gate, reason = task.GateHuman, packHoldReason
+	}
 	t, err := r.Spawn(ctx, runner.SpawnOptions{
 		Kind: stage.Kind, Agent: o.Agent, After: after, Title: title,
 		Prompt: prompt, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
 		Project: p.Name, Stage: taskStage, Keep: stage.Keep, Warn: o.Warn,
-		Branch: o.Branch, Base: o.Base,
+		Branch: o.Branch, Base: o.Base, Gate: gate, Reason: reason,
 	})
 	if err != nil {
 		return nil, err
@@ -575,6 +583,20 @@ func spawnStage(ctx context.Context, r *runner.Runner, o stageRun, p state.Proje
 	releaseEarlierStage(ctx, r, t, o.Warn)
 	return t, nil
 }
+
+// changeApplyText asks the runner of a change decided now to apply it. The
+// kit updates the roadmap itself at the next gate, so only a running
+// milestone's plan is the runner's to update.
+func changeApplyText(id string, milestoneRunning bool) string {
+	if milestoneRunning {
+		return id + " is decided now: raise the spec version, add it to the change log, update the roadmap and the running milestone plan, commit and report again"
+	}
+	return id + " is decided now: raise the spec version, add it to the change log, commit and report again; the roadmap is updated by the kit at the next gate"
+}
+
+// packHoldReason is why a pack chained after other stages waits for a
+// release: its work is wasted when an earlier stage needs changes.
+const packHoldReason = "review the earlier stages before the pack; release to build it"
 
 // releaseEarlierStage lets gc close the kept tabs of the finished tasks t
 // replaces: the earlier runs of its project stage. A tab already past its
@@ -1008,7 +1030,9 @@ func newProjectCRDecideCommand() *cobra.Command {
 			if c.Class == project.ClassTweak && c.Status == project.ChangeNow {
 				fmt.Fprintln(out, "next: a tweak goes to the runner building that part: herdr-runner-kit send <id> \"<the change>\"")
 			} else if c.Status == project.ChangeNow && c.Task != "" {
-				fmt.Fprintf(out, "next: ask %s to apply it: herdr-runner-kit send %s \"%s is decided now: raise the spec version, add it to the change log, update the roadmap and the running milestone plan, commit and report again\"\n", c.Task, c.Task, c.ID)
+				rec, err := project.Load(store, p.Name)
+				running := err == nil && project.RunningMilestone(rec) != nil
+				fmt.Fprintf(out, "next: ask %s to apply it: herdr-runner-kit send %s \"%s\"\n", c.Task, c.Task, changeApplyText(c.ID, running))
 			}
 			return nil
 		},

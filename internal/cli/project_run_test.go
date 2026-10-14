@@ -430,6 +430,66 @@ func TestProjectRunPack(t *testing.T) {
 	}
 }
 
+func TestChainedPackWaitsForARelease(t *testing.T) {
+	r, dir := stageRunner(t)
+	commitFiles(t, dir, specFile("1"))
+	if _, err := project.Decide(t.Context(), r.Store, "demo-app", project.DecideOptions{Gate: "spec", Outcome: "approve", By: "Lan Pham"}); err != nil {
+		t.Fatal(err)
+	}
+	ux, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "ux", Cwd: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "pack", Cwd: dir, After: []string{ux.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.Gate != task.GateHuman || held.HoldReason != packHoldReason || held.Status != task.Queued {
+		t.Errorf("chained pack = %s %s %q", held.Status, held.Gate, held.HoldReason)
+	}
+	auto, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "pack", Cwd: dir, After: []string{ux.ID}, Gate: "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auto.Gate != task.GateAuto || auto.HoldReason != "" {
+		t.Errorf("pack --gate auto = %s %q", auto.Gate, auto.HoldReason)
+	}
+	alone, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "ux", Cwd: dir, After: []string{ux.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alone.Gate != task.GateAuto {
+		t.Errorf("chained ux = %s", alone.Gate)
+	}
+}
+
+func TestChangeDecidedNowWithoutAMilestone(t *testing.T) {
+	r, dir := stageRunner(t)
+	t.Setenv("HRK_STATE_DIR", r.Store.Dir())
+	t.Setenv("HRK_TASK", "")
+	commitFiles(t, dir, specFile("1"))
+	if _, err := project.Decide(t.Context(), r.Store, "demo-app", project.DecideOptions{Gate: "spec", Outcome: "approve", By: "Lan Pham"}); err != nil {
+		t.Fatal(err)
+	}
+	impact, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "change", Notes: "Add CSV export", Cwd: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Store.Update(impact.ID, func(tk *task.Task) error {
+		tk.Status, tk.Decisions = task.Done, []string{"class -> scope"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runIn("", "project", "cr", "decide", "CR-1", "now", "--project", "demo-app")
+	if err != nil || !strings.Contains(out, changeApplyText("CR-1", false)) || strings.Contains(out, "running milestone plan") {
+		t.Fatalf("cr decide: %q %v", out, err)
+	}
+	if !strings.Contains(changeApplyText("CR-1", true), "update the roadmap and the running milestone plan") {
+		t.Error("the text for a running milestone lost its plan update")
+	}
+}
+
 // runIn runs the CLI with stdin.
 func runIn(stdin string, args ...string) (string, error) {
 	root := NewRootCommand()
