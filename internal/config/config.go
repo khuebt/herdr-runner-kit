@@ -66,7 +66,14 @@ type Config struct {
 	// KeepFor is how long a kept runner's tab stays open after its task
 	// finished. Zero keeps it until keep --off or stop.
 	KeepFor time.Duration
+	// StallAfter is how long a working agent may show no progress before
+	// the kit nudges it. Zero turns the check off.
+	StallAfter time.Duration
 }
+
+// MinStallAfter is the shortest stallAfter: the progress check samples once
+// a minute and needs a few samples before it acts.
+const MinStallAfter = 2 * time.Minute
 
 // NotifyEvents lists the event types the telegram.notify key accepts.
 var NotifyEvents = []string{"needs-human", "failed", "stalled", "held", "done", "turn-ended-unreported", "usage-limit"}
@@ -82,6 +89,7 @@ type fileConfig struct {
 	Language             *string             `yaml:"language"`
 	QuotaFallback        []fileFallback      `yaml:"quotaFallback"`
 	KeepFor              *string             `yaml:"keepFor"`
+	StallAfter           *string             `yaml:"stallAfter"`
 }
 
 type fileFallback struct {
@@ -180,6 +188,13 @@ func Parse(data []byte) (Config, error) {
 		}
 		cfg.KeepFor = d
 	}
+	if file.StallAfter != nil {
+		d, err := parseDuration(*file.StallAfter)
+		if err != nil {
+			return Config{}, fmt.Errorf("stallAfter: %w", err)
+		}
+		cfg.StallAfter = d
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -243,6 +258,9 @@ func (c Config) Validate() error {
 	}
 	if c.KeepFor < 0 {
 		return fmt.Errorf("keepFor must not be negative, got %s", c.KeepFor)
+	}
+	if c.StallAfter != 0 && c.StallAfter < MinStallAfter {
+		return fmt.Errorf("stallAfter must be 0 (off) or at least %s, got %s", MinStallAfter, c.StallAfter)
 	}
 	for _, ev := range c.Telegram.Notify {
 		if !slices.Contains(NotifyEvents, ev) {

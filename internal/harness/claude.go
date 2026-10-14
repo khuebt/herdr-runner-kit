@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -80,6 +82,72 @@ var claudeLimit = limitLine{
 }
 
 func (claude) ShowsUsageLimit(screen string) bool { return claudeLimit.shown(screen) }
+
+// claudeSpinner is the status line Claude draws under a running turn, a
+// glyph and a verb with an ellipsis: "✽ Harmonizing… (14s · ↓ 156 tokens)".
+var claudeSpinner = regexp.MustCompile(`^\s*\S\s+\S[^…]*…`)
+
+// claudeBoxEdge is a border of the input box, which sits above the footer.
+var claudeBoxEdge = regexp.MustCompile(`^─{20,}`)
+
+// claudeRetry is the status line of a request Claude retries, as Claude
+// Code 2.1.300 draws it: "✻ Connection refused … · Retrying in 8s ·
+// attempt 5/10".
+var claudeRetry = regexp.MustCompile(`(?i)\bretrying in \d+\s*s\b.*\battempt \d+/\d+`)
+
+// ProgressText keeps what is above Claude's input box, without the spinner
+// line and the tip under it, but with the spinner's token count, which
+// grows while the model writes.
+func (claude) ProgressText(screen string) string {
+	lines := strings.Split(screen, "\n")
+	edges := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		if claudeBoxEdge.MatchString(lines[i]) {
+			if edges++; edges == 2 {
+				lines = lines[:i]
+				break
+			}
+		}
+	}
+	var out []string
+	inTip := false
+	for _, l := range lines {
+		body := strings.TrimSpace(l)
+		switch {
+		case claudeSpinner.MatchString(l) && strings.Contains(l, "("):
+			out = append(out, "spinner "+strings.Join(tokenCount.FindAllString(l, -1), " "))
+			inTip = false
+			continue
+		case strings.HasPrefix(body, "⎿") && strings.Contains(body, "Tip:"):
+			inTip = true
+			continue
+		case inTip && strings.HasPrefix(l, "     ") && body != "":
+			continue
+		}
+		inTip = false
+		out = append(out, maskDurations(l))
+	}
+	return joinLines(out)
+}
+
+func (claude) ShowsRetry(screen string) bool {
+	return anyLineMatches(lastLines(screen, statusLines), claudeRetry)
+}
+
+// claudeAutoDeny is the line of a permission prompt that Claude Code
+// answers itself on an unattended session, as it drew it in October 2026
+// under its rm safety check: "⚠ Claude Code will automatically deny this
+// request in 1:49, to avoid blocking progress on an unattended session".
+// The prompt is denied two minutes after it opens.
+var claudeAutoDeny = SelfResolvingPrompt{
+	Name:    "Claude's safety",
+	Match:   "Claude Code will automatically deny this request in",
+	Timeout: 2 * time.Minute,
+}
+
+func (claude) SelfResolvingPrompts() []SelfResolvingPrompt {
+	return []SelfResolvingPrompt{claudeAutoDeny}
+}
 
 // ClaudeUsageLimit reads a Claude hook input and returns the message of a
 // StopFailure that a usage limit caused: Claude ends such a turn with a

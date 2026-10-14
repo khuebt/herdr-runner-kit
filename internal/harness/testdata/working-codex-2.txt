@@ -1,0 +1,8 @@
+
+• Working (44s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+  └ Tip: When plugins are enabled, use /plugins to browse plugins.
+
+› Ask Codex to do anything
+
+  GPT-6-Luna medium · ~/Work · Context 6% used · weekly 43% left · 258K window · 19.6K used · 26.5K in · 78 out…
+  ← for agents · ? for shortcuts

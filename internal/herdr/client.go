@@ -313,6 +313,10 @@ type Agent struct {
 	PaneID      string `json:"pane_id"`
 	TabID       string `json:"tab_id"`
 	WorkspaceID string `json:"workspace_id"`
+	// Revision and StateChangeSeq are herdr's counters for the agent; they
+	// change with its state, not while it keeps working.
+	Revision       int `json:"revision"`
+	StateChangeSeq int `json:"state_change_seq"`
 }
 
 type agentResult struct {

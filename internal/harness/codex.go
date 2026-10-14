@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -71,6 +72,42 @@ var codexLimit = limitLine{
 }
 
 func (codex) ShowsUsageLimit(screen string) bool { return codexLimit.shown(screen) }
+
+// codexStatus is the status line Codex draws above its input while a turn
+// runs, "• Working (44s • esc to interrupt)", and the tip it may draw
+// under it.
+var codexStatus = regexp.MustCompile(`^\s*(?:•\s.*\besc to interrupt\b|└ Tip:)`)
+
+// codexRetry matches the status Codex shows while it retries a model
+// request. The phrases are codex-cli 0.162.1's own strings ("Reconnecting...
+// waiting for network", "stream disconnected - retrying sampling request");
+// no live screen of them was captured.
+var codexRetry = regexp.MustCompile(`(?i)\bReconnecting\.\.\.|\bretrying sampling request\b`)
+
+// ProgressText keeps what is above Codex's input line and its status line,
+// which hold the conversation as Codex prints it.
+func (codex) ProgressText(screen string) string {
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], "›") {
+			lines = lines[:i]
+			break
+		}
+	}
+	var out []string
+	for _, l := range lines {
+		if !codexStatus.MatchString(l) {
+			out = append(out, maskDurations(l))
+		}
+	}
+	return joinLines(out)
+}
+
+func (codex) ShowsRetry(screen string) bool {
+	return anyLineMatches(lastLines(screen, statusLines), codexRetry)
+}
+
+func (codex) SelfResolvingPrompts() []SelfResolvingPrompt { return nil }
 
 // CodexConfigPath returns ${CODEX_HOME:-~/.codex}/config.toml.
 func CodexConfigPath() (string, error) {

@@ -29,6 +29,9 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	if t.Status == task.Stopped {
 		return false, fmt.Errorf("%s is stopped; spawn a new runner", id)
 	}
+	if err := r.errIfLost(ctx, t); err != nil {
+		return false, err
+	}
 	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
@@ -73,6 +76,9 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 	}
 	if t.Question == "" {
 		return false, fmt.Errorf("%s waits on the %s dialog in its tab; answer it there (herdr-runner-kit focus %s)", id, t.Error, id)
+	}
+	if err := r.errIfLost(ctx, t); err != nil {
+		return false, err
 	}
 	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
 		return false, err

@@ -1,0 +1,30 @@
+ │ :root{--t-sm:13pt;--t-xs:11.5pt}")
+ │ s=s.replace(".g-row{grid-template-columns:240px
+ │ 1fr;min-height:44px}",".g-row{grid-template-columns:250px
+ │ 1fr;min-height:46px}")
+ │ open(p,'w').write(s)
+ │ EOF
+ │ R=/home/user/Work/demo-app;
+ │ O=$R/handbook/product/discovery/approval/pack-v1; node
+ │ build-pack.mjs $R $O $PWD && chromium --headless
+ │ --disable-gpu --hide-scrollbars --window-size=1000,600
+ │ --screenshot=$PWD/shots/gantt-raw.png
+ │ file://$PWD/gantt.html 2>/dev/null; convert
+ │ shots/gantt-raw.png -trim +repage -bordercolor white
+ │ -border 12 shots/gantt.png && identify shots/gantt.png &&
+ │ node /home/user/templates/docx-standard/bu
+ │ ild-docx.js $PWD/pack-docx.html --meta
+ │ $PWD/pack-docx-meta.yaml -o $O/pack.docx && rm -f docxv/*
+ │ && soffice -env:UserInstallation=file://$PWD/lo-profile
+ │ --headless --convert-to pdf --outdir $PWD/docxv
+ │ $O/pack.docx >/dev/null 2>&1; pdfinfo docxv/pack.pdf |
+ │ grep Pages
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on statically-unresolvable target:
+ │ /home/user/Work/demo-app/docxv/*
+ ⚠ Claude Code will automatically deny this request in 1:42,
+ to avoid blocking progress on an unattended session
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+ Esc to cancel · Tab to amend

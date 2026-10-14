@@ -103,7 +103,7 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
-	b := backstop{r: r, watched: map[string]bool{}}
+	b := backstop{r: r, watched: map[string]bool{}, sampled: map[string]bool{}}
 	timeout := time.NewTimer(o.Timeout)
 	defer timeout.Stop()
 	scan := time.NewTicker(scanEvery)
@@ -380,14 +380,28 @@ func truncate(s string, n int) string {
 	return string(runes[:n-1]) + "…"
 }
 
-// backstop watches each live runner's agent once per wait, and fails
-// launches that never finished.
+// lostEvery is how often wait checks that herdr still has each live
+// runner's pane and agent.
+const lostEvery = time.Minute
+
+// backstop watches each live runner's agent and its progress once per
+// wait, fails launches that never finished, and fails runners herdr lost.
 type backstop struct {
 	r       *runner.Runner
 	watched map[string]bool
+	sampled map[string]bool
+	lostAt  time.Time // last check for lost runners
 }
 
 func (b *backstop) scan(ctx context.Context, tasks []*task.Task) {
+	if time.Since(b.lostAt) >= lostEvery {
+		// Before the watchers start, so a runner lost while no wait ran,
+		// such as across a restart, fails with that reason.
+		b.lostAt = time.Now()
+		for _, t := range tasks {
+			b.r.CheckLost(ctx, t)
+		}
+	}
 	for _, t := range tasks {
 		switch t.Status {
 		case task.Starting:
@@ -396,6 +410,10 @@ func (b *backstop) scan(ctx context.Context, tasks []*task.Task) {
 			if !b.watched[t.ID] && t.Herdr.PaneID != "" {
 				b.watched[t.ID] = true
 				go b.r.WatchAgent(ctx, t.ID)
+			}
+			if !b.sampled[t.ID] && t.Herdr.PaneID != "" && b.r.Config.StallAfter > 0 {
+				b.sampled[t.ID] = true
+				go b.r.WatchProgress(ctx, t.ID)
 			}
 		}
 	}

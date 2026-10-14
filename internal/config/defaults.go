@@ -31,5 +31,6 @@ func Default() Config {
 		},
 		UpdateCheck: true,
 		KeepFor:     4 * time.Hour,
+		StallAfter:  10 * time.Minute,
 	}
 }

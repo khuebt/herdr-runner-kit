@@ -265,6 +265,32 @@ func TestAgentGoneFailsTask(t *testing.T) {
 	}
 }
 
+func TestLostRunnerFailsAtWaitStart(t *testing.T) {
+	r, _ := newTestRunner(t)
+	// After a restart herdr has no pane for the task: every call on it
+	// fails, so the task's own watcher would wait forever.
+	r.Herdr = &herdr.Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		switch strings.Join(args[:2], " ") {
+		case "agent get", "agent wait":
+			return nil, []byte(`{"error":{"code":"agent_not_found","message":"gone"}}`), errors.New("exit status 1")
+		case "pane read":
+			return nil, []byte(`{"error":{"code":"pane_not_found","message":"gone"}}`), errors.New("exit status 1")
+		}
+		return []byte("{}"), nil, nil
+	}}
+	tk := addTask(t, r, task.NeedsHuman, owner)
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.Herdr.PaneID, t.Herdr.AgentName, t.Question = "w1C:p1", "hrk-"+t.ID, "1. which?"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := get(t, start(r, Options{Owner: owner, Window: time.Millisecond}))
+	if len(got.res.Lines) != 1 || !strings.HasPrefix(got.res.Lines[0], tk.ID+" failed · fix login · runner lost: herdr pane gone") {
+		t.Fatalf("lines = %q %v", got.res.Lines, got.err)
+	}
+}
+
 func TestDeadLauncherFailsTask(t *testing.T) {
 	r, _ := newTestRunner(t)
 	tk := addTask(t, r, task.Starting, owner)

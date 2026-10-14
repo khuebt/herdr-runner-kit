@@ -1,0 +1,7 @@
+
+• Working (14s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+
+› Ask Codex to do anything
+
+  GPT-6-Luna medium · ~/Work · Context 0% used · weekly 43% left · 0 in · 0 out · Fast off
+  ← for agents · ? for shortcuts

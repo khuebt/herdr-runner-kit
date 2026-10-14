@@ -1,0 +1,30 @@
+ │ i in 0 1 2 3 4;
+ │ do s=("${f[@]:$((
+ │ i*5)):5}"); [
+ │ ${#s[@]} -gt 0 ]
+ │ && montage
+ │ "${s[@]}" -tile
+ │ 5x1 -geometry
+ │ +4+4 -background
+ │ "#888"
+ │ sheet$i.png;
+ │ done'; ls
+ │ $SC/pdfv6/sheet*
+ │ $SC/docxv6/sheet*
+ │ | wc -l
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ This command
+ requires approval
+ ⚠ Claude Code will
+ automatically deny
+ this request in
+ 1:51, to avoid
+ blocking progress
+ on an unattended
+ session
+ Do you want to
+ proceed?
+ ❯ 1. Yes
+   2. No
+ Esc to cancel · Tab
+ to amend

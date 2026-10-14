@@ -100,6 +100,18 @@ func TestParseKeepFor(t *testing.T) {
 	}
 }
 
+func TestParseStallAfter(t *testing.T) {
+	if cfg := Default(); cfg.StallAfter != 10*time.Minute {
+		t.Errorf("default stallAfter = %s", cfg.StallAfter)
+	}
+	for in, want := range map[string]time.Duration{"stallAfter: 2m\n": 2 * time.Minute, "stallAfter: 0\n": 0} {
+		cfg, err := Parse([]byte(in))
+		if err != nil || cfg.StallAfter != want {
+			t.Errorf("Parse(%q) = %s, %v", in, cfg.StallAfter, err)
+		}
+	}
+}
+
 func TestParseEmptyFile(t *testing.T) {
 	if _, err := Parse(nil); err != nil {
 		t.Fatal(err)
@@ -124,6 +136,8 @@ func TestParseErrors(t *testing.T) {
 		{"quotaFallback:\n  - agent: codex\n    model: x\n", "unknown key model"},
 		{"keepFor: soon\n", "keepFor"},
 		{"keepFor: -1h\n", "keepFor must not be negative"},
+		{"stallAfter: 90s\n", "stallAfter must be 0 (off) or at least 2m0s"},
+		{"stallAfter: often\n", "stallAfter"},
 	}
 	for _, tt := range tests {
 		_, err := Parse([]byte(tt.yaml))

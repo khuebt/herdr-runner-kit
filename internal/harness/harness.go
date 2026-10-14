@@ -74,6 +74,17 @@ type Adapter interface {
 	// error line the agent itself draws when its account hit a usage limit.
 	// Conversation text and tool output never count.
 	ShowsUsageLimit(screen string) bool
+	// ProgressText returns the part of a working agent's screen that
+	// changes only when the agent makes progress: the agent's own animated
+	// status lines, input box and footer are dropped, and the elapsed-time
+	// counters left are masked.
+	ProgressText(screen string) string
+	// ShowsRetry reports whether the agent's own status line says it is
+	// retrying a failed request, which is progress of a kind.
+	ShowsRetry(screen string) bool
+	// SelfResolvingPrompts lists the prompts the agent answers itself
+	// after a timeout.
+	SelfResolvingPrompts() []SelfResolvingPrompt
 }
 
 // For returns the adapter for harness h.

@@ -271,6 +271,7 @@ func TestContractV2Rules(t *testing.T) {
 		"one round of up to 5 questions",
 		"Never ask for, type or echo a secret value",
 		"Ask where it is stored instead.",
+		"Do not run rm -r on directories, alone or inside compound commands, because the agent stops on a safety prompt for it; write scratch output into a new folder under /out instead.",
 	} {
 		if !strings.Contains(c, want) {
 			t.Errorf("contract lacks %q:\n%s", want, c)

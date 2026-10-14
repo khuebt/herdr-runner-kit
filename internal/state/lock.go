@@ -37,3 +37,9 @@ func lock(path string) (func(), error) {
 func (s *Store) Lock(name string) (func(), error) {
 	return lock(filepath.Join(s.dir, name+".lock"))
 }
+
+// LockFile takes the lock file name in task id's folder, blocking until it
+// is free, and returns the function that releases it.
+func (s *Store) LockFile(id, name string) (func(), error) {
+	return lock(filepath.Join(s.TaskDir(id), name))
+}
