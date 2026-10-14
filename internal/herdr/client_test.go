@@ -135,3 +135,18 @@ func TestRepoWorkspaceSkipsLinkedWorktrees(t *testing.T) {
 		t.Errorf("RepoWorkspace = %q, %v", ws, err)
 	}
 }
+
+func TestPaneProcessInfo(t *testing.T) {
+	var got []string
+	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		got = args
+		return []byte(`{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":12,"foreground_processes":[{"pid":12,"name":"claude"}],"pane_id":"w1:p1","shell_pid":11},"type":"pane_process_info"}}`), nil, nil
+	}}
+	info, err := c.PaneProcessInfo(context.Background(), "w1:p1")
+	if err != nil || info.ShellPID != 11 {
+		t.Fatalf("info = %+v, %v", info, err)
+	}
+	if strings.Join(got, " ") != "pane process-info --pane w1:p1" {
+		t.Errorf("argv = %q", strings.Join(got, " "))
+	}
+}

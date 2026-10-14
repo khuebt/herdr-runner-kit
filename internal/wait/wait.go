@@ -37,7 +37,7 @@ const (
 
 // newsTypes are the events that wake the main session. Everything else is
 // progress and only moves the cursor.
-var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "cleanable"}
+var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "cleanable", "processes-left"}
 
 // IsNews reports whether an event type wakes the main session.
 func IsNews(typ string) bool { return slices.Contains(newsTypes, typ) }
@@ -174,14 +174,14 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 		}
 		b.scan(ctx, tasks)
 		// tasks holds only the watched owners' tasks.
-		if due, ok := runner.NextGC(tasks, ""); ok && time.Now().After(due) && time.Now().After(gcAfter) {
+		if due, ok := runner.NextGC(tasks, "", r.Config.KeepFor); ok && time.Now().After(due) && time.Now().After(gcAfter) {
 			// In the background, so a slow agent exit never delays news; at
 			// most once a minute, so a runner that is in use or will not close is not
 			// sent Ctrl+C every scan.
 			gcAfter = time.Now().Add(runner.GCRetry)
 			go func(owners []string) {
 				for _, owner := range owners {
-					_, _ = r.GC(ctx, owner, runner.GCAge, false)
+					_, _ = r.GC(ctx, owner, runner.GCAge, false, false)
 				}
 			}(o.owners(tasks))
 		}
@@ -297,7 +297,7 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 	ids := make([]string, 0, len(news))
 	for _, ev := range news {
 		t, _ := r.Store.Get(ev.Task) // nil when unreadable: the line goes without task details
-		lines = append(lines, Line(ev, t))
+		lines = append(lines, Line(ev, t, r.Config.KeepFor))
 		if !slices.Contains(ids, ev.Task) {
 			ids = append(ids, ev.Task)
 		}
@@ -312,8 +312,9 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 // snapshot of that report, and a done line says when the runner's tab
 // closes, all ahead of the summary so the cut drops the summary first. A
 // round of questions is a header line followed by one indented line per
-// question, each at most MaxLine characters. t may be nil.
-func Line(ev state.Event, t *task.Task) string {
+// question, each at most MaxLine characters. t may be nil. keepFor is how
+// long a kept tab stays open.
+func Line(ev state.Event, t *task.Task, keepFor time.Duration) string {
 	parts := []string{ev.Task + " " + ev.Type}
 	if t != nil && t.Title != "" {
 		parts = append(parts, t.Title)
@@ -332,7 +333,7 @@ func Line(ev state.Event, t *task.Task) string {
 		parts = append(parts, "git: "+ev.Git)
 	}
 	if ev.Type == "done" && t != nil {
-		if tab := tabNote(t); tab != "" {
+		if tab := tabNote(t, keepFor); tab != "" {
 			parts = append(parts, tab)
 		}
 	}
@@ -353,16 +354,19 @@ func oneLine(parts []string) string {
 	return truncate(strings.Join(strings.Fields(strings.Join(parts, " · ")), " "), MaxLine)
 }
 
-// tabNote says what happens to a finished runner's open tab: kept, or
-// closed by gc at a given time.
-func tabNote(t *task.Task) string {
+// tabNote says what happens to a finished runner's open tab: kept, kept
+// until a given time, or closed by gc at a given time.
+func tabNote(t *task.Task, keepFor time.Duration) string {
 	if t.Herdr.PaneID == "" || t.Herdr.Closed {
 		return ""
 	}
-	if t.Keep {
+	at, ok := runner.CloseAt(t, keepFor)
+	switch {
+	case t.Keep && ok:
+		return "tab kept until " + at.Local().Format("15:04")
+	case t.Keep:
 		return "tab kept"
-	}
-	if at, ok := runner.CloseAt(t); ok {
+	case ok:
 		return "tab closes " + at.Local().Format("15:04")
 	}
 	return ""

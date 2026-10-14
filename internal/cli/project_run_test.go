@@ -533,3 +533,35 @@ func TestProjectChangeBacklogAndDependencies(t *testing.T) {
 		}
 	}
 }
+
+func TestStageRerunReleasesTheEarlierKeep(t *testing.T) {
+	r, dir := stageRunner(t)
+	r.Herdr = &herdr.Client{Bin: "herdr", Exec: (&fakeHerdrExec{}).exec}
+	var notes []string
+	o := stageRun{Project: "demo-app", Stage: "spec", Cwd: dir, Warn: func(line string) { notes = append(notes, line) }}
+	first, err := runStage(t.Context(), r, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishStage(t, r, first.ID)
+	if _, err := r.Store.Update(first.ID, func(tk *task.Task) error {
+		tk.FinishedAt = time.Now().Add(-time.Hour)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := runStage(t.Context(), r, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Store.Get(first.ID)
+	if got.Keep || !got.Herdr.Closed {
+		t.Errorf("earlier spec: keep %v, closed %v", got.Keep, got.Herdr.Closed)
+	}
+	if !slices.Contains(notes, "note: "+first.ID+" (earlier spec) will close") {
+		t.Errorf("notes = %q", notes)
+	}
+	if got, _ := r.Store.Get(second.ID); !got.Keep {
+		t.Error("the new spec runner is not kept")
+	}
+}

@@ -283,18 +283,18 @@ func TestDeadLauncherFailsTask(t *testing.T) {
 func TestLineIsShort(t *testing.T) {
 	long := strings.Repeat("word ", 200)
 	tk := &task.Task{Title: "title", Status: task.Done, FinishedAt: time.Now(), Herdr: task.Herdr{PaneID: "w1:p1"}}
-	line := Line(state.Event{Task: "t1", Type: "done", Summary: long, Outputs: []string{"/a.md"}}, tk)
+	line := Line(state.Event{Task: "t1", Type: "done", Summary: long, Outputs: []string{"/a.md"}}, tk, 0)
 	if n := len([]rune(line)); n > MaxLine {
 		t.Errorf("line has %d characters", n)
 	}
 	if !strings.Contains(line, "tab closes ") {
 		t.Errorf("the cut dropped the close time: %q", line)
 	}
-	q := Line(state.Event{Task: "t2", Type: "needs-human", Question: "Drop it?\nyes or no"}, &task.Task{Title: "t"})
+	q := Line(state.Event{Task: "t2", Type: "needs-human", Question: "Drop it?\nyes or no"}, &task.Task{Title: "t"}, 0)
 	if q != "t2 needs-human · t · Q: Drop it? yes or no" {
 		t.Errorf("question line = %q", q)
 	}
-	if got := Line(state.Event{Task: "t3", Type: "done", Summary: "ok"}, nil); got != "t3 done · ok" {
+	if got := Line(state.Event{Task: "t3", Type: "done", Summary: "ok"}, nil, 0); got != "t3 done · ok" {
 		t.Errorf("line without a task = %q", got)
 	}
 }
@@ -303,19 +303,22 @@ func TestDoneLineHasCloseTime(t *testing.T) {
 	finished := time.Date(2026, 10, 13, 15, 45, 0, 0, time.Local)
 	tk := &task.Task{Title: "fix login", Status: task.Done, FinishedAt: finished, Herdr: task.Herdr{PaneID: "w1:p1"}}
 	ev := state.Event{Task: "t1", Type: "done", Summary: "fixed"}
-	if got := Line(ev, tk); got != "t1 done · fix login · tab closes 16:15 · fixed" {
+	if got := Line(ev, tk, 0); got != "t1 done · fix login · tab closes 16:15 · fixed" {
 		t.Errorf("open tab: %q", got)
 	}
 	tk.Keep = true
-	if got := Line(ev, tk); got != "t1 done · fix login · tab kept · fixed" {
+	if got := Line(ev, tk, 0); got != "t1 done · fix login · tab kept · fixed" {
 		t.Errorf("kept tab: %q", got)
 	}
+	if got := Line(ev, tk, 4*time.Hour); got != "t1 done · fix login · tab kept until 19:45 · fixed" {
+		t.Errorf("kept tab with a lifetime: %q", got)
+	}
 	tk.Keep, tk.Herdr.Closed = false, true
-	if got := Line(ev, tk); got != "t1 done · fix login · fixed" {
+	if got := Line(ev, tk, 0); got != "t1 done · fix login · fixed" {
 		t.Errorf("closed tab: %q", got)
 	}
 	tk.Herdr.Closed = false
-	if got := Line(state.Event{Task: "t1", Type: "failed", Summary: "broke"}, tk); strings.Contains(got, "tab") {
+	if got := Line(state.Event{Task: "t1", Type: "failed", Summary: "broke"}, tk, 0); strings.Contains(got, "tab") {
 		t.Errorf("failed line has a tab note: %q", got)
 	}
 }
@@ -326,18 +329,18 @@ func TestLineUsesEventSnapshot(t *testing.T) {
 		Git: &task.GitState{Worktree: true, Branch: "b", Uncommitted: 4},
 	}
 	ev := state.Event{Task: "t1", Type: "done", Summary: "fixed", Git: "on b, 1 commit not pushed"}
-	if got := Line(ev, tk); got != "t1 done · fix login · git: on b, 1 commit not pushed · fixed" {
+	if got := Line(ev, tk, 0); got != "t1 done · fix login · git: on b, 1 commit not pushed · fixed" {
 		t.Errorf("done line = %q", got)
 	}
 	ev.Type, ev.Summary = "failed", "broke"
-	if got := Line(ev, tk); got != "t1 failed · fix login · git: on b, 1 commit not pushed · broke" {
+	if got := Line(ev, tk, 0); got != "t1 failed · fix login · git: on b, 1 commit not pushed · broke" {
 		t.Errorf("failed line = %q", got)
 	}
-	q := Line(state.Event{Task: "t1", Type: "needs-human", Question: "Which?", Git: "on b, clean"}, tk)
+	q := Line(state.Event{Task: "t1", Type: "needs-human", Question: "Which?", Git: "on b, clean"}, tk, 0)
 	if strings.Contains(q, "git:") {
 		t.Errorf("needs-human line has git: %q", q)
 	}
-	long := Line(state.Event{Task: "t1", Type: "done", Summary: strings.Repeat("word ", 200), Git: "on b, clean"}, tk)
+	long := Line(state.Event{Task: "t1", Type: "done", Summary: strings.Repeat("word ", 200), Git: "on b, clean"}, tk, 0)
 	if !strings.Contains(long, "git: on b, clean") {
 		t.Errorf("the cut dropped the git state: %q", long)
 	}
@@ -445,18 +448,18 @@ func TestDoneLineStartsWithDecisions(t *testing.T) {
 		Decisions: []string{"CSV or JSON? -> CSV", "Page size? -> 50"},
 	}
 	want := "t1 done · export · decided: CSV or JSON? -> CSV; Page size? -> 50 · git: on b, clean · Export added."
-	if got := Line(ev, tk); got != want {
+	if got := Line(ev, tk, 0); got != want {
 		t.Errorf("done line = %q", got)
 	}
 	ev.Summary = strings.Repeat("word ", 200)
-	if got := Line(ev, tk); !strings.HasPrefix(got, "t1 done · export · decided: CSV or JSON? -> CSV; Page size? -> 50 · git: on b, clean · word") {
+	if got := Line(ev, tk, 0); !strings.HasPrefix(got, "t1 done · export · decided: CSV or JSON? -> CSV; Page size? -> 50 · git: on b, clean · word") {
 		t.Errorf("the cut dropped more than the summary: %q", got)
 	}
 }
 
 func TestQuestionRoundLines(t *testing.T) {
 	ev := state.Event{Task: "t4", Type: "needs-human", Question: "1. Which database? a) Postgres (recommended)\n2. " + strings.Repeat("x", 400)}
-	got := strings.Split(Line(ev, &task.Task{Title: "store"}), "\n")
+	got := strings.Split(Line(ev, &task.Task{Title: "store"}, 0), "\n")
 	if len(got) != 3 || got[0] != "t4 needs-human · store · 2 questions" || got[1] != "  1. Which database? a) Postgres (recommended)" ||
 		!strings.HasPrefix(got[2], "  2. xxx") || len([]rune(got[2])) > MaxLine {
 		t.Errorf("round lines = %q", got)

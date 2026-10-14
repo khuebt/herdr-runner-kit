@@ -198,7 +198,7 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 				return 0
 			}
 			tasks = slices.DeleteFunc(tasks, func(t *task.Task) bool { return !watched(t) })
-			due, ok := runner.NextGC(tasks, "")
+			due, ok := runner.NextGC(tasks, "", r.Config.KeepFor)
 			if !ok {
 				return 0
 			}
@@ -217,7 +217,7 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 				}
 			}
 			for _, o := range owners {
-				if _, err := r.GC(ctx, o, runner.GCAge, false); err != nil {
+				if _, err := r.GC(ctx, o, runner.GCAge, false, false); err != nil {
 					return 0
 				}
 			}

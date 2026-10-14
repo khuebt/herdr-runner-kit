@@ -563,12 +563,42 @@ func spawnStage(ctx context.Context, r *runner.Runner, o stageRun, p state.Proje
 	if taskStage == "" {
 		taskStage = stage.Name
 	}
-	return r.Spawn(ctx, runner.SpawnOptions{
+	t, err := r.Spawn(ctx, runner.SpawnOptions{
 		Kind: stage.Kind, Agent: o.Agent, After: after, Title: title,
 		Prompt: prompt, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
 		Project: p.Name, Stage: taskStage, Keep: stage.Keep, Warn: o.Warn,
 		Branch: o.Branch, Base: o.Base,
 	})
+	if err != nil {
+		return nil, err
+	}
+	releaseEarlierStage(ctx, r, t, o.Warn)
+	return t, nil
+}
+
+// releaseEarlierStage lets gc close the kept tabs of the finished tasks t
+// replaces: the earlier runs of its project stage. A tab already past its
+// close time closes at once.
+func releaseEarlierStage(ctx context.Context, r *runner.Runner, t *task.Task, warn func(string)) {
+	tasks, err := r.Store.List()
+	if err != nil {
+		return
+	}
+	for _, old := range tasks {
+		if old.ID == t.ID || old.Project != t.Project || old.Stage != t.Stage || !old.Keep ||
+			!old.Status.Terminal() || old.Herdr.Closed {
+			continue
+		}
+		_, err := r.Keep(ctx, old.ID, false)
+		if warn == nil {
+			continue
+		}
+		if err != nil {
+			warn(fmt.Sprintf("note: %s (earlier %s) keeps its tab open: %v", old.ID, t.Stage, err))
+		} else {
+			warn(fmt.Sprintf("note: %s (earlier %s) will close", old.ID, t.Stage))
+		}
+	}
 }
 
 // mainCheckoutTasks returns the unfinished tasks of a project that work in

@@ -107,36 +107,58 @@ func newFocusCommand() *cobra.Command {
 func newStopCommand() *cobra.Command {
 	var removeWorktree bool
 	cmd := &cobra.Command{
-		Use:   "stop <id>",
-		Short: "Quit a runner's agent, close its tab and mark the task stopped",
-		Long: "stop quits the agent and closes its tab. A worktree task keeps its workspace " +
+		Use:   "stop <id>...",
+		Short: "Quit runners' agents, close their tabs and mark the tasks stopped",
+		Long: "stop quits each runner's agent and closes its tab. A worktree task keeps its workspace " +
 			"and branch unless --remove-worktree is given; a dirty worktree is never removed, " +
-			"and the branch is never deleted.",
-		Args: cobra.ExactArgs(1),
+			"and the branch is never deleted. Untracked files a runner without a worktree may have " +
+			"left are named, never deleted. One id that fails does not keep the others running.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := parseTaskID(args[0])
-			if err != nil {
-				return err
-			}
 			r, err := openRunner()
 			if err != nil {
 				return err
 			}
-			t, err := r.Stop(cmd.Context(), id, removeWorktree)
-			if err != nil {
-				return err
+			out := cmd.OutOrStdout()
+			var failed []string
+			var errs []error
+			for _, arg := range args {
+				t, err := stopOne(cmd, r, arg, removeWorktree)
+				if err != nil {
+					failed = append(failed, arg)
+					errs = append(errs, fmt.Errorf("%s: %w", arg, err))
+					continue
+				}
+				fmt.Fprintf(out, "%s %s\n", t.ID, t.Status)
+				if dir, n, list := runner.LeftFiles(cmd.Context(), t); n > 0 {
+					fmt.Fprintf(out, "note: %d untracked files in %s, which the runner may have left: %s\n", n, dir, list)
+				}
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", t.ID, t.Status)
-			return err
+			switch {
+			case len(errs) == 1 && len(args) == 1:
+				return errors.Unwrap(errs[0])
+			case len(errs) > 0:
+				return fmt.Errorf("could not stop %s: %w", strings.Join(failed, ", "), errors.Join(errs...))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&removeWorktree, "remove-worktree", false, "also remove a clean worktree (the branch is kept)")
 	return cmd
 }
 
+// stopOne stops the task named by arg.
+func stopOne(cmd *cobra.Command, r *runner.Runner, arg string, removeWorktree bool) (*task.Task, error) {
+	id, err := parseTaskID(arg)
+	if err != nil {
+		return nil, err
+	}
+	return r.Stop(cmd.Context(), id, removeWorktree)
+}
+
 func newGCCommand() *cobra.Command {
 	var olderThan time.Duration
-	var removeWorktree bool
+	var removeWorktree, kept bool
 	cmd := &cobra.Command{
 		Use:   "gc",
 		Short: "Close runners of finished tasks so they stop using memory",
@@ -146,7 +168,7 @@ func newGCCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			closed, err := r.GC(cmd.Context(), "", olderThan, removeWorktree)
+			closed, err := r.GC(cmd.Context(), "", olderThan, removeWorktree, kept)
 			if len(closed) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "closed %s\n", strings.Join(closed, ", "))
 			} else if err == nil {
@@ -157,6 +179,7 @@ func newGCCommand() *cobra.Command {
 	}
 	cmd.Flags().DurationVar(&olderThan, "older-than", runner.GCAge, "close runners whose task finished at least this long ago")
 	cmd.Flags().BoolVar(&removeWorktree, "remove-worktree", false, "also remove clean worktrees (branches are kept)")
+	cmd.Flags().BoolVar(&kept, "kept", false, "also close kept runners whose task finished at least --older-than ago")
 	return cmd
 }
 
@@ -264,7 +287,7 @@ func newListCommand() *cobra.Command {
 					state = a.Status
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Kind, t.Agent, t.Status, state,
-					tabState(t, now), age(t.CreatedAt), t.Title)
+					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), t.Title)
 			}
 			return w.Flush()
 		},
@@ -275,17 +298,19 @@ func newListCommand() *cobra.Command {
 }
 
 // tabState says whether a task's tab is open, and when gc closes it.
-func tabState(t *task.Task, now time.Time) string {
+func tabState(t *task.Task, now time.Time, keepFor time.Duration) string {
 	switch {
 	case t.Herdr.PaneID == "":
 		return "-"
 	case t.Herdr.Closed:
 		return "closed"
+	}
+	at, ok := runner.CloseAt(t, keepFor)
+	switch {
+	case t.Keep && ok:
+		return "kept until " + at.Local().Format("15:04")
 	case t.Keep:
 		return "kept"
-	}
-	at, ok := runner.CloseAt(t)
-	switch {
 	case !ok:
 		return "open"
 	case now.Before(at):
@@ -300,8 +325,9 @@ func newKeepCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "keep <id>",
 		Short: "Keep a finished runner's tab open instead of letting gc close it",
-		Long: "keep holds a runner's tab open after its task finishes, until keep --off or stop. " +
-			"keep --off lets gc close it again, at once when its close time has passed.",
+		Long: "keep holds a runner's tab open after its task finishes, for keepFor (default 4h; " +
+			"0 means until keep --off or stop). keep --off lets gc close it again, at once when " +
+			"its close time has passed.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseTaskID(args[0])
@@ -316,7 +342,7 @@ func newKeepCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), keepLine(t, time.Now()))
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), keepLine(t, time.Now(), r.Config.KeepFor))
 			return err
 		},
 	}
@@ -325,14 +351,19 @@ func newKeepCommand() *cobra.Command {
 }
 
 // keepLine tells the user what happens to the runner's tab after keep.
-func keepLine(t *task.Task, now time.Time) string {
+func keepLine(t *task.Task, now time.Time, keepFor time.Duration) string {
 	if t.Herdr.Closed {
 		return t.ID + " closed now"
 	}
-	if t.Keep {
+	at, ok := runner.CloseAt(t, keepFor)
+	switch {
+	case t.Keep && keepFor > 0 && !ok:
+		return fmt.Sprintf("%s kept open for %s after it finishes; close it sooner with stop %s", t.ID, shortDuration(keepFor), t.ID)
+	case t.Keep && ok:
+		return fmt.Sprintf("%s kept open until %s; close it sooner with stop %s", t.ID, at.Local().Format("15:04"), t.ID)
+	case t.Keep:
 		return t.ID + " kept open; close it with stop " + t.ID
 	}
-	at, ok := runner.CloseAt(t)
 	switch {
 	case !ok:
 		return fmt.Sprintf("%s closes on its own %d minutes after it finishes", t.ID, int(runner.GCAge.Minutes()))
@@ -341,6 +372,18 @@ func keepLine(t *task.Task, now time.Time) string {
 	default:
 		return t.ID + " is due to close; it closes once its agent is idle"
 	}
+}
+
+// shortDuration prints d without zero trailing units, such as 4h or 1h30m.
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }
 
 func newShowCommand() *cobra.Command {

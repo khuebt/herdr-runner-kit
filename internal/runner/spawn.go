@@ -53,13 +53,16 @@ type Runner struct {
 	Telegram *telegram.Client
 	// Sleep pauses between polls; tests replace it.
 	Sleep func(time.Duration)
+	// ProcTable lists the machine's processes, so a close can name the
+	// ones a runner left running. Nil skips that check.
+	ProcTable func(context.Context) ([]proc, error)
 }
 
 // New returns a Runner for the real environment.
 func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	r := &Runner{
 		Store: store, Config: cfg, Herdr: herdr.New(), Telegram: telegram.New(),
-		Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep,
+		Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep, ProcTable: psTable,
 	}
 	r.Notify = r.startDetachedNotify
 	r.StartLauncher = func(id string) (int, error) { return r.startDetached(id, "__launch", "launch.log") }

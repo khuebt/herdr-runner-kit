@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadMissingFileUsesDefaults(t *testing.T) {
@@ -87,6 +88,18 @@ quotaFallback:
 	}
 }
 
+func TestParseKeepFor(t *testing.T) {
+	if cfg := Default(); cfg.KeepFor != 4*time.Hour {
+		t.Errorf("default keepFor = %s", cfg.KeepFor)
+	}
+	for in, want := range map[string]time.Duration{"keepFor: 90m\n": 90 * time.Minute, "keepFor: 0\n": 0, "keepFor: \"0\"\n": 0} {
+		cfg, err := Parse([]byte(in))
+		if err != nil || cfg.KeepFor != want {
+			t.Errorf("Parse(%q) = %s, %v", in, cfg.KeepFor, err)
+		}
+	}
+}
+
 func TestParseEmptyFile(t *testing.T) {
 	if _, err := Parse(nil); err != nil {
 		t.Fatal(err)
@@ -109,6 +122,8 @@ func TestParseErrors(t *testing.T) {
 		{"quotaFallback:\n  - claudeConfig: claude2\n", "quotaFallback[0].agent is required"},
 		{"quotaFallback:\n  - agent: codex\n    claudeConfig: claude2\n", "needs a Claude agent"},
 		{"quotaFallback:\n  - agent: codex\n    model: x\n", "unknown key model"},
+		{"keepFor: soon\n", "keepFor"},
+		{"keepFor: -1h\n", "keepFor must not be negative"},
 	}
 	for _, tt := range tests {
 		_, err := Parse([]byte(tt.yaml))

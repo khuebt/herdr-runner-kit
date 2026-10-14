@@ -384,3 +384,20 @@ func (c *Client) AgentSendKeys(ctx context.Context, target string, keys ...strin
 func (c *Client) AgentFocus(ctx context.Context, target string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "agent", "focus", target)
 }
+
+// ProcessInfo is herdr's view of the processes in a pane. Only the shell
+// is decoded: everything the pane started descends from it.
+type ProcessInfo struct {
+	ShellPID int `json:"shell_pid"`
+}
+
+// PaneProcessInfo returns the processes in pane.
+func (c *Client) PaneProcessInfo(ctx context.Context, pane string) (ProcessInfo, error) {
+	var resp struct {
+		Result struct {
+			ProcessInfo ProcessInfo `json:"process_info"`
+		} `json:"result"`
+	}
+	err := c.runJSON(ctx, DefaultTimeout, &resp, "pane", "process-info", "--pane", pane)
+	return resp.Result.ProcessInfo, err
+}
