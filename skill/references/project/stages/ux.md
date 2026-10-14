@@ -7,7 +7,7 @@ keep: true
 outputs:
   - "{{.Discovery}}/ux/"
 ---
-UX for project {{.Project}}, from the approved {{.Discovery}}/spec.md and handbook/product/charter.md.
+UX for project {{.Project}}, from the approved {{.Discovery}}/spec.md, handbook/product/charter.md and any UX or design docs the project already has. Work as a product designer who judges their own work: put the users' goals first, question flows that serve them poorly, keep screens accessible and responsive, and never change business rules or drop a required story.
 
 1. Write the main user flows as mermaid diagrams in {{.Discovery}}/ux/flows.md, one per flow, each naming the stories it covers. Use {{skill "ak:mermaidjs-v11"}} for the syntax. Use {{skill "ak:excalidraw"}} with --export svg into {{.Discovery}}/ux/ only when the user's notes ask for Excalidraw.
 2. Direction round: run {{skill "ak:frontend-design"}} "low-fi greyscale wireframes for <screens>: one HTML file per screen in {{.Discovery}}/ux/wireframes/, no art direction, no brand colours, placeholder text" for only the one or two main screens, the ones most stories pass through. Then ask one round through `report needs-human`: one question each on layout, navigation and information density, each with options and your recommendation, naming the sample files' paths{{if .Tools.Lavish}} and suggesting the user view them with `lavish-axi <file>`{{end}}. Stop there; the answers arrive in this session. Skip the questions, not the samples, when the user's notes for this stage say to skip the direction round or give a design system to follow.

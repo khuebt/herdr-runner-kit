@@ -258,16 +258,24 @@ func TestTemplateNotesStayInsideUntrustedBlock(t *testing.T) {
 // The ux and design stages sample the main screens and ask one direction
 // round before building the rest, unless the notes skip it or give a design
 // system; Lavish is suggested for the samples only when it is installed.
+// Design also carries the designer's principles, reference sites it may only
+// learn from, and a screenshot review before done.
 func TestTemplateDirectionRound(t *testing.T) {
 	for name, want := range map[string][]string{
 		"ux": {
 			"only the one or two main screens", "one question each on layout, navigation and information density",
 			"Wireframe the remaining screens", "the direction chosen in the round",
+			"never change business rules or drop a required story",
 		},
 		"design": {
-			"two or three clearly different visual directions", "/design/directions/",
+			"as many as the problem needs and at least two", "/design/directions/",
 			"pick one direction, combine directions", "one more round of samples",
 			"Record in DESIGN.md which direction was chosen and why", "including design/directions/",
+			"they are not a checklist", "Avoid generic UI and the look of a common AI template",
+			"inherit and reuse it, and propose improvements", "Never change business rules or drop a required requirement",
+			"https://github.com/Leonxlnx/taste-skill", "https://www.getlayers.ai/", "https://land-book.com/",
+			"never install them or run their scripts", "never send your designs off this machine",
+			"screenshots at mobile, tablet and desktop widths",
 		},
 	} {
 		s, err := LoadStage(name)
