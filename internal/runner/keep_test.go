@@ -30,6 +30,9 @@ func TestGCClosesAKeptRunnerAfterKeepFor(t *testing.T) {
 	if err != nil || !slices.Equal(closed, []string{old.ID}) {
 		t.Fatalf("closed = %v, %v", closed, err)
 	}
+	if evs := eventsOf(t, r, old.ID, "closed"); len(evs) != 1 || !KeptClosed(evs[0]) {
+		t.Errorf("closed events = %+v", evs)
+	}
 	got, _ := r.Store.Get(recent.ID)
 	if at, ok := CloseAt(got, r.Config.KeepFor); !ok || !at.Equal(got.FinishedAt.Add(4*time.Hour)) {
 		t.Errorf("CloseAt of a kept runner = %v, %v", at, ok)

@@ -29,6 +29,9 @@ const (
 	// MaxDecisionRunes the longest one.
 	MaxDecisions     = 7
 	MaxDecisionRunes = 200
+	// MaxSummaryRunes is the longest summary wait and Telegram show whole.
+	// A longer one is accepted, with a note.
+	MaxSummaryRunes = 400
 )
 
 // answeredInTab is the summary of the answered event a report emits when the
@@ -119,6 +122,43 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: start follow-up: %v\n", t.ID, err)
 	}
 	return t, nil
+}
+
+// OutDir returns the folder for a task's files meant for the main session.
+func (r *Runner) OutDir(id string) string { return filepath.Join(r.Store.TaskDir(id), "out") }
+
+// ReportNotes returns advice for a runner about its report: a summary that
+// wait and Telegram cut, and outputs outside the task's out folder. They
+// never refuse a report, and are neither events nor stored.
+func (r *Runner) ReportNotes(id string, o ReportOptions) []string {
+	out := r.OutDir(id)
+	var notes []string
+	if utf8.RuneCountInString(strings.TrimSpace(o.Summary)) > MaxSummaryRunes {
+		notes = append(notes, fmt.Sprintf("note: summaries over %d characters are cut in wait and Telegram; keep one or two sentences and put detail in an --output file under %s", MaxSummaryRunes, out))
+	}
+	for _, p := range o.Outputs {
+		if !within(out, p) {
+			notes = append(notes, fmt.Sprintf("note: %s is outside %s; files for the main session belong there", p, out))
+		}
+	}
+	return notes
+}
+
+// within reports whether path is inside dir, symlinks resolved where they
+// exist.
+func within(dir, path string) bool {
+	resolve := func(p string) string {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return p
+		}
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			return resolved
+		}
+		return abs
+	}
+	rel, err := filepath.Rel(resolve(dir), resolve(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // validateReport checks a report and hides values that look like secrets

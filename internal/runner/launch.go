@@ -186,7 +186,7 @@ type runnerFiles struct {
 // output directory.
 func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (runnerFiles, error) {
 	dir := r.Store.TaskDir(t.ID)
-	outDir := filepath.Join(dir, "out")
+	outDir := r.OutDir(t.ID)
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return runnerFiles{}, err
 	}

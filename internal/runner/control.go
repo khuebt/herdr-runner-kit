@@ -9,6 +9,7 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -228,7 +229,7 @@ func (r *Runner) Keep(ctx context.Context, id string, on bool) (*task.Task, erro
 	if on || !ok || time.Now().Before(at) {
 		return t, nil
 	}
-	err = r.closeRunner(ctx, t, false, closeCheck{idle: true, cutoff: time.Now().Add(-GCAge), keep: true})
+	err = r.closeRunner(ctx, t, false, closeCheck{idle: true, cutoff: time.Now().Add(-GCAge), keep: true, released: true})
 	if err != nil && !errors.Is(err, errReopened) {
 		return nil, fmt.Errorf("close %s: %w", id, err)
 	}
@@ -355,6 +356,13 @@ var (
 
 // closeCheck says what a close re-checks under the task lock. Stop uses the
 // zero value: any finished runner closes.
+// keptClosed is the summary of the closed event of a kept runner's tab,
+// which learning reads to measure the time the tab stayed open idle.
+const keptClosed = "kept tab closed"
+
+// KeptClosed reports whether a closed event closed a kept runner's tab.
+func KeptClosed(ev state.Event) bool { return ev.Type == "closed" && ev.Summary == keptClosed }
+
 type closeCheck struct {
 	idle   bool      // also check that the agent is not in use
 	cutoff time.Time // close only a task that finished by then
@@ -362,6 +370,9 @@ type closeCheck struct {
 	// keepCutoff closes a kept runner that finished by then; zero leaves
 	// every kept runner open. It applies only with keep.
 	keepCutoff time.Time
+	// released marks a close right after keep --off, so the closed event
+	// still counts the tab as kept.
+	released bool
 }
 
 // cutoffFor returns when t must have finished by for c to close it, and the
@@ -468,6 +479,13 @@ func (r *Runner) closeRunner(ctx context.Context, t *task.Task, removeWorktree b
 		// Closed is written only once the agent is gone.
 		if err := r.endClaim(t.ID, since, true); err != nil {
 			return err
+		}
+		if cur, err := r.Store.Get(t.ID); err == nil {
+			summary := "tab closed"
+			if cur.Keep || c.released {
+				summary = keptClosed
+			}
+			r.emit(cur, "closed", summary, "")
 		}
 	}
 	if t.Worktree == nil || !removeWorktree {

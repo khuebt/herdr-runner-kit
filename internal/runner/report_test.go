@@ -510,3 +510,29 @@ func TestRecentBranchesEmptyPrefix(t *testing.T) {
 		t.Errorf("branches = %v", got)
 	}
 }
+
+func TestReportNotesWarnWithoutRefusing(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	out := r.OutDir(tk.ID)
+	inside, outside := filepath.Join(out, "notes.md"), filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, inside)
+	writeFile(t, outside)
+	long := strings.Repeat("word ", 100)
+	o := ReportOptions{Status: task.Done, Summary: long, Outputs: []string{inside, outside}}
+	notes := r.ReportNotes(tk.ID, o)
+	want := []string{
+		"note: summaries over 400 characters are cut in wait and Telegram; keep one or two sentences and put detail in an --output file under " + out,
+		"note: " + outside + " is outside " + out + "; files for the main session belong there",
+	}
+	if !slices.Equal(notes, want) {
+		t.Errorf("notes = %q", notes)
+	}
+	got, err := r.Report(tk.ID, o)
+	if err != nil || got.Summary != strings.TrimSpace(long) || len(got.Outputs) != 2 {
+		t.Fatalf("report = %+v, %v", got, err)
+	}
+	if notes := r.ReportNotes(tk.ID, ReportOptions{Status: task.Done, Summary: "ok", Outputs: []string{inside}}); len(notes) != 0 {
+		t.Errorf("a short summary with an output in out/ got notes: %q", notes)
+	}
+}
