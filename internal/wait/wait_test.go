@@ -325,6 +325,14 @@ func TestLineIsShort(t *testing.T) {
 	}
 }
 
+func TestDoneLineHasTheGitLine(t *testing.T) {
+	g := task.GitState{Branch: "main", Base: "origin/main", Untracked: 1536, UntrackedPlans: 1530, Head: "abc1234", SinceStart: 2}
+	line := Line(state.Event{Task: "t1", Type: "done", Summary: "ok", Git: g.Short()}, &task.Task{Title: "fix"}, 0)
+	if want := "t1 done · fix · git: repo state, on main, 1536 untracked (1530 under plans/), 2 commits since start, head abc1234 · ok"; line != want {
+		t.Errorf("line = %q\nwant   %q", line, want)
+	}
+}
+
 func TestDoneLineHasCloseTime(t *testing.T) {
 	finished := time.Date(2026, 10, 13, 15, 45, 0, 0, time.Local)
 	tk := &task.Task{Title: "fix login", Status: task.Done, FinishedAt: finished, Herdr: task.Herdr{PaneID: "w1:p1"}}

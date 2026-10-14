@@ -32,6 +32,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	if err := r.errIfLost(ctx, t); err != nil {
 		return false, err
 	}
+	head := roundHead(t) // a new round begins with this prompt
 	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
@@ -44,6 +45,9 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 			return errStopped
 		}
 		t.Unreported = 0
+		if head != "" {
+			t.RoundHead = head
+		}
 		// Reopen the task, so its next report counts, unreported turns are
 		// nudged, and wait watches it.
 		if t.Status.Terminal() {
@@ -80,11 +84,15 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 	if err := r.errIfLost(ctx, t); err != nil {
 		return false, err
 	}
+	head := roundHead(t)
 	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
 	nt, changed, err := r.Store.Transition(id, task.Running, []task.Status{task.NeedsHuman}, func(t *task.Task) {
 		t.Question, t.Unreported = "", 0
+		if head != "" {
+			t.RoundHead = head
+		}
 	})
 	if err != nil {
 		return false, err
@@ -126,6 +134,20 @@ func (r *Runner) Focus(ctx context.Context, id string) error {
 		return err
 	}
 	return r.Herdr.AgentFocus(ctx, t.Herdr.PaneID)
+}
+
+// Peek returns the last lines of a runner's visible pane, with anything that
+// looks like a secret hidden. It only reads.
+func (r *Runner) Peek(ctx context.Context, id string, lines int) (string, error) {
+	t, err := r.liveTask(id)
+	if err != nil {
+		return "", err
+	}
+	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, lines)
+	if err != nil {
+		return "", err
+	}
+	return redact.Secrets(screen), nil
 }
 
 func (r *Runner) liveTask(id string) (*task.Task, error) {

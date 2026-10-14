@@ -260,7 +260,7 @@ func newListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List tasks with their stored status and herdr's live state",
+		Short:   "List tasks with their stored status, herdr's live state and their last event's age",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			r, err := openRunner()
@@ -278,9 +278,13 @@ func newListCommand() *cobra.Command {
 				owner = currentOwner(cmd)
 			}
 			live, _ := r.Herdr.AgentList(cmd.Context()) // herdr down: show stored state only
+			last, err := lastEvents(r.Store)
+			if err != nil {
+				return err
+			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			now := time.Now()
-			fmt.Fprintln(w, "ID\tKIND\tAGENT\tSTATUS\tLIVE\tTAB\tAGE\tTITLE")
+			fmt.Fprintln(w, "ID\tKIND\tAGENT\tSTATUS\tLIVE\tTAB\tAGE\tLAST\tTITLE")
 			for _, t := range tasks {
 				if !all && t.Owner != owner && (!projects || !task.IsProjectOwner(t.Owner)) {
 					continue
@@ -289,8 +293,12 @@ func newListCommand() *cobra.Command {
 				if a, ok := live[t.Herdr.PaneID]; ok && t.Herdr.PaneID != "" && !t.Herdr.Closed && a.Kind != "" {
 					state = a.Status
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Kind, t.Agent, t.Status, state,
-					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), t.Title)
+				lastAge := "-"
+				if at, ok := last[t.ID]; ok {
+					lastAge = age(at)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Kind, t.Agent, t.Status, state,
+					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), lastAge, t.Title)
 			}
 			return w.Flush()
 		},
@@ -298,6 +306,21 @@ func newListCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&all, "all", false, "show tasks of every main session")
 	cmd.Flags().StringVar(&owner, "owner", "", "show tasks of this main session only (default: git top-level of the current folder, plus the tasks of every project)")
 	return cmd
+}
+
+// lastEvents returns the time of each task's latest event.
+func lastEvents(store *state.Store) (map[string]time.Time, error) {
+	all, _, err := store.ReadEventsSince(0)
+	if err != nil {
+		return nil, err
+	}
+	last := map[string]time.Time{}
+	for _, ev := range all {
+		if ev.Task != "" && ev.TS.After(last[ev.Task]) {
+			last[ev.Task] = ev.TS
+		}
+	}
+	return last, nil
 }
 
 // tabState says whether a task's tab is open, and when gc closes it.
@@ -391,10 +414,14 @@ func shortDuration(d time.Duration) string {
 
 func newShowCommand() *cobra.Command {
 	var events int
+	var asJSON, withPrompt bool
 	cmd := &cobra.Command{
 		Use:   "show <id>",
 		Short: "Show a task, its recent events and its output folder",
-		Args:  cobra.ExactArgs(1),
+		Long: "show prints a compact view of a task: its state, git line, report, last events and " +
+			"output folder. The prompt and inputs show with --prompt. --json prints the task as one " +
+			"JSON object for scripts; with --events it prints {task, events}.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseTaskID(args[0])
 			if err != nil {
@@ -408,15 +435,6 @@ func newShowCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
-			enc := json.NewEncoder(out)
-			enc.SetIndent("", "  ")
-			if err := enc.Encode(t); err != nil {
-				return err
-			}
-			if t.Git != nil {
-				fmt.Fprintf(out, "\ngit: %s (checked %s)\n", t.Git.Short(), t.Git.CheckedAt.Local().Format("15:04"))
-			}
 			all, _, err := r.Store.ReadEventsSince(0)
 			if err != nil {
 				return err
@@ -427,24 +445,118 @@ func newShowCommand() *cobra.Command {
 					mine = append(mine, ev)
 				}
 			}
-			fmt.Fprintf(out, "\nevents (last %d):\n", min(events, len(mine)))
-			for _, ev := range mine[max(0, len(mine)-events):] {
-				line := ev.TS.Local().Format("15:04:05") + "  " + ev.Type
-				if ev.Summary != "" {
-					line += " · " + ev.Summary
+			mine = mine[max(0, len(mine)-max(events, 0)):]
+			out := cmd.OutOrStdout()
+			if asJSON {
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				if !cmd.Flags().Changed("events") {
+					return enc.Encode(t)
 				}
-				if ev.Question != "" {
-					line += " · Q: " + ev.Question
-				}
-				fmt.Fprintln(out, "  "+line)
+				return enc.Encode(struct {
+					Task   *task.Task    `json:"task"`
+					Events []state.Event `json:"events"`
+				}{t, mine})
 			}
-			dir := r.Store.TaskDir(id)
-			fmt.Fprintf(out, "\noutput: %s/out\nlaunch log: %s/launch.log\n", dir, dir)
-			return nil
+			_, err = fmt.Fprint(out, showText(t, mine, r.Store.TaskDir(id), r.Config.KeepFor, withPrompt))
+			return err
 		},
 	}
-	cmd.Flags().IntVar(&events, "events", 10, "how many recent events to show")
+	cmd.Flags().IntVar(&events, "events", 5, "how many recent events to show")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the task as JSON only")
+	cmd.Flags().BoolVar(&withPrompt, "prompt", false, "also print the prompt and the inputs from --after tasks")
 	return cmd
+}
+
+// maxShowField is the most characters show prints of one field; the
+// summary is printed whole.
+const maxShowField = 400
+
+// showText is the compact view of a task that show prints.
+func showText(t *task.Task, events []state.Event, dir string, keepFor time.Duration, withPrompt bool) string {
+	var b strings.Builder
+	field := func(name, value string) {
+		if value != "" {
+			fmt.Fprintf(&b, "%s: %s\n", name, truncate(value, maxShowField))
+		}
+	}
+	list := func(name string, items []string) {
+		if len(items) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "%s:\n", name)
+		for _, it := range items {
+			fmt.Fprintf(&b, "  %s\n", truncate(it, maxShowField))
+		}
+	}
+	fmt.Fprintf(&b, "%s · %s · %s · %s\n", t.ID, t.Status, t.Kind, t.Agent)
+	field("title", t.Title)
+	if t.Project != "" {
+		project := t.Project
+		if t.Stage != "" {
+			project += ", stage " + t.Stage
+		}
+		field("project", project)
+	}
+	when := "created " + t.CreatedAt.Local().Format("2006-01-02 15:04")
+	if !t.FinishedAt.IsZero() {
+		when += " · finished " + t.FinishedAt.Local().Format("2006-01-02 15:04")
+	}
+	if tab := tabState(t, time.Now(), keepFor); tab != "-" {
+		when += " · tab " + tab
+	}
+	field("time", when)
+	if w := t.Worktree; w != nil && w.Path != "" {
+		where := w.Path + " on " + w.Branch
+		if w.Removed {
+			where += " (removed)"
+		}
+		field("worktree", where)
+	} else {
+		field("cwd", t.Cwd)
+	}
+	if t.Git != nil {
+		field("git", t.Git.Short()+" (checked "+t.Git.CheckedAt.Local().Format("15:04")+")")
+	}
+	field("error", t.Error)
+	if t.Summary != "" {
+		fmt.Fprintf(&b, "summary: %s\n", t.Summary)
+	}
+	list("decisions", t.Decisions)
+	if t.Question != "" {
+		list("question", strings.Split(t.Question, "\n"))
+	}
+	list("outputs", t.Outputs)
+	if withPrompt {
+		fmt.Fprintf(&b, "prompt:\n%s\n", t.Prompt)
+		if t.Inputs != "" {
+			fmt.Fprintf(&b, "inputs:\n%s\n", t.Inputs)
+		}
+	}
+	if len(events) > 0 {
+		fmt.Fprintf(&b, "events (last %d):\n", len(events))
+		for _, ev := range events {
+			line := ev.TS.Local().Format("15:04:05") + "  " + ev.Type
+			if ev.Summary != "" {
+				line += " · " + ev.Summary
+			}
+			if ev.Question != "" {
+				line += " · Q: " + ev.Question
+			}
+			fmt.Fprintf(&b, "  %s\n", truncate(strings.Join(strings.Fields(line), " "), maxShowField))
+		}
+	}
+	fmt.Fprintf(&b, "output: %s/out\nlaunch log: %s/launch.log\n", dir, dir)
+	return b.String()
+}
+
+// truncate cuts s to at most n characters, marking a cut with an ellipsis.
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n-1]) + "…"
 }
 
 func currentOwner(cmd *cobra.Command) string {

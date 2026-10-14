@@ -171,6 +171,9 @@ type Task struct {
 	Language string `json:"language,omitempty"`
 	// Git is the checkout's state at the runner's last report.
 	Git *GitState `json:"git,omitempty"`
+	// RoundHead is the full sha of the checkout's HEAD when the current
+	// round began: at launch, and at each send or answer.
+	RoundHead string `json:"roundHead,omitempty"`
 	// Keep holds a finished runner's tab open: gc leaves it until keep is
 	// turned off or the task is stopped.
 	Keep bool `json:"keep,omitempty"`
@@ -199,6 +202,15 @@ type GitState struct {
 	Behind      int    `json:"behind,omitempty"`
 	Uncommitted int    `json:"uncommitted,omitempty"`
 	Untracked   int    `json:"untracked,omitempty"`
+	// UntrackedPlans is the share of Untracked under plans/.
+	UntrackedPlans int `json:"untrackedPlans,omitempty"`
+	// Head is the short sha of HEAD.
+	Head string `json:"head,omitempty"`
+	// SinceStart counts the commits made since the round began. Only
+	// snapshots of the checkout a task was spawned in read it: there
+	// AheadOfBase says nothing about a runner that commits on the default
+	// branch itself.
+	SinceStart int `json:"sinceStart,omitempty"`
 	// Stacked lists the local branches the worktree's branch is built on:
 	// merged into HEAD but not yet into Base. Only worktree snapshots
 	// with a known Base read them.
@@ -223,7 +235,11 @@ func (g *GitState) Short() string {
 		parts = append(parts, fmt.Sprintf("%d uncommitted", g.Uncommitted))
 	}
 	if g.Untracked > 0 {
-		parts = append(parts, fmt.Sprintf("%d untracked", g.Untracked))
+		untracked := fmt.Sprintf("%d untracked", g.Untracked)
+		if g.UntrackedPlans > 0 {
+			untracked += fmt.Sprintf(" (%d under plans/)", g.UntrackedPlans)
+		}
+		parts = append(parts, untracked)
 	}
 	switch {
 	case g.Upstream != "" && g.Ahead > 0 && g.Behind > 0:
@@ -234,6 +250,14 @@ func (g *GitState) Short() string {
 		parts = append(parts, fmt.Sprintf("%d behind %s", g.Behind, g.Upstream))
 	case g.Upstream == "" && g.AheadOfBase > 0:
 		parts = append(parts, plural(g.AheadOfBase, "commit")+", no upstream")
+	}
+	headShown := false
+	if g.SinceStart > 0 {
+		since := plural(g.SinceStart, "commit") + " since start"
+		if g.Head != "" {
+			since += ", head " + g.Head
+		}
+		parts, headShown = append(parts, since), true
 	}
 	if len(parts) == 0 {
 		switch {
@@ -247,6 +271,9 @@ func (g *GitState) Short() string {
 	}
 	if len(g.Stacked) > 0 {
 		parts = append(parts, "stacked: "+strings.Join(g.Stacked, ", "))
+	}
+	if g.Head != "" && !headShown {
+		parts = append(parts, "head "+g.Head)
 	}
 	return head + ", " + strings.Join(parts, ", ")
 }

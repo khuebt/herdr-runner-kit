@@ -23,6 +23,7 @@ func NewRootCommand() *cobra.Command {
 		newLaunchCommand(),
 		newListCommand(),
 		newShowCommand(),
+		newPeekCommand(),
 		newSendCommand(),
 		newStopCommand(),
 		newKeepCommand(),

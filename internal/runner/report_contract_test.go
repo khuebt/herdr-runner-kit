@@ -258,7 +258,7 @@ func TestReportGitStateStacked(t *testing.T) {
 	if got.Git == nil || !slices.Equal(got.Git.Stacked, []string{"feat/parser"}) {
 		t.Fatalf("git = %+v", got.Git)
 	}
-	if ev := lastEvent(t, r); !strings.HasSuffix(ev.Git, ", stacked: feat/parser") {
+	if ev := lastEvent(t, r); !strings.HasSuffix(ev.Git, ", stacked: feat/parser, head "+gitHead(t, wt)) {
 		t.Errorf("event git = %q", ev.Git)
 	}
 }

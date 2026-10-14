@@ -80,6 +80,15 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		}); err != nil {
 			return err
 		}
+		// The first round starts here; the git line counts its commits.
+		if head := roundHead(t); head != "" {
+			if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
+				t.RoundHead = head
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
 	}
 
 	spec, adapter, files, err := r.startAgent(ctx, t, name, loc.PaneID)
