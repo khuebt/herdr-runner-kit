@@ -27,8 +27,9 @@ func MatchSelfResolving(a Adapter, screen string) (SelfResolvingPrompt, bool) {
 }
 
 // durations matches the elapsed-time counters agents draw while a turn or
-// a tool runs, such as "14s", "1m 30s" or "(42s)".
-var durations = regexp.MustCompile(`\b\d+(?:\.\d+)?(?:ms|[smh])\b`)
+// a tool runs, such as "14s", "1m 30s" or "(42s)", a compound counter as
+// one match, so it masks the same way before and after it reaches a minute.
+var durations = regexp.MustCompile(`\b\d+(?:\.\d+)?(?:ms|[smh])(?:\s+\d+(?:\.\d+)?(?:ms|[smh]))*\b`)
 
 // maskDurations hides elapsed-time counters, which change every second
 // whether or not anything happens.
@@ -57,5 +58,14 @@ func anyLineMatches(lines []string, re *regexp.Regexp) bool {
 	return false
 }
 
-// joinLines puts lines back together as screen text.
-func joinLines(lines []string) string { return strings.Join(lines, "\n") }
+// joinLines puts lines back together as screen text, without blank lines,
+// which agents add and drop around their status lines as they redraw.
+func joinLines(lines []string) string {
+	out := lines[:0:0]
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}

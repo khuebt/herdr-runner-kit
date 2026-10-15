@@ -10,7 +10,8 @@ func TestProgressTextIgnoresAHangingTool(t *testing.T) {
 	for _, c := range []struct {
 		a      Adapter
 		prefix string
-	}{{claude{}, "working-claude"}, {codex{}, "working-codex"}} {
+	}{{claude{}, "working-claude"}, {claude{}, "working-claude-minute"}, {codex{}, "working-codex"}} {
+		// The -minute screens cross a minute: "45s", then "1m 5s".
 		first := c.a.ProgressText(readFixture(t, c.prefix+"-1.txt"))
 		second := c.a.ProgressText(readFixture(t, c.prefix+"-2.txt"))
 		if first != second {
