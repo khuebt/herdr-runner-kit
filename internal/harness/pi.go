@@ -48,8 +48,11 @@ const (
 	ompOverlayFile  = "omp-runner.yml"
 )
 
-// ompOverlay turns off omp's ask tool, which waits for an answer forever.
-const ompOverlay = "ask:\n  enabled: false\n"
+// ompOverlay turns off omp's ask tool, which waits for an answer forever,
+// and the run-state spinner in the terminal title: herdr counts each title
+// change as a new agent revision, so the spinner would read as progress and
+// hide a hung runner from the stall ladder.
+const ompOverlay = "ask:\n  enabled: false\ntui:\n  titleState: false\n"
 
 // piProjectTrust is the dialog pi 1.2.0 shows in a folder with project
 // settings, extensions or skills. --approve skips it, so it shows only if

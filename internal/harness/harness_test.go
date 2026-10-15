@@ -131,7 +131,7 @@ func TestPiFiles(t *testing.T) {
 	}
 	pf, _ := piAgent.Files(FilesInput{Bin: "/b/hrk"})
 	of, _ := ompAgent.Files(FilesInput{Bin: "/b/hrk"})
-	if len(pf) != 2 || len(of) != 3 || of[2].Name != "omp-runner.yml" || string(of[2].Data) != "ask:\n  enabled: false\n" {
+	if len(pf) != 2 || len(of) != 3 || of[2].Name != "omp-runner.yml" || string(of[2].Data) != "ask:\n  enabled: false\ntui:\n  titleState: false\n" {
 		t.Errorf("pi files = %q, omp files = %q", pf, of)
 	}
 }
