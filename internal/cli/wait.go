@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/khuebt/herdr-runner-kit/internal/state"
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 	"github.com/khuebt/herdr-runner-kit/internal/wait"
 )
 
@@ -74,13 +75,14 @@ func newWaitCommand() *cobra.Command {
 func newAnswerCommand() *cobra.Command {
 	var fromTelegram, stdin bool
 	cmd := &cobra.Command{
-		Use:   "answer <id> [--stdin | <text>] | answer --from-telegram [--stdin | <text>]",
+		Use:   "answer <id>[a<attempt>] [--stdin | <text>] | answer --from-telegram [--stdin | <text>]",
 		Short: "Answer a runner that reported needs-human; it continues in the same session",
 		Long: "answer types the answer into the runner that asked. With --from-telegram, the " +
 			"text is a Telegram reply: a leading #id picks the task; without one, the only task " +
 			"waiting for you gets it. A held task is released by ok, yes or duyệt, and any other " +
-			"text releases it with that note. Pass the reply with --stdin and a quoted heredoc, " +
-			"never inside a shell string.",
+			"text releases it with that note. An id may name the runner's attempt, such as " +
+			"t3a2; an answer for an attempt that ended is refused. Pass the reply with --stdin " +
+			"and a quoted heredoc, never inside a shell string.",
 		Example: `  herdr-runner-kit answer t3 "Use option A"
   herdr-runner-kit answer --from-telegram --stdin <<'EOF'
   #t3 dùng phương án A
@@ -106,7 +108,7 @@ func newAnswerCommand() *cobra.Command {
 			if len(args) < 1 {
 				return errors.New("answer needs <id> and the text")
 			}
-			id, err := parseTaskID(args[0])
+			id, attempt, err := task.ParseAttemptRef(args[0])
 			if err != nil {
 				return err
 			}
@@ -116,6 +118,9 @@ func newAnswerCommand() *cobra.Command {
 			}
 			if text == "" {
 				return errors.New("answer needs the text")
+			}
+			if err := r.CheckAttempt(id, attempt); err != nil {
+				return err
 			}
 			working, err := r.Answer(cmd.Context(), id, text)
 			if err != nil {

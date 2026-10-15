@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
-// tagPattern matches a leading "#t3" routing tag.
-var tagPattern = regexp.MustCompile(`(?i)^#(t\d+)\b[\s:,.-]*`)
+// tagPattern matches a leading "#t3" routing tag, which may name the
+// runner's attempt, such as "#t3a2".
+var tagPattern = regexp.MustCompile(`(?i)^#(t\d+)(?:a(\d+))?\b[\s:,.-]*`)
 
 // metaMessages are untagged questions for the main agent itself.
 var metaMessages = []string{"?", "status", "status?", "list", "list?", "help"}
@@ -30,10 +32,15 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 	if text == "" {
 		return "", fmt.Errorf("empty reply")
 	}
-	id, body := "", text
+	id, body, attempt := "", text, 0
 	m := tagPattern.FindStringSubmatch(text)
 	if m != nil {
 		id, body = strings.ToLower(m[1]), strings.TrimSpace(text[len(m[0]):])
+		if m[2] != "" {
+			if attempt, _ = strconv.Atoi(m[2]); attempt < 1 {
+				return "", fmt.Errorf("invalid attempt in #%s", strings.ToLower(m[1]+"a"+m[2]))
+			}
+		}
 	} else {
 		if slices.Contains(metaMessages, strings.ToLower(text)) {
 			return "meta: not for a runner; answer it yourself", nil
@@ -74,6 +81,9 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		default:
 			return "ambiguous: waiting " + strings.Join(waiting, ", ") + "; ask for a #id tag", nil
 		}
+	}
+	if err := r.CheckAttempt(id, attempt); err != nil {
+		return "", err
 	}
 	t, err := r.Store.Get(id)
 	if err != nil {

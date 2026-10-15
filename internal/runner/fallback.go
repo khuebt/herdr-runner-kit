@@ -153,6 +153,13 @@ func (r *Runner) switchAgent(t *task.Task, confirmed bool) error {
 	if err != nil {
 		return err
 	}
+	return r.relaunch(nt)
+}
+
+// relaunch hands nt, which a switch or a handoff just moved back to
+// starting, to a detached launcher that quits the agent in its pane and
+// starts the next session there.
+func (r *Runner) relaunch(nt *task.Task) error {
 	pid, err := r.StartLauncher(nt.ID)
 	if err != nil {
 		r.fail(nt.ID, "start launcher: "+err.Error())
@@ -167,14 +174,15 @@ func (r *Runner) switchAgent(t *task.Task, confirmed bool) error {
 	return err
 }
 
-// clearPane quits the agent in a switched runner's pane and sets the
-// environment the next agent needs, such as its Claude config folder.
+// clearPane quits the agent in a relaunched runner's pane and sets the
+// environment the next agent needs, such as its Claude config folder and
+// its attempt.
 func (r *Runner) clearPane(ctx context.Context, t *task.Task) error {
 	quitCtx, cancel := context.WithTimeout(ctx, quitBudget)
 	err := r.quitAgent(quitCtx, t.Herdr.PaneID)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("quit the agent that hit its usage limit: %w", err)
+		return fmt.Errorf("quit the previous agent session: %w", err)
 	}
 	return r.exportEnv(ctx, t.Herdr.PaneID, t, true)
 }

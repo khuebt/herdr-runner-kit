@@ -61,6 +61,11 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if err != nil {
 		return "", err
 	}
+	// A session that handed off may end a turn before the launcher quits
+	// it; only the current session's turns count.
+	if r.callerAttempt() != task.AttemptOf(t) {
+		return "", nil
+	}
 	if h == task.Claude {
 		if message, stopFailure := harness.ClaudeUsageLimit(payload); stopFailure {
 			// Any other API failure ends the turn with nothing the kit can

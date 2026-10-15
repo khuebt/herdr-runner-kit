@@ -64,6 +64,33 @@ func TestParseID(t *testing.T) {
 	}
 }
 
+func TestParseAttemptRef(t *testing.T) {
+	for in, want := range map[string]struct {
+		id      string
+		attempt int
+	}{
+		"t3": {"t3", 0}, "#t3a2": {"t3", 2}, "T12A1": {"t12", 1}, " #t7a10 ": {"t7", 10},
+	} {
+		id, attempt, err := ParseAttemptRef(in)
+		if err != nil || id != want.id || attempt != want.attempt {
+			t.Errorf("ParseAttemptRef(%q) = %q, %d, %v; want %q, %d", in, id, attempt, err, want.id, want.attempt)
+		}
+	}
+	for _, in := range []string{"", "a2", "t3a", "t3a0", "t3a02", "t3ax", "t0a1", "t3a2a1", "t3b2"} {
+		if _, _, err := ParseAttemptRef(in); err == nil {
+			t.Errorf("ParseAttemptRef(%q) succeeded, want error", in)
+		}
+	}
+}
+
+func TestAttemptOf(t *testing.T) {
+	for attempt, want := range map[int]int{0: 1, 1: 1, 2: 2} {
+		if got := AttemptOf(&Task{Attempt: attempt}); got != want {
+			t.Errorf("AttemptOf(attempt %d) = %d, want %d", attempt, got, want)
+		}
+	}
+}
+
 func TestStatusTerminal(t *testing.T) {
 	for _, s := range allStatuses {
 		want := s == Done || s == Failed || s == Stopped

@@ -499,3 +499,20 @@ func TestQuestionRoundLines(t *testing.T) {
 		t.Errorf("round lines = %q", got)
 	}
 }
+
+func TestNeedsHumanLineNamesALaterAttempt(t *testing.T) {
+	tk := &task.Task{Title: "store"}
+	if got := Line(state.Event{Task: "t4", Type: "needs-human", Question: "Which?", Attempt: 2}, tk, 0); got != "t4 needs-human · store · attempt 2 · Q: Which?" {
+		t.Errorf("attempt 2 = %q", got)
+	}
+	round := state.Event{Task: "t4", Type: "needs-human", Question: "1. Which?\n2. Where?", Attempt: 2}
+	if got := strings.Split(Line(round, tk, 0), "\n")[0]; got != "t4 needs-human · store · attempt 2 · 2 questions" {
+		t.Errorf("round header = %q", got)
+	}
+	if got := Line(state.Event{Task: "t4", Type: "needs-human", Question: "Which?"}, tk, 0); got != "t4 needs-human · store · Q: Which?" {
+		t.Errorf("first attempt = %q", got)
+	}
+	if got := Line(state.Event{Task: "t4", Type: "done", Summary: "ok", Attempt: 2}, tk, 0); got != "t4 done · store · ok" {
+		t.Errorf("done of attempt 2 = %q", got)
+	}
+}

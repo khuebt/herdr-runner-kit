@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,9 +61,10 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	}
 	loc := herdr.Location{WorkspaceID: t.Herdr.WorkspaceID, TabID: t.Herdr.TabID, PaneID: t.Herdr.PaneID}
 	name := "hrk-" + t.ID
-	if len(t.FallbackFrom) > 0 && t.Herdr.PaneID != "" {
-		// The agent hit its usage limit: its fallback takes over the same
-		// pane and checkout.
+	if t.Herdr.PaneID != "" && (len(t.FallbackFrom) > 0 || t.Attempt > 1) {
+		// The agent hit its usage limit, or neared its context limit: its
+		// fallback, or a fresh session, takes over the same pane and
+		// checkout.
 		if err := r.clearPane(ctx, t); err != nil {
 			return err
 		}
@@ -116,6 +118,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	prompt := t.Prompt
 	if t.Inputs != "" {
 		prompt = strings.TrimSpace(prompt + "\n\n" + untrustedInputs(t))
+	}
+	if t.Attempt > 1 {
+		prompt = strings.TrimSpace(prompt + "\n\n" + handoffNote(t))
 	}
 	if len(t.FallbackFrom) > 0 {
 		prompt = strings.TrimSpace(prompt + "\n\n" + resumeNote)
@@ -219,9 +224,10 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (runner
 }
 
 // runnerEnv is the environment every runner gets. HRK_STATE_DIR points
-// report and the turn-end hook at the spawner's state. TELEGRAM_BOT_TOKEN is
-// empty so the Telegram plugin exits before it takes over the main session's
-// poller.
+// report and the turn-end hook at the spawner's state, and HRK_ATTEMPT,
+// from the second session on, tells them which session they run in.
+// TELEGRAM_BOT_TOKEN is empty so the Telegram plugin exits before it takes
+// over the main session's poller.
 func (r *Runner) runnerEnv(t *task.Task) []string {
 	env := []string{
 		"HRK_TASK=" + t.ID, "HRK_STATE_DIR=" + r.Store.Dir(),
@@ -229,6 +235,9 @@ func (r *Runner) runnerEnv(t *task.Task) []string {
 	}
 	if t.ClaudeConfigDir != "" {
 		env = append(env, "CLAUDE_CONFIG_DIR="+t.ClaudeConfigDir)
+	}
+	if t.Attempt > 1 {
+		env = append(env, "HRK_ATTEMPT="+strconv.Itoa(t.Attempt))
 	}
 	return env
 }

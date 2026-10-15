@@ -161,3 +161,14 @@ func TestMessageRoundAndDecisions(t *testing.T) {
 		t.Errorf("done = %q", got)
 	}
 }
+
+func TestMessageTagNamesALaterAttempt(t *testing.T) {
+	tk := &task.Task{ID: "t3", Title: "fix login"}
+	got := Message(state.Event{Task: "t3", Type: "needs-human", Question: "Drop v1?", Attempt: 2}, tk)
+	if got != "#t3a2 needs a decision · fix login\nDrop v1?\nReply: #t3a2 <answer>" {
+		t.Errorf("attempt 2 = %q", got)
+	}
+	if got = Message(state.Event{Task: "t3", Type: "needs-human", Question: "Drop v1?"}, tk); !strings.HasPrefix(got, "#t3 needs") {
+		t.Errorf("first attempt = %q", got)
+	}
+}

@@ -51,6 +51,10 @@ type ReportOptions struct {
 	Outputs   []string
 	// Manual is set when the task id came from --task rather than HRK_TASK.
 	Manual bool
+	// Attempt is the agent session the report comes from, read from
+	// HRK_ATTEMPT. A report from another session than the task's current
+	// one is refused; 0 skips the check, as a manual report does.
+	Attempt int
 }
 
 // Report records a runner's result and returns at once. The slow follow-up
@@ -79,6 +83,9 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	// answered it in the runner's tab.
 	var answered bool
 	t, err := r.Store.Update(id, func(t *task.Task) error {
+		if err := staleAttempt(t, o.Attempt); err != nil {
+			return err
+		}
 		switch {
 		case t.Status.Terminal():
 			return fmt.Errorf("%s is already %s; report ignored", t.ID, t.Status)
@@ -111,6 +118,7 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	ev := state.Event{
 		Task: t.ID, Owner: t.Owner, Type: string(o.Status), Status: t.Status,
 		Summary: summary, Question: question, Outputs: o.Outputs, Decisions: o.Decisions,
+		Attempt: eventAttempt(t),
 	}
 	if git != nil {
 		ev.Git = git.Short()
