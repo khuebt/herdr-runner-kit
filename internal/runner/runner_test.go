@@ -713,6 +713,49 @@ func TestLaunchPiWaitsForHumanAtTrustDialog(t *testing.T) {
 	}
 }
 
+func TestLaunchPiWaitsUntilTrustDialogLeavesScreen(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	// herdr reports pi idle at once, while its trust dialog stays on screen
+	// for a few more reads before the user answers it.
+	fake.on("agent start", ok(`{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}`))
+	trust := fixture(t, "project-trust-pi.txt")
+	var mu sync.Mutex
+	waited, readsAfterWait := false, 0
+	var statuses []task.Status
+	fake.on("agent wait", func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		waited = true
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+	})
+	fake.on("pane read", func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !waited {
+			return trust, nil
+		}
+		if readsAfterWait++; readsAfterWait <= 3 {
+			got, _ := r.Store.Get("t1")
+			statuses = append(statuses, got.Status)
+			return trust, nil
+		}
+		return "", nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Agent: piAgents[task.Pi], Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 3 || slices.ContainsFunc(statuses, func(s task.Status) bool { return s != task.NeedsHuman }) {
+		t.Errorf("status while the dialog showed = %v, want needs-human each time", statuses)
+	}
+	if fake.count("agent", "send-keys") != 0 {
+		t.Error("pressed keys on a trust dialog")
+	}
+	if ev := events(t, r, tk.ID); !slices.Equal(ev, []string{"spawned", "needs-human", "started", "prompted"}) {
+		t.Errorf("events = %v", ev)
+	}
+}
+
 func TestLaunchFailsWhenAgentExitsAtDialog(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))

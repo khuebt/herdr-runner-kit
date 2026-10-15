@@ -427,7 +427,7 @@ func (r *Runner) settleDialogs(ctx context.Context, t *task.Task, a harness.Adap
 			r.waitDialogGone(ctx, pane, d)
 			continue
 		}
-		if err := r.waitForHuman(ctx, t, pane, d.Name); err != nil {
+		if err := r.waitForHuman(ctx, t, pane, d); err != nil {
 			return err
 		}
 	}
@@ -483,8 +483,12 @@ func (r *Runner) waitDialogGone(ctx context.Context, pane string, d harness.Dial
 }
 
 // waitForHuman marks the task needs-human until the user answers a startup
-// dialog in the runner's tab, then lets the launch continue.
-func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane, dialog string) error {
+// dialog in the runner's tab, then lets the launch continue. herdr's state
+// alone does not tell: it reports pi idle while pi's trust dialog shows, so
+// a known dialog must also be gone from the screen.
+func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d harness.Dialog) error {
+	dialog := d.Name
+	deadline := time.Now().Add(dialogAnswerTimeout)
 	q := fmt.Sprintf("Runner %s (%s) shows the %s dialog. Answer it in its herdr tab; the task continues on its own.", t.ID, t.Title, dialog)
 	nt, changed, err := r.Store.Transition(t.ID, task.NeedsHuman, []task.Status{task.Starting}, func(t *task.Task) {
 		t.Error = dialog
@@ -503,11 +507,34 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane, dialog st
 	case err != nil:
 		return fmt.Errorf("no answer to the %s dialog: %w", dialog, err)
 	}
+	if !r.waitScreenClears(ctx, pane, d, deadline) {
+		return fmt.Errorf("no answer to the %s dialog", dialog)
+	}
 	_, _, err = r.Store.Transition(t.ID, task.Starting, []task.Status{task.NeedsHuman}, func(t *task.Task) {
 		t.Error = ""
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
 	})
 	return err
+}
+
+// dialogPollEvery is how often waitForHuman reads the screen while a
+// dialog stays on it.
+const dialogPollEvery = time.Second
+
+// waitScreenClears reads the screen until dialog d is gone from it, up to
+// deadline. A read error counts as gone: the next dialog round reads again.
+func (r *Runner) waitScreenClears(ctx context.Context, pane string, d harness.Dialog, deadline time.Time) bool {
+	for range int(dialogAnswerTimeout / dialogPollEvery) {
+		screen, err := r.Herdr.PaneRead(ctx, pane, 40)
+		if err != nil || !harness.Shows(screen, d) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		r.Sleep(dialogPollEvery)
+	}
+	return false
 }
 
 // errorLine returns the first "Error:" line on screen.
