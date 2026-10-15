@@ -125,7 +125,8 @@ func (claude) ProgressText(screen string) string {
 			continue
 		}
 		inTip = false
-		out = append(out, l)
+		// The bullet of a running tool call blinks.
+		out = append(out, strings.NewReplacer("●", "", "⏺", "").Replace(l))
 	}
 	return joinLines(out)
 }
