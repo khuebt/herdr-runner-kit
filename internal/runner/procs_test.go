@@ -189,3 +189,35 @@ func TestProcessCheckSkipped(t *testing.T) {
 		t.Errorf("without ps: %d process-check-skipped events", n)
 	}
 }
+
+func TestCloseFindsAProcessThatLeftTheTree(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("pane process-info", ok(`{"result":{"process_info":{"shell_pid":100}}}`))
+	tk := finishedRunner(t, r, fake)
+	mine := "HRK_TASK=" + tk.ID + "\x00HRK_STATE_DIR=" + r.Store.Dir() + "\x00PATH=/bin\x00"
+	envs := map[int]string{
+		100: mine, 101: mine, // the shell and the agent
+		300: mine,                                                       // started with & by a shell that exited, now under a subreaper
+		301: "HRK_TASK=" + tk.ID + "\x00HRK_STATE_DIR=/other/state\x00", // another kit state's task
+		302: "PATH=/bin\x00",
+	}
+	r.ProcEnv = func(pid int) ([]byte, error) {
+		if e, ok := envs[pid]; ok {
+			return []byte(e), nil
+		}
+		return nil, errors.New("no such process")
+	}
+	before := append(slices.Clone(runnerTree[:2]),
+		proc{PID: 300, PPID: 2414, Start: "a", Command: "python3 -m http.server 8765"},
+		proc{PID: 301, PPID: 2414, Start: "a", Command: "other kit"},
+		proc{PID: 302, PPID: 1, Start: "a", Command: "unrelated"})
+	after := []proc{{PID: 300, PPID: 2414, Start: "a", Command: "python3 -m http.server 8765"}, before[3], before[4]}
+	r.ProcTable = procTables(before, after)
+	if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	left := eventsOf(t, r, tk.ID, "processes-left")
+	if len(left) != 1 || !strings.Contains(left[0].Summary, "1 process the runner started still run after its tab closed: 300 `python3 -m http.server 8765`") {
+		t.Fatalf("processes-left = %+v", left)
+	}
+}

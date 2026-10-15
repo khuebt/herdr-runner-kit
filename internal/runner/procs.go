@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -130,7 +131,8 @@ func survivors(before, table []proc) []proc {
 
 // snapshotProcs records the processes the runner's pane started, before its
 // agent quits: once the agent exits, its children lose their parent and can
-// no longer be traced to the runner. ok is false when there is nothing to
+// no longer be traced to the runner through the tree, only through the
+// runner environment they inherited. ok is false when there is nothing to
 // check later, and a failure is recorded as process-check-skipped.
 func (r *Runner) snapshotProcs(ctx context.Context, t *task.Task) ([]proc, bool) {
 	if r.ProcTable == nil {
@@ -149,7 +151,61 @@ func (r *Runner) snapshotProcs(ctx context.Context, t *task.Task) ([]proc, bool)
 		r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(err.Error(), 160), "")
 		return nil, false
 	}
-	return descendants(table, info.ShellPID), true
+	return append(descendants(table, info.ShellPID), r.markedProcs(table, t, info.ShellPID)...), true
+}
+
+// procEnviron reads a process's environment where the system shows it, in
+// /proc on Linux.
+func procEnviron(pid int) ([]byte, error) {
+	return os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+}
+
+// markedProcs returns the processes outside the pane shell's tree that carry
+// t's runner environment: a command the agent started with & in a shell that
+// exited at once, as Claude's Bash tool does, is re-parented to init or a
+// subreaper long before the close. The shell, its tree and this process are
+// left out.
+func (r *Runner) markedProcs(table []proc, t *task.Task, shell int) []proc {
+	if r.ProcEnv == nil {
+		return nil
+	}
+	inTree := map[int]bool{shell: true, os.Getpid(): true}
+	for _, p := range descendants(table, shell) {
+		inTree[p.PID] = true
+	}
+	marks := [][]byte{[]byte("HRK_TASK=" + t.ID), []byte("HRK_STATE_DIR=" + r.Store.Dir())}
+	var out []proc
+	for _, p := range table {
+		if inTree[p.PID] {
+			continue
+		}
+		env, err := r.ProcEnv(p.PID)
+		if err != nil {
+			continue
+		}
+		if hasEnv(env, marks) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// hasEnv reports whether a NUL-separated environment holds every one of
+// entries exactly.
+func hasEnv(env []byte, entries [][]byte) bool {
+	for _, want := range entries {
+		found := false
+		for e := range bytes.SplitSeq(env, []byte{0}) {
+			if bytes.Equal(e, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // reportSurvivors waits briefly for the processes of before to exit, then

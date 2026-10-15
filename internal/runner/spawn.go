@@ -56,13 +56,17 @@ type Runner struct {
 	// ProcTable lists the machine's processes, so a close can name the
 	// ones a runner left running. Nil skips that check.
 	ProcTable func(context.Context) ([]proc, error)
+	// ProcEnv returns a process's environment as NUL-separated KEY=VALUE
+	// entries, so a close finds the processes a runner started that left
+	// its process tree. Nil, or an error, leaves only the tree.
+	ProcEnv func(pid int) ([]byte, error)
 }
 
 // New returns a Runner for the real environment.
 func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	r := &Runner{
 		Store: store, Config: cfg, Herdr: herdr.New(), Telegram: telegram.New(),
-		Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep, ProcTable: psTable,
+		Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep, ProcTable: psTable, ProcEnv: procEnviron,
 	}
 	r.Notify = r.startDetachedNotify
 	r.StartLauncher = func(id string) (int, error) { return r.startDetached(id, "__launch", "launch.log") }
