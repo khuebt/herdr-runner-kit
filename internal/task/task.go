@@ -174,6 +174,17 @@ type Task struct {
 	// RoundHead is the full sha of the checkout's HEAD when the current
 	// round began: at launch, and at each send or answer.
 	RoundHead string `json:"roundHead,omitempty"`
+	// Plan is the absolute folder of the AgentKit plan the task runs one
+	// phase of, and Phase that phase's number.
+	Plan  string `json:"plan,omitempty"`
+	Phase int    `json:"phase,omitempty"`
+	// CheckoutOf is the plan task whose worktree this task works in: the
+	// phases of one plan run share one checkout and one branch.
+	CheckoutOf string `json:"checkoutOf,omitempty"`
+	// PhaseStart is the full sha of the checkout's HEAD when the phase's
+	// runner launched, and PhaseCheck what the kit found once it was done.
+	PhaseStart string      `json:"phaseStart,omitempty"`
+	PhaseCheck *PhaseCheck `json:"phaseCheck,omitempty"`
 	// Keep holds a finished runner's tab open: gc leaves it until keep is
 	// turned off or the task is stopped.
 	Keep bool `json:"keep,omitempty"`
@@ -184,6 +195,37 @@ type Task struct {
 	LaunchDeadline time.Time `json:"launchDeadline,omitzero"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// Verdicts of a PhaseCheck. Only PhaseOutside and PhaseDirty hold the
+// phases that wait for it.
+const (
+	PhaseAccepted        = "accepted"
+	PhaseOutside         = "outside-scope"
+	PhaseDirty           = "dirty"
+	PhaseNoChanges       = "no-changes"
+	PhaseNoDeclaredScope = "no-declared-scope"
+	PhaseUnknown         = "unknown"
+)
+
+// PhaseCheck is the kit's check of a done plan phase: what changed in its
+// checkout since the phase started, measured against its declared scope.
+type PhaseCheck struct {
+	// Changed are the files committed since the phase started, and those
+	// left uncommitted; Outside the ones outside the declared scope.
+	Changed []string `json:"changed,omitempty"`
+	Outside []string `json:"outside,omitempty"`
+	Commits int      `json:"commits"`
+	Clean   bool     `json:"clean"`
+	Verdict string   `json:"verdict"`
+	// Note says why the verdict is unknown, or which files left the
+	// checkout dirty.
+	Note string `json:"note,omitempty"`
+}
+
+// Holds reports whether the check holds the phases that wait for it.
+func (c *PhaseCheck) Holds() bool {
+	return c != nil && (c.Verdict == PhaseOutside || c.Verdict == PhaseDirty)
 }
 
 // GitState is a snapshot of a task's checkout, taken when its runner reports.
