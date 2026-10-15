@@ -7,19 +7,21 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | Command | Use |
 |---|---|
 | `spawn [flags] --stdin` | Record a task and open its runner. Returns at once. |
-| `list [--all]` | Your tasks and every registered project's, with stored status, herdr's live state, and TAB: `open` (with when `gc` closes it), `kept`, `closed` or `-`. `--all` shows every owner. |
-| `show <id>` | One task in full: prompt, summary, question, outputs, branch. |
+| `list [--all]` | Your tasks and every registered project's, with stored status, herdr's live state, TAB (`open` with when `gc` closes it, `kept until HH:MM`, `kept`, `closed` or `-`), AGE and LAST, the age of the latest event. `--all` shows every owner. |
+| `show <id> [--prompt]` | One task as compact text: status, times, tab, worktree, `git:` line, summary, decisions, question, outputs, last 5 events. The prompt only with `--prompt`. |
+| `show <id> --json [--events N]` | The task as one JSON object, or `{task, events}` with `--events`. Parse this, never the text view. |
+| `peek <id> [--lines N]` | The runner's visible screen (default 30 lines), secrets hidden. Use it instead of `herdr pane read`. |
 | `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one refuses. |
 | `answer <id> --stdin` | Answer a `needs-human` question. |
 | `answer --from-telegram --stdin` | Route a Telegram reply by its `#id` tag. |
 | `release <id> [--note TEXT]` | Start a `held` task. |
 | `focus <id>` | Switch herdr to the runner's tab. |
-| `stop <id> [--remove-worktree]` | Quit the runner and close its tab. Branches are always kept. |
-| `gc` | Close runners of tasks that finished 30 minutes ago or more, except kept ones. |
-| `keep <id> [--off]` | Keep a finished runner's tab open instead of letting `gc` close it. `--off` lets `gc` close it again. |
-| `cleanup [id]... [--yes]` | List finished worktrees and branches left behind: merged, unmerged or dirty. `--yes` removes the merged ones. |
+| `stop <id>... [--remove-worktree]` | Quit runners and close their tabs, several ids in one call. Branches are always kept. A main-checkout task gets a note naming untracked files it may have left. |
+| `gc [--kept]` | Close runners of tasks that finished 30 minutes ago or more, and kept ones past the config's `keepFor` (4h). `--kept` also closes kept runners past `--older-than`. |
+| `keep <id> [--off]` | Keep a finished runner's tab open for `keepFor` (4h by default) instead of letting `gc` close it after 30 minutes. `--off` lets `gc` close it again. |
+| `cleanup [id]... [--yes]` | List finished worktrees and branches left behind, yours and every project's: merged (squash and rebase merges included), unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
-| `events --learning [--task ID] [--project NAME]` | Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration and time waited on a human after the spawn. |
+| `events --learning [--task ID] [--project NAME]` | Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish) and time waited on a human after the spawn. |
 | `sync <id> [--from REF] [--no-send]` | Merge origin's default branch (such as `origin/main`), or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent, background work, an agent herdr cannot check, or a dirty worktree, and fetches only after those checks; a conflict is aborted and the text to `send` is printed. When it suggests `--from main`, local main has commits origin lacks. |
 
 ## Projects
@@ -30,7 +32,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `project status [name]` | Where a project stands and the next step. Reads only the kit's record and tasks. |
 | `project register <path> [--name NAME] [--reference PATH]` | Register an existing git repository as a project. A committed record names its reference repository without a local path; `--reference PATH` gives it. |
 | `project forget <name> [--yes]` | Drop a project from the registry; the repository is left alone. |
-| `project run <stage> [--stdin] [--after t1]` | Start a discovery stage runner from the kit's template. Refuses a stage whose gate is not approved yet. |
+| `project run <stage> [--stdin] [--after t1] [--gate auto\|human]` | Start a discovery stage runner from the kit's template. Refuses a stage whose gate is not approved yet. A `pack` given `--after` is held for `release` unless `--gate auto`. |
 | `project approve <spec\|pack> --by NAME [--note TEXT] [--waive-pack]` | Record the user's approval of the committed version and commit the project's records. |
 | `project changes <spec\|pack> --by NAME --stdin` | Record that changes were requested and send the feedback to the stage's runner. |
 | `project reject <spec\|pack> --by NAME --note WHY` | Record a rejection. |
@@ -71,7 +73,7 @@ At the start of a session that touches a project, and when the user asks "where 
 
 ### Discovery stages
 
-`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held. Before UX or prototype work, run `herdr-runner-kit doctor --tools` and tell the user which optional tools are missing.
+`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held, except a `pack` chained with `--after`: it waits so the user can review the earlier stages first. Ask the user, then `release` it. Before UX or prototype work, run `herdr-runner-kit doctor --tools` and tell the user which optional tools are missing.
 
 The `ux` and `design` runners first sample the one or two main screens and ask one direction round through `needs-human`: layout, navigation and density for `ux`; for `design`, pick, combine or another round of at least two visual directions. Relay the sample paths and every option in one message, suggest viewing the samples with Lavish when it is installed, and pass the user's choice with `answer`. The round is a question, not a gate. Notes that ask to skip the round, or give a design system to follow, skip it.
 
@@ -150,8 +152,9 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `tN done` | Finished; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. |
 | `tN needs-human` | The runner asks a question, or a round: `N questions` and one numbered line each | Ask the user, all of a round in one message, then `answer` once, such as `1a 2b`. |
 | `tN held` | A `--gate human` task waits; `(reason)` when held with `--reason` | Ask the user, then `release`. |
-| `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. |
-| `tN stalled` | The agent waits on a prompt in its pane | Tell the user to look at it (`focus`). |
+| `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. For `runner lost: herdr pane gone` (herdr or the machine restarted), relay it and offer a new `spawn`; `show <id>` names the worktree and branch with the partial work. |
+| `tN stalled` | `blocked on a prompt: …` quotes the prompt the agent waits on; `no progress for N min …` or `retrying for N min` means it stayed busy without progress after a nudge and an interrupt | Relay the quoted text as is; offer `focus <id>` or `peek <id>`. The runner stays open. Never chase `blocked`, `unstalled`, `nudged` or `interrupted` progress events. |
+| `tN processes-left` | Processes the closed runner started still run, with pids and commands | Name them to the user; never kill them yourself. |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |
 | `tN usage-limit` | The runner's screen shows its agent's usage limit and no `quotaFallback` agent is left | Tell the user; offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the reset. |
 | `tN stopped` | Stopped by `stop` | Relay it. |

@@ -4,7 +4,7 @@ herdr-runner-kit sends runner news to your Telegram chat. Your replies reach the
 
 ## How it works
 
-- **Sending:** when a task reports `needs-human`, fails, stalls, is held, ends turns without reporting, or finishes a chain, a detached process calls the Bot API `sendMessage`. `report` and `wait` never wait for the network. A failed send is recorded as a `notify-failed` event.
+- **Sending:** when a task reports `needs-human`, fails, stalls, is held, ends turns without reporting, finishes, or a chain stops before its end, a detached process calls the Bot API `sendMessage`. `report` and `wait` never wait for the network. A failed send is recorded as a `notify-failed` event.
 - **Replying:** the main session runs the official Telegram channel plugin, which owns the bot's update polling. When your reply arrives there, the main agent passes it to `herdr-runner-kit answer --from-telegram`. The kit never polls Telegram itself, and runners have `TELEGRAM_BOT_TOKEN` cleared so they never take over the bot.
 
 ## Credentials
@@ -50,7 +50,15 @@ Reply: #t3 <answer>
 
 A round of questions arrives as `#t4 needs 2 decisions`, one numbered line per question and `Reply: #t4 1<option> 2<option>, such as 1a 2b`. A `done` lists the runner's own decisions as `Decided:` lines above the summary.
 
-`telegram.notify` selects the events (default: all of `needs-human`, `failed`, `stalled`, `held`, `turn-ended-unreported`, `usage-limit` and `done`). A `done` is sent only for a task that no other task waits for, so a chain sends one message at its end.
+`telegram.notify` selects the events (default: all of `needs-human`, `failed`, `stalled`, `held`, `turn-ended-unreported`, `usage-limit` and `done`). A `stalled` message quotes the prompt the runner is blocked on.
+
+A `done` is held back only when all of these hold, so a chain sends one message at its end:
+
+- it ends the task's first round: no `done`, `send` or `answer` came before it, so a `done` after `send` or `answer` is always sent;
+- it settles no decisions; a `done` with `Decided:` lines is always sent;
+- a task that waits on it is still `queued` or `held`; once its dependents run, it is sent.
+
+A held-back `done` is recorded as a `notify-deferred` event. When a task later in the chain fails or is stopped, and so never reports the chain's end, the held-back dones before it go out in one message: `#t50 stopped; the chain before it finished: #t45 <title>: <summary>; #t46 …`, each summary cut to 200 characters. This needs `done` in `telegram.notify`.
 
 ## Replying
 
