@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -235,5 +236,28 @@ func TestTurnEndRemindsOfAPendingHandoff(t *testing.T) {
 	block, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, []byte(`{}`))
 	if err != nil || block != request {
 		t.Errorf("nudge = %q, %v; want the handoff request", block, err)
+	}
+}
+
+func TestQuotaSwitchClearsThePendingRequest(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	r.Config.QuotaFallback = []config.Fallback{{Agent: "codex"}}
+	r.StartLauncher = func(string) (int, error) { return 5151, nil }
+	tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	compactHook(t, r, tk.ID, "precompact-auto.json")
+	compactHook(t, r, tk.ID, "sessionstart-compact.json")
+	if err := r.switchAgent(tk, true); err != nil {
+		t.Fatal(err)
+	}
+	if st := r.loadProgress(tk.ID); st.Asked != 0 || st.Armed != 0 || st.Compactions != 1 {
+		t.Fatalf("progress after the switch = %+v", st)
+	}
+	// The fallback session's first unreported turn gets the plain nudge.
+	got, _, err := r.Store.Transition(tk.ID, task.Running, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.handoffPending(got) {
+		t.Error("the fallback session inherited the handoff request")
 	}
 }

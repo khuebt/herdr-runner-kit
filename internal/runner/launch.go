@@ -124,11 +124,8 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if t.Inputs != "" {
 		prompt = strings.TrimSpace(prompt + "\n\n" + untrustedInputs(t))
 	}
-	if t.Attempt > 1 {
-		prompt = strings.TrimSpace(prompt + "\n\n" + handoffNote(t))
-	}
-	if len(t.FallbackFrom) > 0 {
-		prompt = strings.TrimSpace(prompt + "\n\n" + resumeNote)
+	for _, note := range relaunchNotes(t) {
+		prompt = strings.TrimSpace(prompt + "\n\n" + note)
 	}
 	if len(carried) > 0 {
 		prompt = strings.TrimSpace(prompt + "\n\n" + carriedNote(carried))

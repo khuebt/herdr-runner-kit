@@ -208,8 +208,11 @@ func TestQuotaFallbackKeepsTheAttempt(t *testing.T) {
 	if err := r.Launch(context.Background(), tk.ID); err != nil {
 		t.Fatal(err)
 	}
+	// The session hit a usage limit; it did not hand off, but the last
+	// handoff still describes the attempt.
 	prompt := lastCall(fake, "agent", "prompt")[3]
-	if !strings.Contains(prompt, handoffNote(got)) || !strings.Contains(prompt, resumeNote) {
+	if !strings.Contains(prompt, resumeNote) || !strings.Contains(prompt, "the handoff of the attempt before it is /out/handoff-a2.md: read it too.") ||
+		strings.Contains(prompt, "neared its context limit") {
 		t.Errorf("prompt = %q", prompt)
 	}
 	if run := fake.call("pane", "run"); len(run) != 4 || !strings.Contains(run[3], "HRK_ATTEMPT=2") {
@@ -279,5 +282,30 @@ func TestEventsCarryOnlyLaterAttempts(t *testing.T) {
 		if got := AttemptFromEnv(v); got != want {
 			t.Errorf("AttemptFromEnv(%q) = %d, want %d", v, got, want)
 		}
+	}
+}
+
+func TestHandoffAfterAQuotaSwitchSaysWhyItRelaunched(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	r.Config.QuotaFallback = []config.Fallback{{Agent: "codex"}}
+	r.StartLauncher = func(string) (int, error) { return 5151, nil }
+	tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.switchAgent(tk, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Store.Transition(tk.ID, task.Running, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	file := handoffFile(t, r, tk.ID)
+	if _, err := r.Handoff(tk.ID, ReportOptions{Summary: "s", Outputs: []string{file}, Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	quitsThenIdle(fake)
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	prompt := lastCall(fake, "agent", "prompt")[3]
+	if !strings.Contains(prompt, "neared its context limit") || strings.Contains(prompt, resumeNote) {
+		t.Errorf("prompt = %q", prompt)
 	}
 }

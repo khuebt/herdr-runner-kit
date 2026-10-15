@@ -13,7 +13,8 @@ import (
 // contextState is what the kit knows about a runner's context, kept in
 // tasks/<id>/progress.json next to the stall ladder, so it never moves the
 // task's UpdatedAt. Armed and Asked hold the attempt they belong to, so a
-// new attempt starts clear.
+// new attempt starts clear; a quota switch, which keeps the attempt, clears
+// them.
 type contextState struct {
 	// LowAt is when Claude last announced an automatic compaction.
 	LowAt time.Time `json:"contextLowAt,omitzero"`
@@ -91,6 +92,23 @@ func (r *Runner) ContextHook(ctx context.Context, id string, payload []byte) (ou
 		return harness.ClaudeSessionContext(request), err
 	}
 	return harness.ClaudeSessionContext(request), nil
+}
+
+// clearHandoffAsk forgets that the current attempt of task id was asked to
+// hand off, or announced an automatic compaction, when a quota switch
+// starts a fresh session in it.
+func (r *Runner) clearHandoffAsk(id string) {
+	unlock, err := r.Store.LockFile(id, "progress.lock")
+	if err != nil {
+		return
+	}
+	defer unlock()
+	st := r.loadProgress(id)
+	if st.Asked == 0 && st.Armed == 0 {
+		return
+	}
+	st.Asked, st.Armed = 0, 0
+	r.saveProgress(id, st)
 }
 
 // handoffPending reports whether t was asked to hand off in its current

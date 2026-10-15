@@ -112,6 +112,7 @@ func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting, co
 		next = agentKey(agent, dir)
 		t.FallbackFrom = append(t.FallbackFrom, prev)
 		t.Agent, t.ClaudeConfigDir = agent, dir
+		t.Relaunched = task.RelaunchUsageLimit
 		// A new agent starts a new Codex thread and a fresh turn count.
 		t.CodexThread, t.Unreported, t.Stalled, t.Question, t.Error = "", 0, false, "", ""
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
@@ -134,6 +135,9 @@ func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting, co
 	case err != nil:
 		return nil, err
 	}
+	// The fallback is a fresh session: a handoff request the previous one
+	// got does not apply to it.
+	r.clearHandoffAsk(nt.ID)
 	r.emit(nt, "agent-switched", prev+" -> "+next, "")
 	return nt, nil
 }

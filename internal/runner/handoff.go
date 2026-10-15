@@ -108,7 +108,7 @@ func (r *Runner) Handoff(id string, o ReportOptions) (*task.Task, error) {
 		}
 		t.Attempt = task.AttemptOf(t) + 1
 		t.Handoffs = append(t.Handoffs, file)
-		t.Status, t.LauncherPID = task.Starting, 0
+		t.Status, t.LauncherPID, t.Relaunched = task.Starting, 0, task.RelaunchHandoff
 		// A fresh session starts a new Codex thread and a fresh turn count.
 		t.CodexThread, t.Unreported, t.Question, t.Stalled = "", 0, "", false
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
@@ -122,13 +122,35 @@ func (r *Runner) Handoff(id string, o ReportOptions) (*task.Task, error) {
 	return nt, r.relaunch(nt)
 }
 
-// handoffNote opens the first prompt of an attempt after the first.
-func handoffNote(t *task.Task) string {
-	file := ""
-	if len(t.Handoffs) > 0 {
-		file = t.Handoffs[len(t.Handoffs)-1]
+// relaunchNotes follow the first prompt of a session the launcher started
+// in the pane of an earlier one: the reason for the restart, and from the
+// second attempt on, where the last handoff is.
+func relaunchNotes(t *task.Task) []string {
+	reason := t.Relaunched
+	if reason == "" && len(t.FallbackFrom) > 0 {
+		reason = task.RelaunchUsageLimit
 	}
+	switch {
+	case reason == task.RelaunchHandoff:
+		return []string{handoffNote(t)}
+	case reason == task.RelaunchUsageLimit && task.AttemptOf(t) > 1:
+		return []string{resumeNote, fmt.Sprintf("This is attempt %d of task %s; the handoff of the attempt before it is %s: read it too.", task.AttemptOf(t), t.ID, lastHandoff(t))}
+	case reason == task.RelaunchUsageLimit:
+		return []string{resumeNote}
+	}
+	return nil
+}
+
+// handoffNote opens the first prompt of an attempt the last handoff started.
+func handoffNote(t *task.Task) string {
 	return fmt.Sprintf("This is attempt %d of task %s. The previous session neared its context limit and wrote a handoff: %s. "+
 		"Read it first, check `git status` and `git log`, continue only the unfinished work, rerun only the checks it affects, then report.",
-		task.AttemptOf(t), t.ID, file)
+		task.AttemptOf(t), t.ID, lastHandoff(t))
+}
+
+func lastHandoff(t *task.Task) string {
+	if len(t.Handoffs) == 0 {
+		return ""
+	}
+	return t.Handoffs[len(t.Handoffs)-1]
 }

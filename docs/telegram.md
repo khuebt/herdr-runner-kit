@@ -65,7 +65,7 @@ A held-back `done` is recorded as a `notify-deferred` event. When a task later i
 ## Replying
 
 - `#t3 <text>` goes to t3: as the answer to its question, as a new message if it is running, or as the go-ahead for a held task.
-- `#t3a2 <text>` goes to t3 while it is on attempt 2. A reply tagged with an attempt that ended, such as `#t3a1` once attempt 2 runs, is refused, and the main agent asks you again; `#t3` always reaches the current attempt.
+- `#t3a2 <text>` goes to t3 while it is on attempt 2. A reply tagged with another attempt, such as `#t3a1` once attempt 2 runs, is refused, and the main agent asks you again. `#t3` always reaches the current attempt, also when you reply late to a question of the first attempt.
 - Without a tag, the text goes to the only task waiting for you. With several waiting, the main agent asks which one you mean.
 - For a held task, `ok`, `yes` or `duyệt` starts it; any other text starts it with that text as a note. A task held with `spawn --reason`, such as one waiting for a dependency, starts only on a reply tagged with its id.
 - `approve spec <name>` or `approve pack <name>` never releases or answers a runner. The main agent confirms with you and records the approval with `project approve`.

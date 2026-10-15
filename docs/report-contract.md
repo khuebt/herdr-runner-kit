@@ -87,7 +87,9 @@ From the second attempt on, the launcher sets `HRK_ATTEMPT=<n>` in the runner's 
 - its turn ends and compaction hooks are ignored;
 - a manual `report --task` names no attempt and is never refused for it.
 
-News of a later attempt names it: `wait` adds `attempt 2` to a `needs-human` line, Telegram tags it `#t3a2`, and `answer t3a2` or a `#t3a2` reply reaches it. An answer for an attempt that ended, such as `#t3a1`, is refused with `that question was for attempt 1 of t3, which ended`. A bare `t3` always goes to the current attempt. A quota switch keeps the attempt.
+News of a later attempt names it: `wait` adds `attempt 2` to a `needs-human` line, Telegram tags it `#t3a2`, and `answer t3a2` or a `#t3a2` reply reaches it. A reply that names another attempt is refused, such as `#t3a1` once attempt 2 runs: `that question was for attempt 1 of t3, which ended`. News of the first attempt carries no attempt, so a late reply to it, tagged `#t3`, reaches the current attempt like any bare id.
+
+A quota switch keeps the attempt but starts a fresh session, so a handoff request the previous session got does not carry over. Its first prompt says the previous agent hit its usage limit and, from the second attempt on, points at the last handoff too.
 
 ## A runner that forgets to report
 
