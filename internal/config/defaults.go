@@ -32,5 +32,9 @@ func Default() Config {
 		UpdateCheck: true,
 		KeepFor:     4 * time.Hour,
 		StallAfter:  10 * time.Minute,
+		// The hooks the handoff relies on were confirmed on Claude Code
+		// 2.1.300 and codex-cli 0.162.1.
+		ContextHandoff:   true,
+		ContextHandoffAt: 15,
 	}
 }

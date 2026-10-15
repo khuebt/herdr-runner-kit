@@ -85,6 +85,10 @@ type Adapter interface {
 	// SelfResolvingPrompts lists the prompts the agent answers itself
 	// after a timeout.
 	SelfResolvingPrompts() []SelfResolvingPrompt
+	// ContextLeft reads how much of its context window the agent's own
+	// footer says is left, in percent. ok is false when the screen shows
+	// none, or the agent tells the kit through hooks instead.
+	ContextLeft(screen string) (pct int, ok bool)
 }
 
 // For returns the adapter for harness h.

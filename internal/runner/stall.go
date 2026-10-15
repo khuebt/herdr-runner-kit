@@ -44,8 +44,10 @@ const (
 
 // progressState is what the progress check remembers between samples, in
 // tasks/<id>/progress.json. It lives outside task.json so that sampling never
-// moves the task's UpdatedAt.
+// moves the task's UpdatedAt. The file also holds the context state, which
+// outlives each stall.
 type progressState struct {
+	contextState
 	Fingerprint string    `json:"fingerprint"`
 	Revision    int       `json:"revision"`
 	Seq         int       `json:"seq"`
@@ -96,7 +98,7 @@ func (r *Runner) checkProgress(ctx context.Context, t *task.Task, now time.Time)
 	st := r.loadProgress(t.ID)
 	if !st.UpdatedAt.Equal(t.UpdatedAt) {
 		// A report, send, answer or turn end: the runner moved on.
-		st = progressState{UpdatedAt: t.UpdatedAt, Since: now}
+		st = progressState{contextState: st.contextState, UpdatedAt: t.UpdatedAt, Since: now}
 	}
 	a, err := r.Herdr.AgentGet(ctx, t.Herdr.PaneID)
 	if t.Status != task.Running || t.Stalled || err != nil || a.Status != "working" {

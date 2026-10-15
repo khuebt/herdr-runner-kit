@@ -69,7 +69,18 @@ type Config struct {
 	// StallAfter is how long a working agent may show no progress before
 	// the kit nudges it. Zero turns the check off.
 	StallAfter time.Duration
+	// ContextHandoff lets the kit ask a runner near its context limit to
+	// hand off once to a fresh session of its task. ContextHandoffAt is the
+	// context left, in percent, at or below which a Codex runner is asked.
+	ContextHandoff   bool
+	ContextHandoffAt int
 }
+
+// The bounds of contextHandoffAt, in percent of the context left.
+const (
+	MinContextHandoffAt = 5
+	MaxContextHandoffAt = 50
+)
 
 // MinStallAfter is the shortest stallAfter: the progress check samples once
 // a minute and needs a few samples before it acts.
@@ -90,6 +101,8 @@ type fileConfig struct {
 	QuotaFallback        []fileFallback      `yaml:"quotaFallback"`
 	KeepFor              *string             `yaml:"keepFor"`
 	StallAfter           *string             `yaml:"stallAfter"`
+	ContextHandoff       *bool               `yaml:"contextHandoff"`
+	ContextHandoffAt     *int                `yaml:"contextHandoffAt"`
 }
 
 type fileFallback struct {
@@ -195,6 +208,12 @@ func Parse(data []byte) (Config, error) {
 		}
 		cfg.StallAfter = d
 	}
+	if file.ContextHandoff != nil {
+		cfg.ContextHandoff = *file.ContextHandoff
+	}
+	if file.ContextHandoffAt != nil {
+		cfg.ContextHandoffAt = *file.ContextHandoffAt
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -261,6 +280,9 @@ func (c Config) Validate() error {
 	}
 	if c.StallAfter != 0 && c.StallAfter < MinStallAfter {
 		return fmt.Errorf("stallAfter must be 0 (off) or at least %s, got %s", MinStallAfter, c.StallAfter)
+	}
+	if c.ContextHandoffAt < MinContextHandoffAt || c.ContextHandoffAt > MaxContextHandoffAt {
+		return fmt.Errorf("contextHandoffAt must be from %d to %d (percent of context left), got %d", MinContextHandoffAt, MaxContextHandoffAt, c.ContextHandoffAt)
 	}
 	for _, ev := range c.Telegram.Notify {
 		if !slices.Contains(NotifyEvents, ev) {

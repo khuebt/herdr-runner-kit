@@ -215,25 +215,29 @@ func hasEnv(env []byte, entries [][]byte) bool {
 // names the ones still running in one processes-left event. It never
 // signals them: they may be a dev server the user still wants.
 func (r *Runner) reportSurvivors(ctx context.Context, t *task.Task, before []proc) {
-	if len(before) == 0 {
-		return
+	if left := r.waitSurvivors(ctx, t, before); len(left) > 0 {
+		r.emit(t, "processes-left", survivorSummary(left), "")
 	}
-	var left []proc
+}
+
+// waitSurvivors waits briefly for the processes of before to exit and
+// returns the ones still running. A process table that cannot be read is
+// recorded as process-check-skipped and returns none.
+func (r *Runner) waitSurvivors(ctx context.Context, t *task.Task, before []proc) []proc {
+	if len(before) == 0 {
+		return nil
+	}
 	for waited := time.Duration(0); ; waited += survivorPoll {
 		table, err := r.ProcTable(ctx)
 		if err != nil {
 			r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(err.Error(), 160), "")
-			return
+			return nil
 		}
-		if left = survivors(before, table); len(left) == 0 || waited >= survivorWait {
-			break
+		if left := survivors(before, table); len(left) == 0 || waited >= survivorWait {
+			return left
 		}
 		r.Sleep(survivorPoll)
 	}
-	if len(left) == 0 {
-		return
-	}
-	r.emit(t, "processes-left", survivorSummary(left), "")
 }
 
 // survivorSummary names up to maxNamedSurvivors leftover processes, with
@@ -243,13 +247,25 @@ func survivorSummary(left []proc) string {
 	if len(left) == 1 {
 		noun = "process"
 	}
+	return fmt.Sprintf("%d %s the runner started still run after its tab closed: %s (stop them yourself if not needed)", len(left), noun, procList(left))
+}
+
+// procList names up to maxNamedSurvivors processes by pid and redacted
+// command, and counts the rest.
+func procList(procs []proc) string {
 	named := make([]string, 0, maxNamedSurvivors)
-	for _, p := range left[:min(len(left), maxNamedSurvivors)] {
+	for _, p := range procs[:min(len(procs), maxNamedSurvivors)] {
 		named = append(named, fmt.Sprintf("%d `%s`", p.PID, firstLine(redact.Secrets(p.Command), 60)))
 	}
 	list := strings.Join(named, ", ")
-	if extra := len(left) - len(named); extra > 0 {
+	if extra := len(procs) - len(named); extra > 0 {
 		list += fmt.Sprintf(" and %d more", extra)
 	}
-	return fmt.Sprintf("%d %s the runner started still run after its tab closed: %s (stop them yourself if not needed)", len(left), noun, list)
+	return list
+}
+
+// carriedNote tells the next session of a relaunched runner which
+// processes of the previous one still run.
+func carriedNote(left []proc) string {
+	return "Still running from the previous session: " + procList(left) + ". Stop them or reuse them; do not start duplicates."
 }

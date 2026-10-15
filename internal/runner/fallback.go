@@ -176,13 +176,22 @@ func (r *Runner) relaunch(nt *task.Task) error {
 
 // clearPane quits the agent in a relaunched runner's pane and sets the
 // environment the next agent needs, such as its Claude config folder and
-// its attempt.
-func (r *Runner) clearPane(ctx context.Context, t *task.Task) error {
+// its attempt. It returns the processes of the previous session that still
+// run after the quit, which it never signals.
+func (r *Runner) clearPane(ctx context.Context, t *task.Task) ([]proc, error) {
+	before, _ := r.snapshotProcs(ctx, t)
 	quitCtx, cancel := context.WithTimeout(ctx, quitBudget)
 	err := r.quitAgent(quitCtx, t.Herdr.PaneID)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("quit the previous agent session: %w", err)
+		return nil, fmt.Errorf("quit the previous agent session: %w", err)
 	}
-	return r.exportEnv(ctx, t.Herdr.PaneID, t, true)
+	if err := r.exportEnv(ctx, t.Herdr.PaneID, t, true); err != nil {
+		return nil, err
+	}
+	left := r.waitSurvivors(ctx, t, before)
+	if len(left) > 0 {
+		r.emit(t, "processes-carried", fmt.Sprintf("%d of the previous session's processes still run; the next session was told to stop or reuse them: %s", len(left), procList(left)), "")
+	}
+	return left, nil
 }

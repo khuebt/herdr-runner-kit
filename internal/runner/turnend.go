@@ -91,6 +91,13 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 			return "", err
 		}
 	}
+	if h == task.Codex && !limited {
+		// A runner near its context limit is asked to hand off instead of
+		// being nudged, and the turn does not count as unreported.
+		if asked, err := r.codexContextLow(ctx, t); asked || err != nil {
+			return "", err
+		}
+	}
 	if h == task.Claude && r.claudeWorksInBackground(ctx, t, payload) {
 		return "", nil
 	}
@@ -110,6 +117,9 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	switch t.Unreported {
 	case 1:
 		nudge := r.nudgeText()
+		if r.handoffPending(t) {
+			nudge = r.handoffRequest(t)
+		}
 		if h == task.Codex {
 			if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, nudge); err != nil {
 				return "", fmt.Errorf("nudge: %w", err)

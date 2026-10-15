@@ -131,6 +131,10 @@ func (claude) ProgressText(screen string) string {
 	return joinLines(out)
 }
 
+// ContextLeft is false: Claude tells the kit about its context through its
+// compaction hooks, and its footer may be the user's own status line.
+func (claude) ContextLeft(string) (int, bool) { return 0, false }
+
 func (claude) ShowsRetry(screen string) bool {
 	return anyLineMatches(lastLines(screen, statusLines), claudeRetry)
 }
@@ -193,19 +197,56 @@ func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
 
 // ClaudeSettings returns the per-task settings file content: Stop and
 // StopFailure hooks that call `<bin> __turn-end`, which tells the two apart
-// by the hook input. Claude merges them with the user's own hooks.
+// by the hook input, and PreCompact and SessionStart(compact) hooks that
+// call `<bin> __context`. PreCompact has no matcher: a manual compaction
+// must cancel an automatic one Claude announced but never ran. Claude
+// merges them with the user's own hooks.
 func ClaudeSettings(bin string) ([]byte, error) {
 	if !filepath.IsAbs(bin) {
 		return nil, fmt.Errorf("hook binary must be an absolute path, got %q", bin)
 	}
-	hook := map[string]any{"type": "command", "command": ShellQuote(bin) + " __turn-end --harness claude"}
+	turnEnd := map[string]any{"type": "command", "command": ShellQuote(bin) + " __turn-end --harness claude"}
+	onCompact := map[string]any{"type": "command", "command": ShellQuote(bin) + " __context --harness claude"}
 	settings := map[string]any{
 		"hooks": map[string]any{
-			"Stop":        []any{map[string]any{"hooks": []any{hook}}},
-			"StopFailure": []any{map[string]any{"hooks": []any{hook}}},
+			"Stop":         []any{map[string]any{"hooks": []any{turnEnd}}},
+			"StopFailure":  []any{map[string]any{"hooks": []any{turnEnd}}},
+			"PreCompact":   []any{map[string]any{"hooks": []any{onCompact}}},
+			"SessionStart": []any{map[string]any{"matcher": "compact", "hooks": []any{onCompact}}},
 		},
 	}
 	return json.MarshalIndent(settings, "", "  ")
+}
+
+// ClaudeCompaction is what a PreCompact or SessionStart hook input says
+// about a compaction, as Claude Code 2.1.300 sends it: PreCompact carries
+// "trigger" ("auto" or "manual"), SessionStart carries "source" ("compact"
+// after any compaction). Claude may announce an automatic compaction with
+// PreCompact more than once, or without running one; only SessionStart
+// with source compact means one ran.
+type ClaudeCompaction struct {
+	Event   string `json:"hook_event_name"`
+	Trigger string `json:"trigger"`
+	Source  string `json:"source"`
+}
+
+// ParseClaudeCompaction reads a PreCompact or SessionStart hook input.
+func ParseClaudeCompaction(payload []byte) (ClaudeCompaction, error) {
+	var c ClaudeCompaction
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return c, fmt.Errorf("parse claude hook input: %w", err)
+	}
+	return c, nil
+}
+
+// ClaudeSessionContext is a SessionStart hook's output that adds text to
+// the model's context. Claude passes it on after a compaction, also when the
+// hook comes from --settings.
+func ClaudeSessionContext(text string) string {
+	out, _ := json.Marshal(map[string]any{
+		"hookSpecificOutput": map[string]string{"hookEventName": "SessionStart", "additionalContext": text},
+	})
+	return string(out)
 }
 
 // DefaultClaudeConfigDir maps a Claude config folder to the value runners

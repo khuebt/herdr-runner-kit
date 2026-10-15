@@ -61,13 +61,16 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	}
 	loc := herdr.Location{WorkspaceID: t.Herdr.WorkspaceID, TabID: t.Herdr.TabID, PaneID: t.Herdr.PaneID}
 	name := "hrk-" + t.ID
+	var carried []proc
 	if t.Herdr.PaneID != "" && (len(t.FallbackFrom) > 0 || t.Attempt > 1) {
 		// The agent hit its usage limit, or neared its context limit: its
 		// fallback, or a fresh session, takes over the same pane and
 		// checkout.
-		if err := r.clearPane(ctx, t); err != nil {
+		left, err := r.clearPane(ctx, t)
+		if err != nil {
 			return err
 		}
+		carried = left
 	} else {
 		var err error
 		if loc, err = r.openLocation(ctx, t); err != nil {
@@ -104,7 +107,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		if t, err = r.claimSwitch(t, []task.Status{task.Starting}, false, false); err != nil {
 			return err
 		}
-		if err := r.clearPane(ctx, t); err != nil {
+		// The latest snapshot holds every process still running, including
+		// those an earlier quit left.
+		if carried, err = r.clearPane(ctx, t); err != nil {
 			return err
 		}
 		spec, adapter, files, err = r.startAgent(ctx, t, name, loc.PaneID)
@@ -124,6 +129,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	}
 	if len(t.FallbackFrom) > 0 {
 		prompt = strings.TrimSpace(prompt + "\n\n" + resumeNote)
+	}
+	if len(carried) > 0 {
+		prompt = strings.TrimSpace(prompt + "\n\n" + carriedNote(carried))
 	}
 	text := adapter.FirstPrompt(t.Skill, prompt, files.contractText)
 	// A dialog can open after the screen looked ready. Look once more, so

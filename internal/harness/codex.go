@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -108,6 +109,48 @@ func (codex) ShowsRetry(screen string) bool {
 }
 
 func (codex) SelfResolvingPrompts() []SelfResolvingPrompt { return nil }
+
+// codexContext matches the context part of the footer under Codex's input
+// line, as codex-cli 0.162.1 draws it: "100% context left" by default, and
+// "Context 13% left" or "Context 87% used" from a status line with the
+// context-remaining or context-used item. The word context sets it apart
+// from the usage limits, such as "weekly 43% left".
+var codexContext = regexp.MustCompile(`(?i)\bcontext\s+(\d{1,3})%\s+(left|used)\b|\b(\d{1,3})%\s+context\s+left\b`)
+
+// ContextLeft reads the footer under the last input line only, so text in
+// the conversation never counts.
+func (codex) ContextLeft(screen string) (int, bool) {
+	lines := strings.Split(screen, "\n")
+	input := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], "›") {
+			input = i
+			break
+		}
+	}
+	if input < 0 {
+		return 0, false
+	}
+	for _, l := range lines[input+1:] {
+		m := codexContext.FindStringSubmatch(l)
+		if m == nil {
+			continue
+		}
+		if m[3] != "" {
+			n, err := strconv.Atoi(m[3])
+			return n, err == nil && n <= 100
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n > 100 {
+			return 0, false
+		}
+		if strings.EqualFold(m[2], "used") {
+			n = 100 - n
+		}
+		return n, true
+	}
+	return 0, false
+}
 
 // CodexConfigPath returns ${CODEX_HOME:-~/.codex}/config.toml.
 func CodexConfigPath() (string, error) {

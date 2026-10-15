@@ -157,6 +157,40 @@ func newTurnEndCommand() *cobra.Command {
 	return cmd
 }
 
+// newContextCommand is the Claude runners' PreCompact and
+// SessionStart(compact) hook. Like the turn-end hook it never fails: errors
+// go to stderr, and it prints nothing unless it asks for a handoff.
+func newContextCommand() *cobra.Command {
+	var h string
+	cmd := &cobra.Command{
+		Use:    "__context",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			payload, _ := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1<<20))
+			id := os.Getenv("HRK_TASK")
+			if id == "" || task.Harness(h) != task.Claude {
+				return nil
+			}
+			r, err := openRunner()
+			if err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), "herdr-runner-kit __context:", err)
+				return nil
+			}
+			out, err := r.ContextHook(cmd.Context(), id, payload)
+			if err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), "herdr-runner-kit __context:", err)
+			}
+			if out != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), out)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&h, "harness", "claude", "claude")
+	return cmd
+}
+
 // callUserCodexNotify runs the notify command from the user's config.toml,
 // detached, with the same argument Codex passed.
 func callUserCodexNotify(arg string) {
