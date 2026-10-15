@@ -125,7 +125,7 @@ func (claude) ProgressText(screen string) string {
 			continue
 		}
 		inTip = false
-		out = append(out, maskDurations(l))
+		out = append(out, l)
 	}
 	return joinLines(out)
 }

@@ -29,6 +29,20 @@ func TestProgressTextIgnoresAHangingTool(t *testing.T) {
 	}
 }
 
+func TestProgressTextIgnoresWhereATimerWraps(t *testing.T) {
+	// A long command line wraps, and its timer with it: "(3m" at the end of
+	// one line and "0s)" on the next. Before it reached a minute the timer
+	// fit on the first line.
+	wrapped := readFixture(t, "working-claude-wrapped.txt")
+	fits := strings.Replace(wrapped, "exited\"; fi (3m\n     0s)", "exited\"; fi (59s)", 1)
+	if fits == wrapped {
+		t.Fatal("the fixture no longer holds the wrapped timer")
+	}
+	if a, b := (claude{}).ProgressText(wrapped), (claude{}).ProgressText(fits); a != b {
+		t.Errorf("the wrap of a timer looks like progress:\n%s\n---\n%s", a, b)
+	}
+}
+
 func TestProgressTextSeesStreaming(t *testing.T) {
 	for _, c := range []struct {
 		a      Adapter

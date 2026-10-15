@@ -97,7 +97,7 @@ func (codex) ProgressText(screen string) string {
 	var out []string
 	for _, l := range lines {
 		if !codexStatus.MatchString(l) {
-			out = append(out, maskDurations(l))
+			out = append(out, l)
 		}
 	}
 	return joinLines(out)

@@ -58,14 +58,10 @@ func anyLineMatches(lines []string, re *regexp.Regexp) bool {
 	return false
 }
 
-// joinLines puts lines back together as screen text, without blank lines,
-// which agents add and drop around their status lines as they redraw.
+// joinLines puts the kept lines together as one line of single-spaced
+// words, with the elapsed-time counters masked. A long line wraps on the
+// screen, and a counter that grows can move the wrap: joining first makes
+// the text the same wherever the lines broke.
 func joinLines(lines []string) string {
-	out := lines[:0:0]
-	for _, l := range lines {
-		if strings.TrimSpace(l) != "" {
-			out = append(out, l)
-		}
-	}
-	return strings.Join(out, "\n")
+	return maskDurations(strings.Join(strings.Fields(strings.Join(lines, " ")), " "))
 }
