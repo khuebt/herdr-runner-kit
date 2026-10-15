@@ -54,7 +54,7 @@ const ompOverlay = "ask:\n  enabled: false\ntui:\n  titleState: false\n"
 // piProjectTrust is the dialog pi 1.2.0 shows in a folder with project
 // settings, extensions or skills. --approve skips it, so it shows only if
 // that flag stops working; herdr then reports the agent idle.
-var piProjectTrust = Dialog{Name: "pi-project-trust", Match: "Trust project folder?", Action: NeedsHuman}
+var piProjectTrust = Dialog{Name: "pi-project-trust", Match: "Trust project folder?", Action: NeedsHuman, IdleWhileShown: true}
 
 func (p pi) Harness() task.Harness { return p.harness }
 func (p pi) HerdrKind() string     { return p.kind }

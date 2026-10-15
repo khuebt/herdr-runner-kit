@@ -124,6 +124,9 @@ type Dialog struct {
 	Match  string // phrase on the visible screen, compared after Normalize
 	Action DialogAction
 	Keys   []string // herdr logical keys, for SendKeys
+	// IdleWhileShown says herdr reports the agent idle while the dialog is
+	// still up, so an answer shows only as the dialog leaving the screen.
+	IdleWhileShown bool
 }
 
 // Adapter describes one agent CLI.

@@ -507,8 +507,10 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d 
 	case err != nil:
 		return fmt.Errorf("no answer to the %s dialog: %w", dialog, err)
 	}
-	if !r.waitScreenClears(ctx, pane, d, deadline) {
-		return fmt.Errorf("no answer to the %s dialog", dialog)
+	if d.IdleWhileShown {
+		if err := r.waitScreenClears(ctx, pane, d, deadline); err != nil {
+			return err
+		}
 	}
 	_, _, err = r.Store.Transition(t.ID, task.Starting, []task.Status{task.NeedsHuman}, func(t *task.Task) {
 		t.Error = ""
@@ -523,18 +525,21 @@ const dialogPollEvery = time.Second
 
 // waitScreenClears reads the screen until dialog d is gone from it, up to
 // deadline. A read error counts as gone: the next dialog round reads again.
-func (r *Runner) waitScreenClears(ctx context.Context, pane string, d harness.Dialog, deadline time.Time) bool {
+func (r *Runner) waitScreenClears(ctx context.Context, pane string, d harness.Dialog, deadline time.Time) error {
 	for range int(dialogAnswerTimeout / dialogPollEvery) {
 		screen, err := r.Herdr.PaneRead(ctx, pane, 40)
 		if err != nil || !harness.Shows(screen, d) {
-			return true
+			return nil
 		}
-		if time.Now().After(deadline) {
-			return false
+		if _, err := r.Herdr.AgentGet(ctx, pane); isGone(err) {
+			return fmt.Errorf("the agent exited at the %s dialog", d.Name)
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return fmt.Errorf("no answer to the %s dialog", d.Name)
 		}
 		r.Sleep(dialogPollEvery)
 	}
-	return false
+	return fmt.Errorf("no answer to the %s dialog", d.Name)
 }
 
 // errorLine returns the first "Error:" line on screen.

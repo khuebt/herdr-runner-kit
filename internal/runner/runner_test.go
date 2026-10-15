@@ -756,6 +756,20 @@ func TestLaunchPiWaitsUntilTrustDialogLeavesScreen(t *testing.T) {
 	}
 }
 
+func TestLaunchPiFailsWhenAgentExitsWithTrustDialogOnScreen(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	// The user quits pi at its trust dialog; its last frame stays on screen.
+	fake.on("agent start", ok(`{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}`))
+	fake.on("agent wait", ok(`{"result":{"agent":{"agent_status":"idle"}}}`))
+	fake.on("agent get", herdrErr(herdr.CodeAgentNotRunning))
+	fake.on("pane read", ok(fixture(t, "project-trust-pi.txt")))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Agent: piAgents[task.Pi], Prompt: "x", Cwd: plainDir(t)})
+	err := r.Launch(context.Background(), tk.ID)
+	if err == nil || !strings.Contains(err.Error(), "exited at the pi-project-trust dialog") {
+		t.Fatalf("Launch = %v, want the agent exited at the dialog", err)
+	}
+}
+
 func TestLaunchFailsWhenAgentExitsAtDialog(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
