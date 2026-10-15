@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -106,12 +107,81 @@ func TestPiLaunchArgs(t *testing.T) {
 }
 
 func TestPiFiles(t *testing.T) {
-	files, err := piAgent.Files(FilesInput{Bin: "/usr/local/bin/hrk", Contract: "CONTRACT"})
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		files, err := a.Files(FilesInput{Bin: `/opt/my "kit"/hrk`, Contract: "CONTRACT"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(files) != 2 || files[0].Name != "contract.md" || string(files[0].Data) != "CONTRACT\n" || files[1].Name != "hrk-runner.ts" {
+			t.Fatalf("%s: files = %q", a.Harness(), files)
+		}
+		ext := string(files[1].Data)
+		for _, want := range []string{`const BIN = "/opt/my \"kit\"/hrk";`, `const HARNESS = "` + string(a.Harness()) + `";`} {
+			if !strings.Contains(ext, want) {
+				t.Errorf("%s: extension lacks %s", a.Harness(), want)
+			}
+		}
+		if strings.Contains(ext, "__HRK_") {
+			t.Errorf("%s: a placeholder is left", a.Harness())
+		}
+		checkScript(t, ext)
+	}
+	if _, err := piAgent.Files(FilesInput{Bin: "hrk"}); err == nil {
+		t.Error("a relative binary was accepted")
+	}
+}
+
+// checkScript has node parse a rendered extension, when node is installed.
+// The extension is plain JavaScript, so it is checked as a module.
+func checkScript(t *testing.T, src string) {
+	t.Helper()
+	node, err := exec.LookPath("node")
 	if err != nil {
+		t.Log("node not on PATH; syntax not checked")
+		return
+	}
+	path := filepath.Join(t.TempDir(), "hrk-runner.mjs")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if want := []File{{Name: "contract.md", Data: []byte("CONTRACT\n")}}; !reflect.DeepEqual(files, want) {
-		t.Errorf("files = %q", files)
+	if out, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+		t.Errorf("node --check: %v\n%s", err, out)
+	}
+}
+
+func TestPiReadTurnEnd(t *testing.T) {
+	tests := []struct {
+		fixture string
+		want    TurnSignal
+	}{
+		{"turnend-pi-completed.json", TurnSignal{ContextLeft: 95, ContextKnown: true}},
+		{"turnend-pi-aborted.json", TurnSignal{Ignore: true}},
+		{"turnend-pi-error.json", TurnSignal{ContextLeft: 94, ContextKnown: true}},
+		{"turnend-pi-usage-limit.json", TurnSignal{LimitConfirmed: true}},
+		{"turnend-pi-context-high.json", TurnSignal{ContextLeft: 10, ContextKnown: true}},
+		{"turnend-omp-completed.json", TurnSignal{ContextLeft: 90, ContextKnown: true}},
+	}
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		for _, tt := range tests {
+			got, err := a.ReadTurnEnd(TurnInput{Payload: []byte(readFixture(t, tt.fixture))})
+			if err != nil || got != tt.want {
+				t.Errorf("%s %s = %+v, %v; want %+v", a.Harness(), tt.fixture, got, err, tt.want)
+			}
+		}
+	}
+	for _, msg := range []string{"Your QUOTA is exhausted", "out of credits", "Usage\nlimit reached"} {
+		payload, _ := json.Marshal(map[string]any{"event": "agent_end", "errorMessage": msg})
+		if got, _ := ompAgent.ReadTurnEnd(TurnInput{Payload: payload}); !got.LimitConfirmed {
+			t.Errorf("%q is not a usage limit", msg)
+		}
+	}
+	// Right after a compaction the agent knows no percent.
+	got, err := piAgent.ReadTurnEnd(TurnInput{Payload: []byte(`{"event":"agent_settled","aborted":false,"context":{"tokens":1200,"window":272000}}`)})
+	if err != nil || got != (TurnSignal{}) {
+		t.Errorf("no percent = %+v, %v", got, err)
+	}
+	if _, err := piAgent.ReadTurnEnd(TurnInput{Payload: []byte(`{"event"`)}); err == nil {
+		t.Error("a malformed payload was accepted")
 	}
 }
 
