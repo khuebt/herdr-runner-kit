@@ -89,7 +89,7 @@ Runners start with permission prompts turned off, so they never stall waiting fo
 - Claude Code runs with `--dangerously-skip-permissions`.
 - Codex runs with `--dangerously-bypass-approvals-and-sandbox`, which also turns off its sandbox. A Codex runner can read and write anything your user account can.
 - pi runs with `--approve`, which trusts the project's own settings, extensions and skills for this run only and saves nothing to `~/.pi`. A pi runner, like a Codex one, can do anything your user account can.
-- omp runs with `--auto-approve`, plus a per-task config overlay (`omp-runner.yml`) that turns off its `ask` tool, which would wait for an answer forever. Approval policies you set under `tools.approval` in your own omp config still apply and may still prompt; the runner then shows as blocked.
+- omp runs with `--auto-approve`, plus a per-task config overlay (`omp-runner.yml`) that turns off its `ask` tool, which would wait for an answer forever, and the run-state spinner in its terminal title (`tui.titleState: false`). herdr counts each title change as a new agent revision, so with the spinner on, a hung runner would look busy and stall detection could never flag it. Approval policies you set under `tools.approval` in your own omp config still apply and may still prompt; the runner then shows as blocked.
 
 Before the first Codex runner in a repository, the kit adds that repository root to `~/.codex/config.toml` as trusted, because Codex asks again in every new worktree otherwise. Running `spawn` in a repository is taken as your consent for that repository. The kit appends the entry and never changes existing lines. If you marked the repository as untrusted in Codex, `spawn` stops and tells you instead.
 

@@ -123,7 +123,7 @@ Attempts show only from the second one on: `wait` adds `attempt 2` to a `needs-h
 
 ## pi and omp runners
 
-A pi or omp runner starts with three files from its task folder: `contract.md`, the report contract, passed with `--append-system-prompt` so it survives compaction; `hrk-runner.ts`, the kit's runner extension, which reports each turn end, the context left and each compaction to the kit; and, for omp only, `omp-runner.yml`, a config overlay that turns off omp's `ask` tool. The skill is sent as `/skill:<name>`, with a colon in the name turned into a dash, so `--skill ak:plan` becomes `/skill:ak-plan`.
+A pi or omp runner starts with three files from its task folder: `contract.md`, the report contract, passed with `--append-system-prompt` so it survives compaction; `hrk-runner.ts`, the kit's runner extension, which reports each turn end, the context left and each compaction to the kit; and, for omp only, `omp-runner.yml`, a config overlay that turns off omp's `ask` tool and its terminal-title spinner (`tui.titleState: false`), so herdr's agent revision stays still and stall detection works. The skill is sent as `/skill:<name>`, with a colon in the name turned into a dash, so `--skill ak:plan` becomes `/skill:ak-plan`.
 
 - Your own pi extensions still load in runners, next to the kit's; the kit does not turn them off.
 - omp ends the background jobs a tool call starts with `cmd &` when that shell call returns, and pi leaves them running unseen. The contract tells runners to wait for background work before reporting; a runner that does not is nudged.
