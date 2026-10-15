@@ -80,7 +80,7 @@ An explicit `--agent` or `--worktree` / `--no-worktree` on `spawn` always wins o
 
 Examples: `codex`, `codex:gpt-6-astra:xhigh`, `claude::max`, `claude:claude-sonnet-5-5`, `pi:openai-codex/gpt-6-luna:high`, `omp:openai-codex/gpt-6-luna:max`.
 
-pi's own `--model provider/id:thinking` shorthand does not apply: the spec's third field replaces it, so write `pi:openai-codex/gpt-6-luna:high`.
+pi's own `--model provider/id:thinking` shorthand does not apply: the spec's third field replaces it, so write `pi:openai-codex/gpt-6-luna:high`. A pi or omp model id may contain colons, as in `pi:ollama/qwen3:8b` or `omp:openrouter/vendor/model:free:high`: the last part is read as the effort only when it is an effort name, and an effort name the harness does not accept is an error.
 
 ## What runners are allowed to do
 

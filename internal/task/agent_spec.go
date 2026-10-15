@@ -78,22 +78,32 @@ type AgentSpec struct {
 
 // ParseAgentSpec parses "harness[:model[:effort]]", such as "codex",
 // "claude:claude-opus-5-5:high", "claude::max" or
-// "pi:openai-codex/gpt-6-luna:high".
+// "pi:openai-codex/gpt-6-luna:high". A harness that needs a model takes
+// model ids with colons, such as "pi:ollama/qwen3:8b": its effort is the
+// last part only when that names an effort of any harness, so a wrong
+// effort still fails.
 func ParseAgentSpec(s string) (AgentSpec, error) {
 	parts := strings.Split(strings.TrimSpace(s), ":")
+	spec := AgentSpec{Harness: Harness(parts[0])}
+	info, ok := infoOf(spec.Harness)
+	if !ok {
+		return AgentSpec{}, fmt.Errorf("invalid agent %q: harness must be %s", s, harnessChoice())
+	}
+	if n := len(parts); info.needsModel && n > 2 {
+		effort := ""
+		if isEffort(parts[n-1]) {
+			effort, parts = parts[n-1], parts[:n-1]
+		}
+		parts = []string{parts[0], strings.Join(parts[1:], ":"), effort}
+	}
 	if len(parts) > 3 {
 		return AgentSpec{}, fmt.Errorf("invalid agent %q: want harness[:model[:effort]]", s)
 	}
-	spec := AgentSpec{Harness: Harness(parts[0])}
 	if len(parts) > 1 {
 		spec.Model = parts[1]
 	}
 	if len(parts) > 2 {
 		spec.Effort = parts[2]
-	}
-	info, ok := infoOf(spec.Harness)
-	if !ok {
-		return AgentSpec{}, fmt.Errorf("invalid agent %q: harness must be %s", s, harnessChoice())
 	}
 	if info.needsModel && spec.Model == "" {
 		return AgentSpec{}, fmt.Errorf("invalid agent %q: %s needs a model, such as %s:openai-codex/gpt-6-luna[:effort]", s, spec.Harness, spec.Harness)
@@ -106,6 +116,15 @@ func ParseAgentSpec(s string) (AgentSpec, error) {
 			s, spec.Harness, strings.Join(info.efforts, ", "))
 	}
 	return spec, nil
+}
+
+func isEffort(s string) bool {
+	for _, h := range harnesses {
+		if slices.Contains(h.efforts, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // String returns the shortest form that parses back to the same spec.

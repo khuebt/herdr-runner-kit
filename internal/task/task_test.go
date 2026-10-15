@@ -33,6 +33,10 @@ func TestParseAgentSpec(t *testing.T) {
 		{in: "omp:", wantErr: true},
 		{in: "pi:openai-codex/gpt-6-luna:auto", wantErr: true},
 		{in: "omp:openai-codex/gpt 6", wantErr: true},
+		{in: "pi:ollama/qwen3:8b", want: AgentSpec{Harness: Pi, Model: "ollama/qwen3:8b"}},
+		{in: "omp:openrouter/x/y:free:high", want: AgentSpec{Harness: Omp, Model: "openrouter/x/y:free", Effort: "high"}},
+		{in: "pi:ollama/qwen3:8b:auto", wantErr: true},
+		{in: "codex:a:b", wantErr: true},
 	}
 	for _, tt := range tests {
 		got, err := ParseAgentSpec(tt.in)
@@ -64,6 +68,7 @@ func TestAgentSpecStringRoundTrip(t *testing.T) {
 		"codex", "claude:claude-opus-5-5", "claude:claude-opus-5-5:high", "claude::max",
 		"pi:openai-codex/gpt-6-luna", "pi:openai-codex/gpt-6-luna:high",
 		"omp:openai-codex/gpt-6-luna:max", "omp:openai-codex/gpt-6-luna:auto",
+		"pi:ollama/qwen3:8b", "omp:openrouter/x/y:free:high",
 	} {
 		spec, err := ParseAgentSpec(s)
 		if err != nil {
