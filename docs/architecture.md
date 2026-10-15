@@ -20,7 +20,7 @@ All packages live under `internal/`, except `cmd/hrk` and `skill` at the reposit
 ## Dependency rules
 
 1. A package imports only what its layer allows. A new internal package needs a row in the layer table first.
-2. Outside `internal/harness` and `internal/task`, no code names `task.Codex`, and `task.Claude` appears only in the allowlisted Claude-only features below. Test files are exempt.
+2. Outside `internal/harness` and `internal/task`, no code names a harness constant other than `task.Claude` (so no `task.Codex`, `task.Pi` or `task.Omp`), and `task.Claude` appears only in the allowlisted Claude-only features below. The core lifecycle packages also never spell a harness name as a string, such as `"codex"`. Test files are exempt.
 3. `internal/harness` imports no core package (`runner`, `wait`, `state`, `config`, `cli`).
 
 ### Claude-only features

@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
 const module = "github.com/khuebt/herdr-runner-kit/"
@@ -148,9 +150,15 @@ func TestHarnessImportsNoCore(t *testing.T) {
 }
 
 // TestCoreNamesNoHarness keeps harness decisions behind harness.Adapter:
-// outside internal/harness and internal/task, task.Codex never appears and
-// task.Claude only in the allowlisted Claude-only features.
+// outside internal/harness and internal/task, no harness constant other than
+// task.Claude appears, and task.Claude only in the allowlisted Claude-only
+// features. The core lifecycle packages also never spell a harness name as
+// a string.
 func TestCoreNamesNoHarness(t *testing.T) {
+	names := map[string]bool{}
+	for _, h := range task.Harnesses() {
+		names[string(h)] = true
+	}
 	used := map[string]bool{}
 	for pkg, files := range sources(t, 0) {
 		if pkg == "internal/harness" || pkg == "internal/task" {
@@ -163,11 +171,17 @@ func TestCoreNamesNoHarness(t *testing.T) {
 					name = fn.Name.Name
 				}
 				ast.Inspect(decl, func(n ast.Node) bool {
+					if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING && layers[pkg] == "core" {
+						if v, err := strconv.Unquote(lit.Value); err == nil && names[v] {
+							t.Errorf("%s:%s spells the harness name %q; ask harness.Adapter instead", f.path, name, v)
+						}
+						return true
+					}
 					sel, ok := n.(*ast.SelectorExpr)
 					if !ok {
 						return true
 					}
-					if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "task" || (sel.Sel.Name != "Claude" && sel.Sel.Name != "Codex") {
+					if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "task" || !names[strings.ToLower(sel.Sel.Name)] {
 						return true
 					}
 					key := f.path + ":" + name
