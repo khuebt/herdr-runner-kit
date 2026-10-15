@@ -3,6 +3,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -97,6 +98,9 @@ type SpawnOptions struct {
 	// Branch names the worktree branch, following the repository's own
 	// convention. Empty means prefix + "<id>-<slug>".
 	Branch string
+	// BranchTitle is the text the slug of the default branch comes from.
+	// Empty means the title.
+	BranchTitle string
 	// Language overrides the configured report language.
 	Language string
 	// Project names the registered project the task works for. Empty means
@@ -111,6 +115,13 @@ type SpawnOptions struct {
 	// Reason says why a task with the human gate waits, such as the
 	// dependency it needs. Only a release that names the task opens it.
 	Reason string
+	// Plan is the absolute folder of the AgentKit plan the task runs a
+	// phase of, and Phase that phase's number.
+	Plan  string
+	Phase int
+	// CheckoutOf is the plan task whose worktree the task works in. It
+	// implies no worktree of the task's own.
+	CheckoutOf string
 	// Warn, when set, receives a one-line warning that spawn carried on
 	// without the project registry because it could not be read.
 	Warn func(string)
@@ -154,7 +165,7 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 	if t.UseWorktree {
 		branch := o.Branch
 		if branch == "" {
-			branch = BranchName(r.Config.WorktreeBranchPrefix, t.ID, t.Title)
+			branch = BranchName(r.Config.WorktreeBranchPrefix, t.ID, cmp.Or(o.BranchTitle, t.Title))
 		}
 		if BranchExists(ctx, t.RepoRoot, branch) {
 			r.fail(t.ID, fmt.Sprintf("branch %s already exists", branch))
@@ -329,6 +340,15 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 	if o.Worktree != nil {
 		useWorktree = *o.Worktree
 	}
+	if o.CheckoutOf != "" {
+		if o.Base != "" || o.Branch != "" || (o.Worktree != nil && *o.Worktree) {
+			return nil, "", errors.New("a task working in another task's checkout takes no worktree, --base or --branch")
+		}
+		if _, err := r.Store.Get(o.CheckoutOf); err != nil {
+			return nil, "", fmt.Errorf("checkout of %s: %w", o.CheckoutOf, err)
+		}
+		useWorktree = false
+	}
 	if useWorktree && root == "" {
 		return nil, "", fmt.Errorf("--worktree needs a git repository, and %s is not in one", cwd)
 	}
@@ -382,6 +402,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 		Cwd: cwd, Owner: owner, RepoRoot: root, UseWorktree: useWorktree, After: after, Gate: gate, HoldReason: reason,
 		MainWorkspace: workspace, ClaudeConfigDir: configDir, Language: language,
 		Project: project.Name, Stage: stage, Keep: o.Keep,
+		Plan: o.Plan, Phase: o.Phase, CheckoutOf: o.CheckoutOf,
 		// Queued until spawn decides: a task with no pending parents moves on
 		// to held or starting at once.
 		Status: task.Queued,

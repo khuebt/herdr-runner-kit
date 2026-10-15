@@ -80,10 +80,14 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		}); err != nil {
 			return err
 		}
-		// The first round starts here; the git line counts its commits.
+		// The first round starts here; the git line counts its commits, and a
+		// plan phase is checked against what it changed since.
 		if head := roundHead(t); head != "" {
 			if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
 				t.RoundHead = head
+				if t.Plan != "" && t.PhaseStart == "" {
+					t.PhaseStart = head
+				}
 				return nil
 			}); err != nil {
 				return err
@@ -247,6 +251,16 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 			r.emit(t, "project-workspace-fallback", "open the workspace of project "+t.Project+": "+err.Error()+"; "+where, "")
 		}
 	}
+	if t.CheckoutOf != "" {
+		path, ws, err := r.sharedCheckout(ctx, t)
+		if err != nil {
+			return herdr.Location{}, err
+		}
+		if ws != "" {
+			tabWS = ws
+		}
+		return r.Herdr.TabCreate(ctx, tabWS, path, label, r.runnerEnv(t))
+	}
 	if !t.UseWorktree {
 		return r.Herdr.TabCreate(ctx, tabWS, t.Cwd, label, r.runnerEnv(t))
 	}
@@ -286,6 +300,37 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 	}
 	// worktree create has no --env, so export in the root pane's shell.
 	return loc, r.exportEnv(ctx, loc.PaneID, t, false)
+}
+
+// sharedCheckout points t, which works in the worktree of task
+// t.CheckoutOf, at that worktree, and returns it with the anchor's herdr
+// workspace while that is still open on it.
+func (r *Runner) sharedCheckout(ctx context.Context, t *task.Task) (path, workspace string, err error) {
+	anchor, err := r.Store.Get(t.CheckoutOf)
+	if err != nil {
+		return "", "", err
+	}
+	if anchor.Worktree == nil || anchor.Worktree.Path == "" {
+		return "", "", fmt.Errorf("the run's checkout of %s was never created", anchor.ID)
+	}
+	path = filepath.Clean(anchor.Worktree.Path)
+	if anchor.Worktree.Removed || !isDir(path) {
+		return "", "", fmt.Errorf("the run's checkout %s is gone", path)
+	}
+	if _, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		t.Cwd = path
+		return nil
+	}); err != nil {
+		return "", "", err
+	}
+	// herdr reuses the ids of closed workspaces, so the anchor's id counts
+	// only while it still shows this checkout.
+	if id := anchor.Herdr.WorkspaceID; id != "" {
+		if checkout, err := r.Herdr.WorkspaceCheckout(ctx, id); err == nil && filepath.Clean(checkout) == path {
+			workspace = id
+		}
+	}
+	return path, workspace, nil
 }
 
 // projectWorkspace returns the herdr workspace of t's project, opening it

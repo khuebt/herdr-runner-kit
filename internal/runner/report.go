@@ -253,7 +253,13 @@ func (r *Runner) After(ctx context.Context, id string) error {
 	}
 	switch t.Status {
 	case task.Done:
-		return r.startDependents(ctx, t)
+		if t.Plan == "" {
+			return r.startDependents(ctx, t)
+		}
+		// A plan phase is checked before the next wave may start, and the
+		// plan is done once its last phase is.
+		r.acceptPhase(ctx, t)
+		return errors.Join(r.startDependents(ctx, t), r.planDone(ctx, t))
 	case task.Failed, task.Stopped:
 		return r.failDependents(t)
 	}
@@ -261,7 +267,8 @@ func (r *Runner) After(ctx context.Context, id string) error {
 }
 
 // startDependents moves every queued task whose parents are now all done
-// to held (human gate) or starts it in this process.
+// to held (human gate, or a plan phase whose check failed) or starts it in
+// this process.
 func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 	tasks, err := r.Store.List()
 	if err != nil {
@@ -292,8 +299,14 @@ func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 				t.Worktree.Base = base
 			}
 		}
-		if q.Gate == task.GateHuman {
-			if t, changed, err := r.Store.Transition(q.ID, task.Held, []task.Status{task.Queued}, withInputs); err != nil {
+		if reason := r.phaseHoldReason(ctx, q); q.Gate == task.GateHuman || reason != "" {
+			hold := func(t *task.Task) {
+				withInputs(t)
+				if reason != "" {
+					t.HoldReason = reason
+				}
+			}
+			if t, changed, err := r.Store.Transition(q.ID, task.Held, []task.Status{task.Queued}, hold); err != nil {
 				errs = append(errs, err)
 			} else if changed {
 				r.emit(t, "held", task.HeldSummary(t), "")

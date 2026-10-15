@@ -22,11 +22,29 @@ func (r *Runner) removeWorktree(ctx context.Context, t *task.Task, force bool) e
 	if t.Worktree == nil || t.Worktree.Path == "" {
 		return nil // never created
 	}
+	if err := r.refuseSharedCheckout(t); err != nil {
+		return err
+	}
 	path := filepath.Clean(t.Worktree.Path)
 	if err := r.removeCheckout(ctx, t, path, force); err != nil {
 		return err
 	}
 	removeEmptyRepoFolder(path)
+	return nil
+}
+
+// refuseSharedCheckout refuses to remove t's worktree while another task
+// of its plan run still works in it.
+func (r *Runner) refuseSharedCheckout(t *task.Task) error {
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	for _, q := range tasks {
+		if q.CheckoutOf == t.ID && !q.Status.Terminal() {
+			return fmt.Errorf("%s works in this checkout", q.ID)
+		}
+	}
 	return nil
 }
 
