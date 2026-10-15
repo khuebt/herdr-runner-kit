@@ -1,0 +1,20 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+ Run exactly this one command: printf 'Error: disk quota exceeded on /data\n'  Then reply with the word ok and report done.
+
+
+ Specifying exact bash command execution
+
+
+ $ printf 'Error: disk quota exceeded on /data\n' (timeout 10s)
+
+ Error: disk quota exceeded on /data
+
+ Took 0.0s
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.local/state/herdr-runner-kit/tasks/t103/out/live/repo (main)
+↑31k ↓152 R15k CH0.0% $0.003 (sub) 5.8%/272k (auto)                                            (openai-codex) gpt-6-luna • low

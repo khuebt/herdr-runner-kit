@@ -23,7 +23,6 @@ type pi struct {
 	overlay  string // a config overlay in the task folder, passed with --config
 	extFlag  string // the flag that loads the runner extension
 	dialogs  []Dialog
-	limit    limitLine
 	progress func(screen string) string
 }
 
@@ -32,12 +31,10 @@ var (
 	piAgent = pi{
 		harness: task.Pi, kind: "pi", approve: "--approve", extFlag: "-e",
 		dialogs: []Dialog{piProjectTrust}, progress: piProgress,
-		limit: limitLine{marker: "Error:", indent: 1, afterBlank: true, phrases: piLimitPhrases},
 	}
 	ompAgent = pi{
 		harness: task.Omp, kind: "omp", approve: "--auto-approve",
 		overlay: ompOverlayFile, extFlag: "--hook", progress: ompProgress,
-		limit: limitLine{marker: "✘", indent: 1, phrases: piLimitPhrases},
 	}
 )
 
@@ -129,11 +126,13 @@ func (p pi) Files(in FilesInput) ([]File, error) {
 
 func (p pi) Dialogs() []Dialog { return p.dialogs }
 
-// ShowsUsageLimit reads the error a turn ends with. pi 1.2.0 draws it as a
-// message of its own, " Error: <message>" under a blank line; omp 18.2.10
-// draws it in a ruled box as " ✘ <message>". The message is the provider's,
-// such as pi-ai's "You have hit your ChatGPT usage limit (plus plan).".
-func (p pi) ShowsUsageLimit(screen string) bool { return p.limit.shown(screen) }
+// ShowsUsageLimit is always false: a screen never confirms a pi or omp
+// limit. pi 1.2.0 draws a turn's error as " Error: <message>" under a blank
+// line, and a tool's output line such as " Error: disk quota exceeded" looks
+// the same. A limit only comes from a model request, so the runner
+// extension's turn-end payload carries it, and ReadTurnEnd confirms it from
+// the payload's errorMessage.
+func (pi) ShowsUsageLimit(string) bool { return false }
 
 // ProgressText keeps the conversation, which each variant cuts from the
 // status, input and footer lines it draws under it.

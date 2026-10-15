@@ -360,6 +360,26 @@ func TestBackstopSwitchesExitedAgentAtUsageLimit(t *testing.T) {
 	}
 }
 
+// A pi tool that prints " Error: disk quota exceeded" draws a line like
+// pi's own error line; for pi and omp only the turn-end payload confirms a
+// limit, so the screen never switches the agent.
+func TestBackstopKeepsPiAgentAtQuotaLineInToolOutput(t *testing.T) {
+	r, fake, launched := limitRunner(t, fixture(t, "tool-quota-pi.txt"), config.Fallback{Agent: "codex"})
+	tk := running(t, r, SpawnOptions{Kind: "research", Agent: piAgents[task.Pi], Prompt: "x", Cwd: plainDir(t)})
+	*launched = nil
+	fake.on("agent wait", ok(`{"result":{"agent":{"agent_status":"blocked"}}}`))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	r.WatchAgent(ctx, tk.ID)
+	got, _ := r.Store.Get(tk.ID)
+	if got.Agent != piAgents[task.Pi] || len(*launched) != 0 {
+		t.Errorf("task = %s %s, launchers %v", got.Status, got.Agent, *launched)
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "agent-switched") || slices.Contains(ev, "usage-limit") {
+		t.Errorf("events = %v", ev)
+	}
+}
+
 func spawnQueued(t *testing.T, r *Runner, parent string) string {
 	t.Helper()
 	c, err := r.Spawn(context.Background(), SpawnOptions{Prompt: "next", Cwd: plainDir(t), After: []string{parent}})

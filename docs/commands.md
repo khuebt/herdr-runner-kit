@@ -111,7 +111,7 @@ A worktree branch is named `hrk/<id>-<slug>` unless `spawn --branch NAME` names 
 
 When a runner's agent hits a usage limit, the task switches to the next agent in the config's [`quotaFallback`](config.md#keys) list. The new agent starts in the same tab and checkout, with the first prompt and a note to continue from the partial work. The event log gets an `agent-switched` event, and `events --learning` lists the agents the task went through.
 
-Claude reports the limit itself: its turn ends in a `StopFailure` hook with a rate-limit error and its limit message. pi and omp report it the same way, through the kit's runner extension, when their turn ends on an error that names a usage limit or quota. With no fallback left, or none configured, that task fails with `usage limit reached for <agent>`, and its waiting dependents fail too.
+Claude reports the limit itself: its turn ends in a `StopFailure` hook with a rate-limit error and its limit message. pi and omp report it the same way, through the kit's runner extension, when their turn ends on an error that names a usage limit or quota. Their screens never count, because a tool's output can draw a line just like pi's own `Error:` line. With no fallback left, or none configured, that task fails with `usage limit reached for <agent>`, and its waiting dependents fail too.
 
 Codex only shows the limit on screen, as its own `■ You've hit your usage limit …` error line; the same words in the conversation or in a tool's output never count. Such a line switches the agent when a fallback is left. Otherwise the task is not failed: the runner is nudged as for any unreported turn, and the main session gets `usage-limit` news saying the runner appears to be at its usage limit.
 
