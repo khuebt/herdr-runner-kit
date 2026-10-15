@@ -68,7 +68,7 @@ sh "$root/install.sh" >"$work/install.log" 2>&1 || {
 }
 "$bin/hrk" version | grep -q "herdr-runner-kit ${version#v} " || fail "installed version"
 [ "$(readlink "$bin/herdr-runner-kit")" = hrk ] || fail "no herdr-runner-kit alias"
-[ -f "$bin/hrk" ] && [ ! -L "$bin/hrk" ] || fail "hrk is not the binary itself"
+if [ ! -f "$bin/hrk" ] || [ -L "$bin/hrk" ]; then fail "hrk is not the binary itself"; fi
 [ -d "$HOME/.claude/skills/herdr-runner-kit" ] || fail "install did not run setup"
 echo "ok: install and setup"
 
