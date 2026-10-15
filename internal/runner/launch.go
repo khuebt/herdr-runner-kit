@@ -100,7 +100,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		}
 	}
 
-	spec, adapter, files, err := r.startAgent(ctx, t, name, loc.PaneID)
+	spec, adapter, contract, err := r.startAgent(ctx, t, name, loc.PaneID)
 	for errors.Is(err, errUsageLimit) {
 		// errUsageLimit comes only while a fallback is left, and each switch
 		// records the agent it leaves, so this ends once they run out.
@@ -112,7 +112,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		if carried, err = r.clearPane(ctx, t); err != nil {
 			return err
 		}
-		spec, adapter, files, err = r.startAgent(ctx, t, name, loc.PaneID)
+		spec, adapter, contract, err = r.startAgent(ctx, t, name, loc.PaneID)
 	}
 	if err != nil {
 		return err
@@ -130,7 +130,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if len(carried) > 0 {
 		prompt = strings.TrimSpace(prompt + "\n\n" + carriedNote(carried))
 	}
-	text := adapter.FirstPrompt(t.Skill, prompt, files.contractText)
+	text := adapter.FirstPrompt(t.Skill, prompt, contract)
 	// A dialog can open after the screen looked ready. Look once more, so
 	// the prompt and its Enter never land in one. An agent herdr sees as
 	// blocked shows a dialog even when no known one matches.
@@ -160,72 +160,57 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 // starts it in pane until it is ready for the first prompt. It returns
 // errUsageLimit when the agent shows a usage limit at startup and a
 // fallback agent is left; without one the prompt goes in, and the agent's
-// own turn-end reports the limit.
-func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string) (task.AgentSpec, harness.Adapter, runnerFiles, error) {
+// own turn-end reports the limit. It also returns the contract text.
+func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string) (task.AgentSpec, harness.Adapter, string, error) {
 	spec, err := task.ParseAgentSpec(t.Agent)
 	if err != nil {
-		return spec, nil, runnerFiles{}, err
+		return spec, nil, "", err
 	}
 	adapter, err := harness.For(spec.Harness)
 	if err != nil {
-		return spec, nil, runnerFiles{}, err
+		return spec, nil, "", err
 	}
-	files, err := r.writeRunnerFiles(t, adapter)
+	contract, err := r.writeRunnerFiles(t, adapter)
 	if err != nil {
-		return spec, nil, runnerFiles{}, err
+		return spec, nil, "", err
 	}
-	if err := r.prepareTrust(t, spec.Harness); err != nil {
-		return spec, nil, runnerFiles{}, err
+	if err := r.prepareTrust(t, adapter); err != nil {
+		return spec, nil, "", err
 	}
-	args := adapter.LaunchArgs(harness.LaunchOptions{
-		Spec: spec, Bin: r.Bin, SettingsPath: files.settings, ContractPath: files.contract,
-	})
+	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID)})
 	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
 	if err := r.settleStartup(ctx, t, adapter, pane, err); err != nil {
-		return spec, nil, runnerFiles{}, err
+		return spec, nil, "", err
 	}
 	if screen, err := r.Herdr.PaneRead(ctx, pane, 40); err == nil && adapter.ShowsUsageLimit(screen) && r.switchable(t) {
-		return spec, nil, runnerFiles{}, errUsageLimit
+		return spec, nil, "", errUsageLimit
 	}
-	return spec, adapter, files, nil
+	return spec, adapter, contract, nil
 }
 
-type runnerFiles struct {
-	settings     string // Claude settings with the Stop hook
-	contract     string // contract file for Claude
-	contractText string // contract text for Codex's first prompt
-}
-
-// writeRunnerFiles writes the per-task hook settings, the contract and the
-// output directory.
-func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (runnerFiles, error) {
+// writeRunnerFiles creates the output directory and writes the adapter's
+// per-task runner files into the task folder. It returns the contract
+// text.
+func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (string, error) {
 	dir := r.Store.TaskDir(t.ID)
 	outDir := r.OutDir(t.ID)
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
-		return runnerFiles{}, err
+		return "", err
 	}
 	contract, err := r.contract(t, outDir, adapter.Harness())
 	if err != nil {
-		return runnerFiles{}, err
+		return "", err
 	}
-	if adapter.Harness() == task.Codex {
-		return runnerFiles{contractText: contract}, nil
-	}
-	files := runnerFiles{
-		settings: filepath.Join(dir, "claude-settings.json"),
-		contract: filepath.Join(dir, "contract.md"),
-	}
-	settings, err := harness.ClaudeSettings(r.Bin)
+	files, err := adapter.Files(harness.FilesInput{Bin: r.Bin, Contract: contract})
 	if err != nil {
-		return runnerFiles{}, err
+		return "", err
 	}
-	if err := os.WriteFile(files.settings, settings, 0o600); err != nil {
-		return runnerFiles{}, err
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(dir, f.Name), f.Data, 0o600); err != nil {
+			return "", err
+		}
 	}
-	if err := os.WriteFile(files.contract, []byte(contract+"\n"), 0o600); err != nil {
-		return runnerFiles{}, err
-	}
-	return files, nil
+	return contract, nil
 }
 
 // runnerEnv is the environment every runner gets. HRK_STATE_DIR points
@@ -378,45 +363,19 @@ func (r *Runner) exportEnv(ctx context.Context, pane string, t *task.Task, reset
 
 // prepareTrust makes sure the agent trusts the folder spawn ran in, so the
 // runner starts without a trust dialog.
-func (r *Runner) prepareTrust(t *task.Task, h task.Harness) error {
-	switch h {
-	case task.Claude:
-		runnerPath := t.Cwd
-		if t.Worktree != nil && t.Worktree.Path != "" {
-			runnerPath = t.Worktree.Path
-		}
-		path, err := harness.ClaudeConfigPath(t.ClaudeConfigDir)
-		if err != nil {
-			return err
-		}
-		set, skipped, err := harness.PrepareClaudeTrust(path, t.Cwd, runnerPath)
-		if err != nil {
-			return fmt.Errorf("prepare Claude trust: %w", err)
-		}
-		switch skipped {
-		case harness.TrustSkipNoConfig:
-			r.emit(t, "claude-trust-skipped", "Claude has never run with this config dir: "+path+" is missing", "")
-		case harness.TrustSkipAlreadyTrusted:
-			r.emit(t, "claude-trust-skipped", runnerPath+" is already trusted in "+path, "")
-		default:
-			r.emit(t, "claude-trusted", "set "+strings.Join(set, ", ")+" for "+runnerPath, "")
-		}
-	case task.Codex:
-		root := t.RepoRoot
-		if root == "" {
-			root = t.Cwd
-		}
-		path, err := harness.CodexConfigPath()
-		if err != nil {
-			return err
-		}
-		added, err := harness.EnsureCodexTrust(path, root)
-		if err != nil {
-			return err
-		}
-		if added {
-			r.emit(t, "codex-trusted", "added "+root+" to "+path+" as trusted", "")
-		}
+func (r *Runner) prepareTrust(t *task.Task, adapter harness.Adapter) error {
+	runnerPath := t.Cwd
+	if t.Worktree != nil && t.Worktree.Path != "" {
+		runnerPath = t.Worktree.Path
+	}
+	res, err := adapter.PrepareTrust(harness.TrustInput{
+		Cwd: t.Cwd, RepoRoot: t.RepoRoot, RunnerPath: runnerPath, ClaudeConfigDir: t.ClaudeConfigDir,
+	})
+	if err != nil {
+		return err
+	}
+	if res.Event != "" {
+		r.emit(t, res.Event, res.Detail, "")
 	}
 	return nil
 }
@@ -468,7 +427,7 @@ func (r *Runner) settleDialogs(ctx context.Context, t *task.Task, a harness.Adap
 			r.waitDialogGone(ctx, pane, d)
 			continue
 		}
-		if err := r.waitForHuman(ctx, t, pane, d.Name); err != nil {
+		if err := r.waitForHuman(ctx, t, pane, d); err != nil {
 			return err
 		}
 	}
@@ -524,8 +483,12 @@ func (r *Runner) waitDialogGone(ctx context.Context, pane string, d harness.Dial
 }
 
 // waitForHuman marks the task needs-human until the user answers a startup
-// dialog in the runner's tab, then lets the launch continue.
-func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane, dialog string) error {
+// dialog in the runner's tab, then lets the launch continue. herdr's state
+// alone does not tell: it reports pi idle while pi's trust dialog shows, so
+// a known dialog must also be gone from the screen.
+func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d harness.Dialog) error {
+	dialog := d.Name
+	deadline := time.Now().Add(dialogAnswerTimeout)
 	q := fmt.Sprintf("Runner %s (%s) shows the %s dialog. Answer it in its herdr tab; the task continues on its own.", t.ID, t.Title, dialog)
 	nt, changed, err := r.Store.Transition(t.ID, task.NeedsHuman, []task.Status{task.Starting}, func(t *task.Task) {
 		t.Error = dialog
@@ -544,11 +507,39 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane, dialog st
 	case err != nil:
 		return fmt.Errorf("no answer to the %s dialog: %w", dialog, err)
 	}
+	if d.IdleWhileShown {
+		if err := r.waitScreenClears(ctx, pane, d, deadline); err != nil {
+			return err
+		}
+	}
 	_, _, err = r.Store.Transition(t.ID, task.Starting, []task.Status{task.NeedsHuman}, func(t *task.Task) {
 		t.Error = ""
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
 	})
 	return err
+}
+
+// dialogPollEvery is how often waitForHuman reads the screen while a
+// dialog stays on it.
+const dialogPollEvery = time.Second
+
+// waitScreenClears reads the screen until dialog d is gone from it, up to
+// deadline. A read error counts as gone: the next dialog round reads again.
+func (r *Runner) waitScreenClears(ctx context.Context, pane string, d harness.Dialog, deadline time.Time) error {
+	for range int(dialogAnswerTimeout / dialogPollEvery) {
+		screen, err := r.Herdr.PaneRead(ctx, pane, 40)
+		if err != nil || !harness.Shows(screen, d) {
+			return nil
+		}
+		if _, err := r.Herdr.AgentGet(ctx, pane); isGone(err) {
+			return fmt.Errorf("the agent exited at the %s dialog", d.Name)
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return fmt.Errorf("no answer to the %s dialog", d.Name)
+		}
+		r.Sleep(dialogPollEvery)
+	}
+	return fmt.Errorf("no answer to the %s dialog", d.Name)
 }
 
 // errorLine returns the first "Error:" line on screen.

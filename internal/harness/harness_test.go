@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -26,24 +27,23 @@ func spec(t *testing.T, s string) task.AgentSpec {
 
 func TestClaudeLaunchArgs(t *testing.T) {
 	tests := []struct {
-		agent    string
-		settings string
-		contract string // contract file path
-		want     []string
+		agent string
+		dir   string // task folder holding the runner files
+		want  []string
 	}{
-		{"claude", "", "", []string{"--dangerously-skip-permissions"}},
-		{"claude:claude-opus-5-5", "", "", []string{"--dangerously-skip-permissions", "--model", "claude-opus-5-5"}},
-		{"claude::max", "", "", []string{"--dangerously-skip-permissions", "--effort", "max"}},
+		{"claude", "", []string{"--dangerously-skip-permissions"}},
+		{"claude:claude-opus-5-5", "", []string{"--dangerously-skip-permissions", "--model", "claude-opus-5-5"}},
+		{"claude::max", "", []string{"--dangerously-skip-permissions", "--effort", "max"}},
 		{
-			"claude:claude-sonnet-5-5:medium", "/s/t3/settings.json", "/s/t3/contract.md",
+			"claude:claude-sonnet-5-5:medium", "/s/t3",
 			[]string{
 				"--dangerously-skip-permissions", "--model", "claude-sonnet-5-5", "--effort", "medium",
-				"--settings", "/s/t3/settings.json", "--append-system-prompt-file", "/s/t3/contract.md",
+				"--settings", "/s/t3/claude-settings.json", "--append-system-prompt-file", "/s/t3/contract.md",
 			},
 		},
 	}
 	for _, tt := range tests {
-		got := claude{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), SettingsPath: tt.settings, ContractPath: tt.contract})
+		got := claude{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Dir: tt.dir})
 		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
 		}
@@ -68,10 +68,165 @@ func TestCodexLaunchArgs(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		got := codex{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Bin: tt.bin, ContractPath: "/ignored"})
+		got := codex{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Bin: tt.bin, Dir: "/ignored"})
 		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
 		}
+	}
+}
+
+func TestPiLaunchArgs(t *testing.T) {
+	tests := []struct {
+		a     Adapter
+		agent string
+		want  []string
+	}{
+		{piAgent, "pi:openai-codex/gpt-6-luna", []string{
+			"--model", "openai-codex/gpt-6-luna", "--approve",
+			"--append-system-prompt", "/s/t3/contract.md", "-e", "/s/t3/hrk-runner.ts",
+		}},
+		{piAgent, "pi:openai-codex/gpt-6-luna:high", []string{
+			"--model", "openai-codex/gpt-6-luna", "--thinking", "high", "--approve",
+			"--append-system-prompt", "/s/t3/contract.md", "-e", "/s/t3/hrk-runner.ts",
+		}},
+		{ompAgent, "omp:openai-codex/gpt-6-luna", []string{
+			"--model", "openai-codex/gpt-6-luna", "--auto-approve", "--config", "/s/t3/omp-runner.yml",
+			"--append-system-prompt", "/s/t3/contract.md", "--hook", "/s/t3/hrk-runner.ts",
+		}},
+		{ompAgent, "omp:openai-codex/gpt-6-luna:auto", []string{
+			"--model", "openai-codex/gpt-6-luna", "--thinking", "auto", "--auto-approve", "--config", "/s/t3/omp-runner.yml",
+			"--append-system-prompt", "/s/t3/contract.md", "--hook", "/s/t3/hrk-runner.ts",
+		}},
+	}
+	for _, tt := range tests {
+		got := tt.a.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Bin: "/usr/local/bin/hrk", Dir: "/s/t3"})
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
+		}
+	}
+}
+
+func TestPiFiles(t *testing.T) {
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		files, err := a.Files(FilesInput{Bin: `/opt/my "kit"/hrk`, Contract: "CONTRACT"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(files) < 2 || files[0].Name != "contract.md" || string(files[0].Data) != "CONTRACT\n" || files[1].Name != "hrk-runner.ts" {
+			t.Fatalf("%s: files = %q", a.Harness(), files)
+		}
+		ext := string(files[1].Data)
+		for _, want := range []string{`const BIN = "/opt/my \"kit\"/hrk";`, `const HARNESS = "` + string(a.Harness()) + `";`} {
+			if !strings.Contains(ext, want) {
+				t.Errorf("%s: extension lacks %s", a.Harness(), want)
+			}
+		}
+		if strings.Contains(ext, "__HRK_") {
+			t.Errorf("%s: a placeholder is left", a.Harness())
+		}
+		checkScript(t, ext)
+	}
+	if _, err := piAgent.Files(FilesInput{Bin: "hrk"}); err == nil {
+		t.Error("a relative binary was accepted")
+	}
+	pf, _ := piAgent.Files(FilesInput{Bin: "/b/hrk"})
+	of, _ := ompAgent.Files(FilesInput{Bin: "/b/hrk"})
+	if len(pf) != 2 || len(of) != 3 || of[2].Name != "omp-runner.yml" || string(of[2].Data) != "ask:\n  enabled: false\ntui:\n  titleState: false\n" {
+		t.Errorf("pi files = %q, omp files = %q", pf, of)
+	}
+}
+
+func TestPiDialogs(t *testing.T) {
+	d, ok := DetectDialog(piAgent, readFixture(t, "project-trust-pi.txt"))
+	if !ok || d.Name != "pi-project-trust" || d.Action != NeedsHuman {
+		t.Errorf("trust capture: got %+v, %v", d, ok)
+	}
+	for _, name := range []string{"working-pi-1.txt", "working-pi-2.txt", "working-pi-3.txt", "longcmd-pi-1.txt", "longcmd-omp-1.txt", "async-job-omp-1.txt"} {
+		for _, a := range []Adapter{piAgent, ompAgent} {
+			if d, ok := DetectDialog(a, readFixture(t, name)); ok {
+				t.Errorf("%s on %s: found %s", a.Harness(), name, d.Name)
+			}
+		}
+	}
+	if ompAgent.Dialogs() != nil {
+		t.Errorf("omp dialogs = %+v", ompAgent.Dialogs())
+	}
+}
+
+func TestPiPrepareTrustWritesNothing(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		res, err := a.PrepareTrust(TrustInput{Cwd: cwd, RunnerPath: cwd})
+		if err != nil || res != (TrustResult{}) {
+			t.Errorf("%s: %+v, %v", a.Harness(), res, err)
+		}
+	}
+	for _, dir := range []string{home, cwd} {
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("%s has %d entries", dir, len(entries))
+		}
+	}
+}
+
+// checkScript has node parse a rendered extension, when node is installed.
+// The extension is plain JavaScript, so it is checked as a module.
+func checkScript(t *testing.T, src string) {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Log("node not on PATH; syntax not checked")
+		return
+	}
+	path := filepath.Join(t.TempDir(), "hrk-runner.mjs")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+		t.Errorf("node --check: %v\n%s", err, out)
+	}
+}
+
+func TestPiReadTurnEnd(t *testing.T) {
+	tests := []struct {
+		fixture string
+		want    TurnSignal
+	}{
+		{"turnend-pi-completed.json", TurnSignal{ContextLeft: 95, ContextKnown: true}},
+		{"turnend-pi-aborted.json", TurnSignal{Ignore: true}},
+		{"turnend-pi-error.json", TurnSignal{ContextLeft: 94, ContextKnown: true}},
+		{"turnend-pi-usage-limit.json", TurnSignal{LimitConfirmed: true}},
+		{"turnend-pi-context-high.json", TurnSignal{ContextLeft: 10, ContextKnown: true}},
+		{"turnend-pi-rate-limit.json", TurnSignal{LimitOnScreen: true, ContextLeft: 88, ContextKnown: true}},
+		{"turnend-omp-completed.json", TurnSignal{ContextLeft: 90, ContextKnown: true}},
+	}
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		for _, tt := range tests {
+			got, err := a.ReadTurnEnd(TurnInput{Payload: []byte(readFixture(t, tt.fixture))})
+			if err != nil || got != tt.want {
+				t.Errorf("%s %s = %+v, %v; want %+v", a.Harness(), tt.fixture, got, err, tt.want)
+			}
+		}
+	}
+	for msg, want := range map[string]TurnSignal{
+		"out of credits":           {LimitConfirmed: true},
+		"Usage\nlimit reached":     {LimitConfirmed: true},
+		"insufficient_quota":       {LimitConfirmed: true},
+		"Your QUOTA is exhausted":  {LimitOnScreen: true},
+		"connection reset by peer": {},
+	} {
+		payload, _ := json.Marshal(map[string]any{"event": "agent_end", "errorMessage": msg})
+		if got, _ := ompAgent.ReadTurnEnd(TurnInput{Payload: payload}); got != want {
+			t.Errorf("%q = %+v, want %+v", msg, got, want)
+		}
+	}
+	// Right after a compaction the agent knows no percent.
+	got, err := piAgent.ReadTurnEnd(TurnInput{Payload: []byte(`{"event":"agent_settled","aborted":false,"context":{"tokens":1200,"window":272000}}`)})
+	if err != nil || got != (TurnSignal{}) {
+		t.Errorf("no percent = %+v, %v", got, err)
+	}
+	if _, err := piAgent.ReadTurnEnd(TurnInput{Payload: []byte(`{"event"`)}); err == nil {
+		t.Error("a malformed payload was accepted")
 	}
 }
 
@@ -118,6 +273,14 @@ func TestRenderSkill(t *testing.T) {
 		{task.Codex, "superpowers:brainstorming", "$superpowers-brainstorming"},
 		{task.Codex, "", ""},
 		{task.Claude, "  ", ""},
+		{task.Pi, "ak:plan", "/skill:ak-plan"},
+		{task.Pi, "/ak:plan", "/skill:ak-plan"},
+		{task.Pi, "$ak-plan", "/skill:ak-plan"},
+		{task.Pi, "", ""},
+		{task.Omp, "ak:plan", "/skill:ak-plan"},
+		{task.Omp, "/ak:plan", "/skill:ak-plan"},
+		{task.Omp, "$ak-plan", "/skill:ak-plan"},
+		{task.Omp, "", ""},
 	}
 	for _, tt := range tests {
 		a, _ := For(tt.h)
@@ -133,6 +296,11 @@ func TestFirstPrompt(t *testing.T) {
 	}
 	if got := (codex{}).FirstPrompt("ak:cook", "plans/x/plan.md", "CONTRACT"); got != "$ak-cook plans/x/plan.md\n\nCONTRACT" {
 		t.Errorf("codex = %q", got)
+	}
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		if got := a.FirstPrompt("ak:cook", "plans/x/plan.md", "CONTRACT"); got != "/skill:ak-cook plans/x/plan.md" {
+			t.Errorf("%s = %q", a.Harness(), got)
+		}
 	}
 	if got := (codex{}).FirstPrompt("", "fix the login bug", ""); got != "fix the login bug" {
 		t.Errorf("raw prompt = %q", got)
@@ -454,6 +622,41 @@ func TestShowsUsageLimit(t *testing.T) {
 	}
 }
 
+// A pi or omp screen never confirms a usage limit, not even the agent's own
+// limit line: the turn-end payload does (TestPiReadTurnEnd). The tool-quota
+// captures are live screens of a tool printing " Error: disk quota
+// exceeded", which pi draws like its own error line. The usage-limit
+// screens are the captured 401 screens with the error replaced by pi-ai's
+// own ChatGPT limit message.
+func TestPiScreenNeverShowsUsageLimit(t *testing.T) {
+	for _, name := range []string{"tool-quota-pi.txt", "tool-quota-omp.txt", "usage-limit-pi.txt", "usage-limit-omp.txt", "provider-error-pi.txt", "provider-error-omp.txt"} {
+		screen := readFixture(t, name)
+		if piAgent.ShowsUsageLimit(screen) || ompAgent.ShowsUsageLimit(screen) {
+			t.Errorf("%s: detected a usage limit on screen", name)
+		}
+	}
+	if !strings.Contains(readFixture(t, "tool-quota-pi.txt"), "\n\n Error: disk quota exceeded") {
+		t.Error("tool-quota-pi.txt lost the tool line that looks like pi's error line")
+	}
+}
+
+func TestPiContextLeftIsUnknown(t *testing.T) {
+	pis, _ := filepath.Glob("testdata/*-pi*.txt")
+	omps, _ := filepath.Glob("testdata/*-omp*.txt")
+	names := append(pis, omps...)
+	if len(pis) == 0 || len(omps) == 0 {
+		t.Fatal("no pi or omp captures")
+	}
+	for _, name := range names {
+		screen := readFixture(t, filepath.Base(name))
+		for _, a := range []Adapter{piAgent, ompAgent} {
+			if got, ok := a.ContextLeft(screen); ok || got != 0 {
+				t.Errorf("%s: %s read %d%% left", name, a.Harness(), got)
+			}
+		}
+	}
+}
+
 func TestClaudeUsageLimit(t *testing.T) {
 	payload := readFixture(t, "stop-failure-claude.json")
 	msg, stopFailure := ClaudeUsageLimit([]byte(payload))
@@ -535,5 +738,67 @@ func TestContextLeft(t *testing.T) {
 	}
 	if _, ok := (claude{}).ContextLeft("› x\n  Context 5% left\n"); ok {
 		t.Error("Claude's footer was read")
+	}
+}
+
+func TestRegistryMatchesTheHarnessTable(t *testing.T) {
+	var got []task.Harness
+	for _, a := range All() {
+		got = append(got, a.Harness())
+	}
+	if want := task.Harnesses(); !reflect.DeepEqual(got, want) {
+		t.Errorf("adapters = %q, task.Harnesses() = %q", got, want)
+	}
+}
+
+// screenOf returns a Screen that shows text, or fails when text is empty.
+func screenOf(text string) Screen {
+	return func(int) (string, error) {
+		if text == "" {
+			return "", errors.New("no pane")
+		}
+		return text, nil
+	}
+}
+
+func TestReadTurnEnd(t *testing.T) {
+	const codexTurn = `{"type":"agent-turn-complete","thread-id":"th1","input-messages":["go on"]}`
+	tests := []struct {
+		name    string
+		a       Adapter
+		payload string
+		screen  string // fixture name, or "" for an unreadable pane
+		want    TurnSignal
+	}{
+		{"claude limit", claude{}, readFixture(t, "stop-failure-claude.json"), "", TurnSignal{LimitConfirmed: true}},
+		{"claude other failure", claude{}, `{"hook_event_name":"StopFailure","error":"server_error"}`, "", TurnSignal{Ignore: true}},
+		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true}},
+		{"claude all finished", claude{}, readFixture(t, "stop-background-none-claude.json"), "background-agents-claude-2.txt", TurnSignal{}},
+		{"claude mode line", claude{}, `{"hook_event_name":"Stop"}`, "background-agents-claude-2.txt", TurnSignal{Background: true}},
+		{"claude no list, no pane", claude{}, `{"hook_event_name":"Stop"}`, "", TurnSignal{}},
+		{"codex title turn", codex{}, `{"type":"agent-turn-complete","input-messages":["Generate a concise, single-line task title for this"]}`, "", TurnSignal{Ignore: true}},
+		{"codex other event", codex{}, `{"type":"approval-requested"}`, "", TurnSignal{Ignore: true}},
+		{"codex low context", codex{}, codexTurn, "codex-context-low.txt", TurnSignal{Thread: "th1", ContextLeft: 13, ContextKnown: true}},
+		{"codex limit", codex{}, codexTurn, "usage-limit-codex.txt", TurnSignal{Thread: "th1", LimitOnScreen: true}},
+		{"codex no pane", codex{}, codexTurn, "", TurnSignal{Thread: "th1"}},
+	}
+	for _, tt := range tests {
+		screen := ""
+		if tt.screen != "" {
+			screen = readFixture(t, tt.screen)
+		}
+		got, err := tt.a.ReadTurnEnd(TurnInput{Payload: []byte(tt.payload), Screen: screenOf(screen)})
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if tt.name == "codex limit" {
+			got.ContextLeft, got.ContextKnown = 0, false // the capture's footer is not under test here
+		}
+		if got != tt.want {
+			t.Errorf("%s: signal = %+v, want %+v", tt.name, got, tt.want)
+		}
+	}
+	if _, err := (codex{}).ReadTurnEnd(TurnInput{Payload: []byte("{"), Screen: screenOf("")}); err == nil {
+		t.Error("codex: a malformed notify payload was accepted")
 	}
 }

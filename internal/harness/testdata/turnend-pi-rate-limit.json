@@ -1,0 +1,1 @@
+{"event":"agent_settled","aborted":false,"outcome":"error","stopReason":"error","errorMessage":"429 RESOURCE_EXHAUSTED: Quota exceeded for metric generate_content requests per minute. Please retry later.","context":{"percent":12.2,"tokens":33184,"window":272000}}

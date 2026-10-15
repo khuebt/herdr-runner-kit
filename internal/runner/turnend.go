@@ -2,61 +2,28 @@ package runner
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
-	"strings"
 
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
-// codexTitlePrompt starts the input of Codex's internal title-generation
-// turn, which also fires notify.
-const codexTitlePrompt = "Generate a concise, single-line task title"
-
-// backgroundWork matches the count Claude shows on its mode line ("⏵⏵
-// bypass permissions on · 1 shell") while background shells or agents still
-// run. Claude ends its turn then and wakes on its own later.
-var backgroundWork = regexp.MustCompile(`(?i)\b\d+\s+(background\s+)?(shells?|bash(es)?|tasks?|agents?)\b`)
-
-// claudeWorksInBackground reports whether a Claude runner ended its turn
-// with shells or subagents still running, so it wakes on its own later. The
-// Stop hook input lists them; the mode line is read only when the input has
-// no list, because it draws no count for subagents that run no shell, nor
-// for a second or more after they start.
-func (r *Runner) claudeWorksInBackground(ctx context.Context, t *task.Task, payload []byte) bool {
-	if running, known := harness.ClaudeBackgroundWork(payload); known {
-		return running > 0
-	}
-	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 8)
-	return err == nil && hasBackgroundWork(screen)
-}
-
-// hasBackgroundWork looks only at Claude's mode line, so text in the
-// conversation can never match.
-func hasBackgroundWork(screen string) bool {
-	for line := range strings.SplitSeq(screen, "\n") {
-		if strings.Contains(line, "⏵") && backgroundWork.MatchString(line) {
-			return true
-		}
-	}
-	return false
-}
-
 // TurnEnd handles a runner's turn-end hook. A turn-end is a hint, never a
 // verdict: the first turn that ends without a report is nudged, the second
 // becomes news, and later ones are ignored until the main session prompts
-// the runner again. For Claude, block holds the nudge text that the Stop
-// hook returns; for Codex the nudge is typed into the pane.
+// the runner again. block holds the nudge text, which the hook returns when
+// the adapter nudges in the hook; otherwise it is typed into the pane.
 //
-// A usage limit switches the runner to its next fallback agent. Claude
-// confirms it through its StopFailure hook, and with no fallback left the
-// task fails. Codex only shows it on screen, so a limit seen there switches
-// when a fallback is left and otherwise becomes usage-limit news next to
-// the nudge.
+// A usage limit switches the runner to its next fallback agent. A limit the
+// agent confirms fails the task when no fallback is left. A limit only seen
+// on screen switches when a fallback is left and otherwise becomes
+// usage-limit news next to the nudge.
 func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload []byte) (block string, err error) {
+	adapter, err := harness.For(h)
+	if err != nil {
+		return "", err
+	}
 	t, err := r.Store.Get(id)
 	if err != nil {
 		return "", err
@@ -66,39 +33,39 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if r.callerAttempt() != task.AttemptOf(t) {
 		return "", nil
 	}
-	if h == task.Claude {
-		if message, stopFailure := harness.ClaudeUsageLimit(payload); stopFailure {
-			// Any other API failure ends the turn with nothing the kit can
-			// act on, and Claude ignores a StopFailure hook's output.
-			if message == "" || t.Herdr.PaneID == "" {
-				return "", nil
-			}
-			return "", r.switchAgent(t, true)
-		}
+	sig, err := adapter.ReadTurnEnd(harness.TurnInput{Payload: payload, Screen: r.screen(ctx, t)})
+	if err != nil {
+		return "", err
 	}
-	if h == task.Codex {
-		if ignore, err := r.ignoreCodexTurn(t, payload); ignore || err != nil {
-			return "", err
+	if sig.LimitConfirmed {
+		if t.Herdr.PaneID == "" {
+			return "", nil
 		}
+		return "", r.switchAgent(t, true)
+	}
+	if sig.Ignore {
+		return "", nil
+	}
+	if ignore, err := r.otherThread(t, sig.Thread); ignore || err != nil {
+		return "", err
 	}
 	if t.Status != task.Running || t.Herdr.PaneID == "" {
 		return "", nil
 	}
-	limited := h == task.Codex && r.usageLimited(ctx, t)
+	limited := sig.LimitOnScreen
 	if limited {
 		// An agent out of usage cannot act on a nudge.
 		if err := r.switchAgent(t, false); !errors.Is(err, errNoFallback) {
 			return "", err
 		}
-	}
-	if h == task.Codex && !limited {
+	} else if sig.ContextKnown {
 		// A runner near its context limit is asked to hand off instead of
 		// being nudged, and the turn does not count as unreported.
-		if asked, err := r.codexContextLow(ctx, t); asked || err != nil {
+		if asked, err := r.contextLow(ctx, t, sig.ContextLeft); asked || err != nil {
 			return "", err
 		}
 	}
-	if h == task.Claude && r.claudeWorksInBackground(ctx, t, payload) {
+	if sig.Background {
 		return "", nil
 	}
 	t, err = r.Store.Update(id, func(t *task.Task) error {
@@ -120,7 +87,7 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 		if r.handoffPending(t) {
 			nudge = r.handoffRequest(t)
 		}
-		if h == task.Codex {
+		if !adapter.NudgeInHook() {
 			if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, nudge); err != nil {
 				return "", fmt.Errorf("nudge: %w", err)
 			}
@@ -146,24 +113,10 @@ const limitNews = "the runner appears to be at its usage limit, and no quotaFall
 
 var errNotRunning = errors.New("not running")
 
-// ignoreCodexTurn filters notify calls that are not the runner's own turns.
-// The first real turn records its thread.
-func (r *Runner) ignoreCodexTurn(t *task.Task, payload []byte) (bool, error) {
-	var n struct {
-		Type   string   `json:"type"`
-		Thread string   `json:"thread-id"`
-		Input  []string `json:"input-messages"`
-	}
-	if err := json.Unmarshal(payload, &n); err != nil {
-		return true, fmt.Errorf("parse codex notify: %w", err)
-	}
-	if n.Type != "agent-turn-complete" {
-		return true, nil
-	}
-	if len(n.Input) > 0 && strings.HasPrefix(strings.TrimSpace(n.Input[0]), codexTitlePrompt) {
-		return true, nil
-	}
-	if n.Thread == "" || t.CodexThread == n.Thread {
+// otherThread reports whether thread is not the runner's own. The first
+// thread an agent reports is the runner's, and is recorded.
+func (r *Runner) otherThread(t *task.Task, thread string) (bool, error) {
+	if thread == "" || t.CodexThread == thread {
 		return false, nil
 	}
 	if t.CodexThread != "" {
@@ -171,11 +124,21 @@ func (r *Runner) ignoreCodexTurn(t *task.Task, payload []byte) (bool, error) {
 	}
 	_, err := r.Store.Update(t.ID, func(t *task.Task) error {
 		if t.CodexThread == "" {
-			t.CodexThread = n.Thread
+			t.CodexThread = thread
 		}
 		return nil
 	})
 	return false, err
+}
+
+// screen reads the last lines of t's pane, or fails when t has none.
+func (r *Runner) screen(ctx context.Context, t *task.Task) harness.Screen {
+	return func(lines int) (string, error) {
+		if t.Herdr.PaneID == "" {
+			return "", errors.New("no pane")
+		}
+		return r.Herdr.PaneRead(ctx, t.Herdr.PaneID, lines)
+	}
 }
 
 func (r *Runner) nudgeText() string {

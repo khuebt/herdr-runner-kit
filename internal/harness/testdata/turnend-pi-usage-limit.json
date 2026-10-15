@@ -1,0 +1,1 @@
+{"event":"agent_settled","aborted":false,"outcome":"error","stopReason":"error","errorMessage":"You have hit your ChatGPT usage limit (plus plan). Try again in ~42 min.","context":{"percent":10.639338235294117,"tokens":28939,"window":272000}}

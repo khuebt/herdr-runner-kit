@@ -1,0 +1,14 @@
+
+ Planning sequential foreground and background execution
+
+
+ $ sleep 12; echo slept (timeout 20s)
+
+ Elapsed 2.0s
+
+
+── ⠼ Working ──────────────────────────────────────────────────────────────────────────────────────────
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+~/work/probe-repo (master)
+↑32k ↓274 R29k CH96.1% $0.004 (sub) 5.7%/272k (auto)                    (openai-codex) gpt-6-luna • low

@@ -141,6 +141,8 @@ func TestParseErrors(t *testing.T) {
 		{"language: \"" + strings.Repeat("x", 41) + "\"\n", "language"},
 		{"language: \"English\\nand more\"\n", "language"},
 		{"quotaFallback:\n  - agent: gemini\n", "quotaFallback[0].agent"},
+		{"kinds:\n  x:\n    agent: pi\n", "pi needs a model"},
+		{"quotaFallback:\n  - agent: omp\n", "omp needs a model"},
 		{"quotaFallback:\n  - claudeConfig: claude2\n", "quotaFallback[0].agent is required"},
 		{"quotaFallback:\n  - agent: codex\n    claudeConfig: claude2\n", "needs a Claude agent"},
 		{"quotaFallback:\n  - agent: codex\n    model: x\n", "unknown key model"},

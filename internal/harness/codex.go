@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -150,6 +153,106 @@ func (codex) ContextLeft(screen string) (int, bool) {
 		return n, true
 	}
 	return 0, false
+}
+
+// Files is empty: Codex takes the contract in its first prompt and notify
+// as a launch flag.
+func (codex) Files(FilesInput) ([]File, error) { return nil, nil }
+
+// PrepareTrust persists trust for the repository spawn ran in; see
+// EnsureCodexTrust.
+func (codex) PrepareTrust(in TrustInput) (TrustResult, error) {
+	root := in.RepoRoot
+	if root == "" {
+		root = in.Cwd
+	}
+	path, err := CodexConfigPath()
+	if err != nil {
+		return TrustResult{}, err
+	}
+	added, err := EnsureCodexTrust(path, root)
+	if err != nil || !added {
+		return TrustResult{}, err
+	}
+	return TrustResult{Event: "codex-trusted", Detail: "added " + root + " to " + path + " as trusted"}, nil
+}
+
+// codexTitlePrompt starts the input of Codex's internal title-generation
+// turn, which also fires notify.
+const codexTitlePrompt = "Generate a concise, single-line task title"
+
+// ReadTurnEnd reads a notify payload. Only agent-turn-complete calls of
+// real turns count; Codex shows a usage limit and its context only on
+// screen.
+func (c codex) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
+	var n struct {
+		Type   string   `json:"type"`
+		Thread string   `json:"thread-id"`
+		Input  []string `json:"input-messages"`
+	}
+	if err := json.Unmarshal(in.Payload, &n); err != nil {
+		return TurnSignal{}, fmt.Errorf("parse codex notify: %w", err)
+	}
+	if n.Type != "agent-turn-complete" {
+		return TurnSignal{Ignore: true}, nil
+	}
+	if len(n.Input) > 0 && strings.HasPrefix(strings.TrimSpace(n.Input[0]), codexTitlePrompt) {
+		return TurnSignal{Ignore: true}, nil
+	}
+	sig := TurnSignal{Thread: n.Thread}
+	// A screen that cannot be read shows no limit and no context.
+	if screen, err := in.Screen(40); err == nil {
+		sig.LimitOnScreen = c.ShowsUsageLimit(screen)
+		sig.ContextLeft, sig.ContextKnown = c.ContextLeft(screen)
+	}
+	return sig, nil
+}
+
+// NudgeInHook is false: notify takes no reply, so the nudge is typed.
+func (codex) NudgeInHook() bool { return false }
+
+// HookPayload reads the notify JSON Codex passes as the last argument, and
+// calls the notify command the user set in config.toml with it, which the
+// runner's own notify replaced.
+func (codex) HookPayload(args []string, _ io.Reader) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	callUserCodexNotify(args[0])
+	return []byte(args[0]), nil
+}
+
+func (codex) HookReply(string) string      { return "" }
+func (codex) SessionContext(string) string { return "" }
+
+// WorksInBackground is false: Codex draws no background count.
+func (codex) WorksInBackground(Screen) (bool, error) { return false, nil }
+
+func (codex) Checks() Checks {
+	return Checks{
+		Bin:         "codex",
+		Flags:       []string{"--dangerously-bypass-approvals-and-sandbox", "--model", "--config"},
+		Integration: "codex",
+		Required:    true,
+	}
+}
+
+// callUserCodexNotify runs the notify command from the user's config.toml,
+// detached, with the same argument Codex passed.
+func callUserCodexNotify(arg string) {
+	path, err := CodexConfigPath()
+	if err != nil {
+		return
+	}
+	argv, err := CodexUserNotify(path)
+	if err != nil || len(argv) == 0 {
+		return
+	}
+	c := exec.Command(argv[0], append(argv[1:], arg)...)
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if c.Start() == nil {
+		_ = c.Process.Release()
+	}
 }
 
 // CodexConfigPath returns ${CODEX_HOME:-~/.codex}/config.toml.

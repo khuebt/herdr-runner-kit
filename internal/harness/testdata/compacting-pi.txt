@@ -1,0 +1,14 @@
+ line of filler text number 2298
+ line of filler text number 2299
+ line of filler text number 2300
+
+ Took 0.0s
+
+
+ 2300
+
+── ⠧ Compacting context... (escape to cancel) ─────────────────────────────────────────────────────────
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+~/work/probe-repo (master)
+↑44k ↓286 R139k CH84.0% $0.006 (sub) 15.0%/272k (auto)                  (openai-codex) gpt-6-luna • low

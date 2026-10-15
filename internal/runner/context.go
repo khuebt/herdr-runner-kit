@@ -32,14 +32,19 @@ type contextState struct {
 // their context.
 func (r *Runner) Compactions(id string) int { return r.loadProgress(id).Compactions }
 
-// ContextHook handles Claude's PreCompact and SessionStart(compact) hooks
-// of a runner. An automatic compaction that ran asks the runner, once per
-// attempt, to hand off to a fresh session: out is then the SessionStart
-// output that adds the request to its context, and the request is also
-// queued in its pane as a message, which a model busy with its task heeds
-// where it may pass over added context. A manual /compact never asks. Hooks
-// of an attempt that already ended are ignored.
-func (r *Runner) ContextHook(ctx context.Context, id string, payload []byte) (out string, err error) {
+// ContextHook handles a runner's compaction hooks, which arrive in the
+// shape of Claude's PreCompact and SessionStart(compact) hooks. An automatic
+// compaction that ran asks the runner, once per attempt, to hand off to a
+// fresh session: out is then the adapter's session output that adds the
+// request to its context, if it takes any, and the request is also queued
+// in its pane as a message, which a model busy with its task heeds where it
+// may pass over added context. A manual /compact never asks. Hooks of an
+// attempt that already ended are ignored.
+func (r *Runner) ContextHook(ctx context.Context, id string, h task.Harness, payload []byte) (out string, err error) {
+	adapter, err := harness.For(h)
+	if err != nil {
+		return "", err
+	}
 	t, err := r.Store.Get(id)
 	if err != nil {
 		return "", err
@@ -89,9 +94,9 @@ func (r *Runner) ContextHook(ctx context.Context, id string, payload []byte) (ou
 	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, request); err != nil {
 		// The added context still carries the request.
 		err = fmt.Errorf("queue the handoff request: %w", err)
-		return harness.ClaudeSessionContext(request), err
+		return adapter.SessionContext(request), err
 	}
-	return harness.ClaudeSessionContext(request), nil
+	return adapter.SessionContext(request), nil
 }
 
 // clearHandoffAsk forgets that the current attempt of task id was asked to
@@ -118,23 +123,11 @@ func (r *Runner) handoffPending(t *task.Task) bool {
 	return r.mayHandOff(t) && r.loadProgress(t.ID).Asked == task.AttemptOf(t)
 }
 
-// codexContextLow asks a Codex runner whose footer shows little context
-// left to hand off, in place of the turn-end nudge, once per attempt. It
-// reports whether it asked.
-func (r *Runner) codexContextLow(ctx context.Context, t *task.Task) (bool, error) {
-	if !r.mayHandOff(t) {
-		return false, nil
-	}
-	adapter, ok := adapterOf(t)
-	if !ok {
-		return false, nil
-	}
-	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
-	if err != nil {
-		return false, nil
-	}
-	left, ok := adapter.ContextLeft(screen)
-	if !ok || left > r.Config.ContextHandoffAt {
+// contextLow asks a runner whose agent shows left percent of its context
+// to hand off, in place of the turn-end nudge, once per attempt, when that
+// is at or below contextHandoffAt. It reports whether it asked.
+func (r *Runner) contextLow(ctx context.Context, t *task.Task, left int) (bool, error) {
+	if !r.mayHandOff(t) || left > r.Config.ContextHandoffAt {
 		return false, nil
 	}
 	unlock, err := r.Store.LockFile(t.ID, "progress.lock")

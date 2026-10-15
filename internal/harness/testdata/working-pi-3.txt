@@ -1,0 +1,30 @@
+writing-beats, writing-for-agents, writing-fragments, writing-shape
+
+[Extensions]
+  csd-runner-heartbeat.ts, herdr-agent-state.ts, orca-agent-status.ts, orca-prefill.ts,
+orca-titlebar-spinner.ts, probe-ext.ts
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 1.3.0 is available. Run pi update
+ Changelog: https://pi.dev/changelog
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+ Run the shell command: echo "task=HRK_TASK ompcode =OMPCODE" and then reply with one short line.
+
+
+
+ $ echo "task=$HRK_TASK ompcode=$OMPCODE" (timeout 10s)
+
+ task=probe-pi ompcode=
+
+ Took 0.0s
+
+
+── ⠦ Working ──────────────────────────────────────────────────────────────────────────────────────────
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+~/work/probe-repo (master)
+↑15k ↓35 $0.002 (sub) 5.5%/272k (auto)                                  (openai-codex) gpt-6-luna • low

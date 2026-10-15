@@ -1,0 +1,1 @@
+{"event":"agent_settled","aborted":false,"outcome":"error","stopReason":"error","errorMessage":"cliproxy API error (401): 401 \"Invalid API key\"","context":{"percent":5.617279411764706,"tokens":15279,"window":272000}}

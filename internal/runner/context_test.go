@@ -14,7 +14,7 @@ import (
 // compactHook runs the context hook with the named fixture's input.
 func compactHook(t *testing.T, r *Runner, id, name string) string {
 	t.Helper()
-	out, err := r.ContextHook(context.Background(), id, []byte(fixture(t, name)))
+	out, err := r.ContextHook(context.Background(), id, task.Claude, []byte(fixture(t, name)))
 	if err != nil {
 		t.Fatal(err)
 	}

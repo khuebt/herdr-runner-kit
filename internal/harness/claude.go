@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -29,13 +30,120 @@ func (claude) LaunchArgs(o LaunchOptions) []string {
 	if o.Spec.Effort != "" {
 		args = append(args, "--effort", o.Spec.Effort)
 	}
-	if o.SettingsPath != "" {
-		args = append(args, "--settings", o.SettingsPath)
-	}
-	if o.ContractPath != "" {
-		args = append(args, "--append-system-prompt-file", o.ContractPath)
+	if o.Dir != "" {
+		// The contract goes into the system prompt, which survives
+		// compaction; a file keeps the long text out of the shell line herdr
+		// types into the pane.
+		args = append(args, "--settings", filepath.Join(o.Dir, claudeSettingsFile),
+			"--append-system-prompt-file", filepath.Join(o.Dir, claudeContractFile))
 	}
 	return args
+}
+
+// The per-task files a Claude runner starts with.
+const (
+	claudeSettingsFile = "claude-settings.json" // the turn-end and compaction hooks
+	claudeContractFile = "contract.md"
+)
+
+func (claude) Files(in FilesInput) ([]File, error) {
+	settings, err := ClaudeSettings(in.Bin)
+	if err != nil {
+		return nil, err
+	}
+	return []File{
+		{Name: claudeSettingsFile, Data: settings},
+		{Name: claudeContractFile, Data: []byte(in.Contract + "\n")},
+	}, nil
+}
+
+// PrepareTrust grants workspace trust to the runner's folder in the task's
+// Claude config; see PrepareClaudeTrust.
+func (claude) PrepareTrust(in TrustInput) (TrustResult, error) {
+	path, err := ClaudeConfigPath(in.ClaudeConfigDir)
+	if err != nil {
+		return TrustResult{}, err
+	}
+	set, skipped, err := PrepareClaudeTrust(path, in.Cwd, in.RunnerPath)
+	if err != nil {
+		return TrustResult{}, fmt.Errorf("prepare Claude trust: %w", err)
+	}
+	switch skipped {
+	case TrustSkipNoConfig:
+		return TrustResult{Event: "claude-trust-skipped", Detail: "Claude has never run with this config dir: " + path + " is missing"}, nil
+	case TrustSkipAlreadyTrusted:
+		return TrustResult{Event: "claude-trust-skipped", Detail: in.RunnerPath + " is already trusted in " + path}, nil
+	}
+	return TrustResult{Event: "claude-trusted", Detail: "set " + strings.Join(set, ", ") + " for " + in.RunnerPath}, nil
+}
+
+// ReadTurnEnd reads a Stop or StopFailure hook input. A StopFailure is
+// either a confirmed usage limit or an API failure the kit cannot act on;
+// Claude ignores a StopFailure hook's output either way.
+func (c claude) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
+	if message, stopFailure := ClaudeUsageLimit(in.Payload); stopFailure {
+		if message == "" {
+			return TurnSignal{Ignore: true}, nil
+		}
+		return TurnSignal{LimitConfirmed: true}, nil
+	}
+	return TurnSignal{Background: c.background(in)}, nil
+}
+
+// background reports whether Claude ended its turn with shells or subagents
+// still running, so it wakes on its own later. The Stop hook input lists
+// them; the mode line is read only when the input has no list, because it
+// draws no count for subagents that run no shell, nor for a second or more
+// after they start.
+func (c claude) background(in TurnInput) bool {
+	if running, known := ClaudeBackgroundWork(in.Payload); known {
+		return running > 0
+	}
+	busy, _ := c.WorksInBackground(in.Screen)
+	return busy
+}
+
+// NudgeInHook is true: the Stop hook returns the nudge as a block.
+func (claude) NudgeInHook() bool { return true }
+
+func (claude) HookPayload(_ []string, stdin io.Reader) ([]byte, error) { return readStdin(stdin) }
+
+func (claude) HookReply(block string) string {
+	if block == "" {
+		return ""
+	}
+	return ClaudeBlock(block)
+}
+
+func (claude) SessionContext(request string) string { return ClaudeSessionContext(request) }
+
+// claudeBackgroundCount matches the count Claude shows on its mode line ("⏵⏵
+// bypass permissions on · 1 shell") while background shells or agents still
+// run. Claude ends its turn then and wakes on its own later.
+var claudeBackgroundCount = regexp.MustCompile(`(?i)\b\d+\s+(background\s+)?(shells?|bash(es)?|tasks?|agents?)\b`)
+
+// WorksInBackground looks only at Claude's mode line, so text in the
+// conversation can never match.
+func (claude) WorksInBackground(screen Screen) (bool, error) {
+	text, err := screen(8)
+	if err != nil {
+		return false, err
+	}
+	for line := range strings.SplitSeq(text, "\n") {
+		if strings.Contains(line, "⏵") && claudeBackgroundCount.MatchString(line) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (claude) Checks() Checks {
+	return Checks{
+		Bin:         "claude",
+		Flags:       []string{"--dangerously-skip-permissions", "--settings", "--model", "--effort"},
+		Integration: "claude",
+		Required:    true,
+	}
 }
 
 // RenderSkill keeps the skill name as written: Claude resolves both
