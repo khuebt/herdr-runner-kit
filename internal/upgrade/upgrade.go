@@ -19,12 +19,17 @@ import (
 	"strings"
 )
 
-// binaryName is the executable inside each release archive.
-const binaryName = "herdr-runner-kit"
+// binaryName is the executable inside each release archive. Releases from
+// before the rename hold it only as oldBinaryName, which also names every
+// archive.
+const (
+	binaryName    = "hrk"
+	oldBinaryName = "herdr-runner-kit"
+)
 
 // ArchiveName is the archive goreleaser builds for this platform.
 func ArchiveName(tag string) string {
-	return fmt.Sprintf("%s_%s_%s_%s.tar.gz", binaryName, strings.TrimPrefix(tag, "v"), runtime.GOOS, runtime.GOARCH)
+	return fmt.Sprintf("%s_%s_%s_%s.tar.gz", oldBinaryName, strings.TrimPrefix(tag, "v"), runtime.GOOS, runtime.GOARCH)
 }
 
 // Install downloads rel's archive for this platform, verifies it against the
@@ -98,7 +103,9 @@ func extract(archive []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if h.Typeflag == tar.TypeReg && path.Base(h.Name) == binaryName {
+		// Either name holds the same binary, so an older release can be
+		// installed too.
+		if base := path.Base(h.Name); h.Typeflag == tar.TypeReg && (base == binaryName || base == oldBinaryName) {
 			return io.ReadAll(io.LimitReader(tr, maxDownload))
 		}
 	}

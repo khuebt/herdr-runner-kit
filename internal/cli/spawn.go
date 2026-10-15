@@ -26,9 +26,9 @@ func newSpawnCommand() *cobra.Command {
 		Long: "spawn records a task and opens a runner for it in a new herdr tab, or in a " +
 			"new worktree workspace. It returns before the agent is ready; progress " +
 			"arrives as events that `wait` reports.",
-		Example: `  herdr-runner-kit spawn --kind research -- "Compare fsnotify and polling for our wait loop"
-  herdr-runner-kit spawn --skill ak:cook -- plans/260101-auth/plan.md
-  herdr-runner-kit spawn --after t3 --agent codex::high -- "Add tests for the new parser"`,
+		Example: `  hrk spawn --kind research -- "Compare fsnotify and polling for our wait loop"
+  hrk spawn --skill ak:cook -- plans/260101-auth/plan.md
+  hrk spawn --after t3 --agent codex::high -- "Add tests for the new parser"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if worktree && noWorktree {
 				return fmt.Errorf("--worktree and --no-worktree are mutually exclusive")

@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -86,8 +87,8 @@ func newSetupCommand() *cobra.Command {
 			"installs the main-agent skill and the auto re-arm Stop hook into each Claude config " +
 			"folder. When Telegram credentials are configured and the Telegram plugin has no " +
 			"access list yet, it allows your chat. Running it again changes nothing.",
-		Example: `  herdr-runner-kit setup
-  herdr-runner-kit setup --claude-config ~/.claude --claude-config ~/.claude2`,
+		Example: `  hrk setup
+  hrk setup --claude-config ~/.claude --claude-config ~/.claude2`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
@@ -103,6 +104,12 @@ func newSetupCommand() *cobra.Command {
 			note := func(format string, a ...any) {
 				changed++
 				fmt.Fprintf(out, format+"\n", a...)
+			}
+			// First, so a setup that stops on an error below still leaves hrk.
+			if short, err := linkShortName(bin); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "note: no hrk link at %s: %v\n", shortLinkPath(bin), err)
+			} else if short != "" {
+				note("linked %s to herdr-runner-kit", short)
 			}
 
 			cfgPath, err := config.Path()
@@ -134,7 +141,6 @@ func newSetupCommand() *cobra.Command {
 			if fresh {
 				note("created %s", dir)
 			}
-
 			var refused []install.Change
 			for _, target := range targets {
 				changes, err := install.WriteSkill(target, buildinfo.Version, force)
@@ -193,6 +199,33 @@ func newSetupCommand() *cobra.Command {
 	return cmd
 }
 
+// linkShortName puts an hrk symlink at shortLinkPath when bin still has the
+// old name herdr-runner-kit, as an install upgraded from before the rename
+// does. It returns the link it created, or "" when there was nothing to do.
+func linkShortName(bin string) (string, error) {
+	if filepath.Base(bin) != "herdr-runner-kit" {
+		return "", nil
+	}
+	short := shortLinkPath(bin)
+	if _, err := os.Lstat(short); !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	return short, os.Symlink("herdr-runner-kit", short)
+}
+
+// shortLinkPath is where the hrk link for bin belongs: beside the
+// herdr-runner-kit on PATH when that leads to bin, as a symlink into another
+// folder does, else beside bin.
+func shortLinkPath(bin string) string {
+	dir := filepath.Dir(bin)
+	if p, err := exec.LookPath("herdr-runner-kit"); err == nil {
+		if r, err := filepath.EvalSymlinks(p); err == nil && r == bin {
+			dir = filepath.Dir(p)
+		}
+	}
+	return filepath.Join(dir, "hrk")
+}
+
 // allowTelegramChat gives the Telegram channel plugin in claudeConfig an
 // access list with the kit's chat ids, so the user's replies reach the main
 // session without a pairing step. It never touches an existing list. The bot
@@ -227,7 +260,7 @@ func newUninstallCommand() *cobra.Command {
 		Short: "Remove the skill and the auto re-arm hook; --purge also deletes config and state",
 		Long: "uninstall removes the skill files setup wrote, except ones you edited, and the auto " +
 			"re-arm hook. With --purge it also deletes the kit's config and state folders, after " +
-			"you confirm. The binary itself is left for you to delete.",
+			"you confirm. The hrk binary and its herdr-runner-kit alias are left for you to delete.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()

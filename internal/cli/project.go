@@ -123,7 +123,7 @@ func printCreated(cmd *cobra.Command, c project.Created) {
 	if c.GitignoreNote != "" {
 		fmt.Fprintf(w, "gitignore: %s\n", c.GitignoreNote)
 	}
-	fmt.Fprintf(w, "next: herdr-runner-kit project status %s\n", c.Name)
+	fmt.Fprintf(w, "next: hrk project status %s\n", c.Name)
 }
 
 func newProjectStatusCommand() *cobra.Command {
@@ -198,7 +198,7 @@ func resolveProject(s *state.Store, name, cwd string) (state.Project, error) {
 	}
 	switch len(names) {
 	case 0:
-		return state.Project{}, fmt.Errorf("%w: no project is registered; start one with herdr-runner-kit new, or add one with herdr-runner-kit project register", errNoProjectResolved)
+		return state.Project{}, fmt.Errorf("%w: no project is registered; start one with hrk new, or add one with hrk project register", errNoProjectResolved)
 	case 1:
 		return only, nil
 	}
@@ -242,7 +242,7 @@ func printProjectList(ctx context.Context, out io.Writer, s *state.Store) error 
 		return err
 	}
 	if len(list) == 0 {
-		_, err := fmt.Fprintln(out, "no project is registered; start one with herdr-runner-kit new, or add one with herdr-runner-kit project register")
+		_, err := fmt.Fprintln(out, "no project is registered; start one with hrk new, or add one with hrk project register")
 		return err
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
@@ -268,7 +268,7 @@ func printProjectList(ctx context.Context, out io.Writer, s *state.Store) error 
 		return err
 	}
 	for _, name := range reserved {
-		if _, err := fmt.Fprintf(out, "%s is being set up; if herdr-runner-kit new was interrupted, drop it with: herdr-runner-kit project forget %s\n", name, name); err != nil {
+		if _, err := fmt.Fprintf(out, "%s is being set up; if hrk new was interrupted, drop it with: hrk project forget %s\n", name, name); err != nil {
 			return err
 		}
 	}
@@ -351,9 +351,9 @@ func newProjectRunCommand() *cobra.Command {
 			"project. It refuses a stage whose gate is not approved yet. A stage that works in " +
 			"the main checkout waits for the project's other main-checkout runners, so only one " +
 			"of them commits there at a time. Stages: " + strings.Join(project.StageNames(), ", ") + ".",
-		Example: `  herdr-runner-kit project run intake
-  echo "Focus on the admin flows first" | herdr-runner-kit project run ux --stdin --after t4
-  echo "Add a CSV export for admins" | herdr-runner-kit project run change --stdin`,
+		Example: `  hrk project run intake
+  echo "Focus on the admin flows first" | hrk project run ux --stdin --after t4
+  echo "Add a CSV export for admins" | hrk project run change --stdin`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
@@ -436,7 +436,7 @@ func runStage(ctx context.Context, r *runner.Runner, o stageRun) (*task.Task, er
 		return nil, err
 	}
 	if stage.Milestone {
-		return nil, fmt.Errorf("stage %s belongs to a milestone: start it with herdr-runner-kit project milestone start|chain <M>", stage.Name)
+		return nil, fmt.Errorf("stage %s belongs to a milestone: start it with hrk project milestone start|chain <M>", stage.Name)
 	}
 	p, err := resolveProject(r.Store, o.Project, o.Cwd)
 	if err != nil {
@@ -886,7 +886,7 @@ func sendFeedback(cmd *cobra.Command, r *runner.Runner, p state.Project, t *task
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "note: could not send the feedback to %s: %v\n", t.ID, err)
 	}
-	fmt.Fprintf(out, "feedback: no open %s runner; start a revision with the same feedback on stdin: herdr-runner-kit project run %s --project %s --stdin\n",
+	fmt.Fprintf(out, "feedback: no open %s runner; start a revision with the same feedback on stdin: hrk project run %s --project %s --stdin\n",
 		d.Gate, d.Gate, p.Name)
 }
 
@@ -969,7 +969,7 @@ func newProjectCRCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cr",
 		Short: "Decide on change requests",
-		Long: "A change request (CR) starts with: herdr-runner-kit project run change --stdin. " +
+		Long: "A change request (CR) starts with: hrk project run change --stdin. " +
 			"Its impact runner writes the CR file and reports the class; cr decide records your decision.",
 		Args: cobra.NoArgs,
 	}
@@ -990,8 +990,8 @@ func newProjectCRDecideCommand() *cobra.Command {
 			"after the pack was approved needs a new pack approval before the next milestone " +
 			"starts; the running milestone and graduation go on. Nothing is committed: the record " +
 			"reaches the repository with the next gate outcome or milestone.",
-		Example: `  herdr-runner-kit project cr decide 3 next
-  herdr-runner-kit project cr decide CR-4 now --blocking --note "the launch needs it"`,
+		Example: `  hrk project cr decide 3 next
+  hrk project cr decide CR-4 now --blocking --note "the launch needs it"`,
 		Args:      cobra.ExactArgs(2),
 		ValidArgs: project.ChangeOutcomes,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1025,14 +1025,14 @@ func newProjectCRDecideCommand() *cobra.Command {
 				fmt.Fprintf(out, "backlog: kept as %s\n", d.Backlog)
 			}
 			if d.Reapproval {
-				fmt.Fprintf(out, "re-approval: the pack needs a new approval before the next milestone starts: herdr-runner-kit project run pack --project %s\n", p.Name)
+				fmt.Fprintf(out, "re-approval: the pack needs a new approval before the next milestone starts: hrk project run pack --project %s\n", p.Name)
 			}
 			if c.Class == project.ClassTweak && c.Status == project.ChangeNow {
-				fmt.Fprintln(out, "next: a tweak goes to the runner building that part: herdr-runner-kit send <id> \"<the change>\"")
+				fmt.Fprintln(out, "next: a tweak goes to the runner building that part: hrk send <id> \"<the change>\"")
 			} else if c.Status == project.ChangeNow && c.Task != "" {
 				rec, err := project.Load(store, p.Name)
 				running := err == nil && project.RunningMilestone(rec) != nil
-				fmt.Fprintf(out, "next: ask %s to apply it: herdr-runner-kit send %s \"%s\"\n", c.Task, c.Task, changeApplyText(c.ID, running))
+				fmt.Fprintf(out, "next: ask %s to apply it: hrk send %s \"%s\"\n", c.Task, c.Task, changeApplyText(c.ID, running))
 			}
 			return nil
 		},
@@ -1110,7 +1110,7 @@ func newProjectDepAddCommand() *cobra.Command {
 		Long: "dep add records the dependency as needed. --secret-location names where a secret " +
 			"is kept, such as \"1Password: payments sandbox\"; a value that looks like a secret is " +
 			"refused. Nothing is committed until the next gate outcome or milestone.",
-		Example: `  herdr-runner-kit project dep add "Payment sandbox keys" --owner vendor --milestone M2 --secret-location "1Password: payments sandbox"`,
+		Example: `  hrk project dep add "Payment sandbox keys" --owner vendor --milestone M2 --secret-location "1Password: payments sandbox"`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
@@ -1125,7 +1125,7 @@ func newProjectDepAddCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s recorded for %s as %s; hold runners that need it with: herdr-runner-kit spawn --gate human --reason \"needs %s\" ...\n",
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s recorded for %s as %s; hold runners that need it with: hrk spawn --gate human --reason \"needs %s\" ...\n",
 				d.ID, d.Name, p.Name, d.Status, d.ID)
 			return err
 		},
@@ -1173,7 +1173,7 @@ func newProjectDepSetCommand() *cobra.Command {
 				return err
 			}
 			for _, t := range project.HeldFor(tasks, p.Name, d.ID) {
-				fmt.Fprintf(out, "held: %s %s (%s); release it with: herdr-runner-kit release %s\n", t.ID, t.Title, t.HoldReason, t.ID)
+				fmt.Fprintf(out, "held: %s %s (%s); release it with: hrk release %s\n", t.ID, t.Title, t.HoldReason, t.ID)
 			}
 			return nil
 		},
@@ -1269,13 +1269,13 @@ func newMilestoneStartCommand() *cobra.Command {
 			"order is done; reordering goes through a change request and a new pack approval. With the pack " +
 			"waived on the lite track, M0 needs no roadmap, and the first start that finds the roadmap " +
 			"proposal committed imports it, as a pack approval would; M1 and later refuse until it is " +
-			"(herdr-runner-kit project run roadmap). It marks " +
+			"(hrk project run roadmap). It marks " +
 			"the milestone in progress in the record, committed when the milestone is done. M0 spawns " +
 			"the scaffold runner and the close runner after it; later milestones spawn the plan runner, whose plan answers its open " +
 			"questions with the recommended options and lists them as decisions. When the first runner " +
 			"of a milestone in progress failed or stopped, start runs it again.",
-		Example: `  herdr-runner-kit project milestone start M0
-  herdr-runner-kit project milestone start M1 --project demo-app`,
+		Example: `  hrk project milestone start M0
+  hrk project milestone start M1 --project demo-app`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
@@ -1439,7 +1439,7 @@ func newMilestoneChainCommand() *cobra.Command {
 			"again after a runner failed: done nodes are kept, a failed node whose runner created its " +
 			"branch continues on <branch>-r<k> from that branch, and any other existing branch is " +
 			"refused before anything is spawned.",
-		Example: `  herdr-runner-kit project milestone chain M1`,
+		Example: `  hrk project milestone chain M1`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
@@ -1575,8 +1575,8 @@ func newMilestoneDoneCommand() *cobra.Command {
 			"it on origin. After a squash or rebase merge, pass the merged commit, which must hold the " +
 			"release notes of the release branch's tip. Release notes merged before a reopen never " +
 			"count as a new release.",
-		Example: `  herdr-runner-kit project milestone done M1
-  herdr-runner-kit project milestone done M2 --merged-commit 3f9c2ab`,
+		Example: `  hrk project milestone done M1
+  hrk project milestone done M2 --merged-commit 3f9c2ab`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
@@ -1609,7 +1609,7 @@ func finishMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p sta
 	}
 	fmt.Fprintf(out, "records: committed in %s\n", shortCommit(d.Commit))
 	fmt.Fprintf(out, "tag: %s on %s, local only; push it yourself when you want it on origin: git push origin %s\n", d.Tag, shortCommit(d.Commit), d.Tag)
-	_, err = fmt.Fprintf(out, "next: herdr-runner-kit project status %s\n", p.Name)
+	_, err = fmt.Fprintf(out, "next: hrk project status %s\n", p.Name)
 	return err
 }
 
@@ -1632,7 +1632,7 @@ func newMilestoneReopenCommand() *cobra.Command {
 			"log, committed with the next commit point. The merged release stays on the default " +
 			"branch: revert it through a pull request if it must come out. After the fixes, close " +
 			"prepares a new release branch.",
-		Example: `  herdr-runner-kit project milestone reopen M1 --reason "export drops the last row"`,
+		Example: `  hrk project milestone reopen M1 --reason "export drops the last row"`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
@@ -1661,7 +1661,7 @@ func reopenMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p sta
 	if re.Milestone.Branch != "" {
 		fmt.Fprintf(out, "%s stays merged; if its work must come out, revert that merge through a pull request: the kit never does\n", re.Milestone.Branch)
 	}
-	_, err = fmt.Fprintf(out, "next: fix on the branch the release came from, then prepare a new release: herdr-runner-kit project milestone close %s --project %s\n", id, p.Name)
+	_, err = fmt.Fprintf(out, "next: fix on the branch the release came from, then prepare a new release: hrk project milestone close %s --project %s\n", id, p.Name)
 	return err
 }
 
@@ -1675,7 +1675,7 @@ func newMilestoneCloseCommand() *cobra.Command {
 			"the new release holds the fixes made there. It is refused unless the milestone is in " +
 			"progress and its close runner failed, stopped, or prepared a release merged before the " +
 			"milestone was reopened.",
-		Example: `  herdr-runner-kit project milestone close M1`,
+		Example: `  hrk project milestone close M1`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMilestone(cmd, &o, func(r *runner.Runner, p state.Project) error {
@@ -1726,7 +1726,7 @@ func newProjectGraduateCommand() *cobra.Command {
 		Short: "Remove the discovery folder from the tree once the evergreen docs hold what it decided",
 		Long: "graduate removes " + project.DiscoveryDir + "/ from the tree in one commit with the " +
 			"project's records, and tags the commit before it " + project.ArchiveTag + " (or " +
-			project.ArchiveTag + "-<n>), locally and last. Prepare it first with: herdr-runner-kit " +
+			project.ArchiveTag + "-<n>), locally and last. Prepare it first with: hrk " +
 			"project run " + project.GraduateStage + ", which writes " + project.RequirementsPath + ", " +
 			"keeps the approved pack in " + project.GraduatedApprovalDir + "/ and the open change " +
 			"requests in " + project.GraduatedChangesDir + "/, and rewrites links into the folder. " +
@@ -1738,8 +1738,8 @@ func newProjectGraduateCommand() *cobra.Command {
 			"commit restores the folder and leaves no tag. Graduation does not purge history: every " +
 			"committed file stays reachable through the tag. The original brief was never committed " +
 			"and stays on disk, untracked.",
-		Example: `  herdr-runner-kit project graduate
-  herdr-runner-kit project graduate --export ~/archive/demo-app-discovery --yes`,
+		Example: `  hrk project graduate
+  hrk project graduate --export ~/archive/demo-app-discovery --yes`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := project.RefuseInsideRunner(os.Getenv); err != nil {
@@ -1771,7 +1771,7 @@ func graduateProject(ctx context.Context, out io.Writer, s *state.Store, p state
 			p.Name, plan.Files, project.DiscoveryDir)
 		fmt.Fprintf(out, "archive: tag %s on %s, local only\n", plan.Tag, shortCommit(plan.Head))
 		printGraduation(out, plan, o)
-		_, err = fmt.Fprintf(out, "nothing changed yet; graduate with: herdr-runner-kit project graduate --project %s%s --yes\n",
+		_, err = fmt.Fprintf(out, "nothing changed yet; graduate with: hrk project graduate --project %s%s --yes\n",
 			p.Name, exportFlags(plan, o))
 		return err
 	}

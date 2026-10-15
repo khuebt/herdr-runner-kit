@@ -49,7 +49,7 @@ func TestProjectGraduate(t *testing.T) {
 	for _, want := range []string{
 		"graduate demo-app: 3 committed file(s) under " + project.DiscoveryDir + "/ leave the tree",
 		"archive: tag discovery-archive on", "graduation does not purge history",
-		"nothing changed yet; graduate with: herdr-runner-kit project graduate --project demo-app --yes",
+		"nothing changed yet; graduate with: hrk project graduate --project demo-app --yes",
 	} {
 		if !strings.Contains(dry, want) {
 			t.Errorf("dry run lacks %q:\n%s", want, dry)

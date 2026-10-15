@@ -353,7 +353,7 @@ func checkGraduation(ctx context.Context, s *state.Store, p state.Project, rec R
 	if _, ok, err := committedFile(ctx, p.Path, RequirementsPath); err != nil {
 		return GraduatePlan{}, err
 	} else if !ok {
-		add("HEAD holds no %s; prepare it with: herdr-runner-kit project run %s --project %s", RequirementsPath, GraduateStage, p.Name)
+		add("HEAD holds no %s; prepare it with: hrk project run %s --project %s", RequirementsPath, GraduateStage, p.Name)
 	} else if dirty, err := uncommitted(ctx, p.Path, RequirementsPath); err != nil {
 		return GraduatePlan{}, err
 	} else if dirty {

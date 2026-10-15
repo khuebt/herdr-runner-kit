@@ -146,7 +146,7 @@ func TestNewProjectFromStdin(t *testing.T) {
 		"remote: origin git@example.com:team/demo-app.git\n",
 		"workspace: not created: ",
 		"brief: original kept untracked at " + filepath.Join(path, project.BriefDir, project.IdeaFile) + "\n",
-		"next: herdr-runner-kit project status demo-app\n",
+		"next: hrk project status demo-app\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output lacks %q:\n%s", want, got)
@@ -358,7 +358,7 @@ func TestProjectStatus(t *testing.T) {
 	}
 	out, err = runCLI("project", "status", "demo-cli")
 	if err != nil || !strings.Contains(out, "record: missing\n") ||
-		!strings.Contains(out, "herdr-runner-kit project register "+repos["demo-cli"]+" --name demo-cli") {
+		!strings.Contains(out, "hrk project register "+repos["demo-cli"]+" --name demo-cli") {
 		t.Errorf("missing record: %q %v", out, err)
 	}
 	if _, err := runCLI("project", "status", "nope"); err == nil {

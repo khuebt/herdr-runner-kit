@@ -1,6 +1,6 @@
 # Commands
 
-Every command prints short plain text, so the main agent's context stays small. `herdr-runner-kit <command> --help` lists every flag.
+Every command prints short plain text, so the main agent's context stays small. `hrk <command> --help` lists every flag.
 
 ## Setup
 

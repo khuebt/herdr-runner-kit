@@ -1,6 +1,6 @@
 # herdr-runner-kit commands
 
-Every command prints short plain text. `herdr-runner-kit <command> --help` lists every flag.
+Every command prints short plain text. `hrk <command> --help` lists every flag.
 
 ## Tasks
 
@@ -58,22 +58,22 @@ A project's runners report to the owner `project:<name>`, and `wait` and `list` 
 3. On yes, run it with the user's idea through `--stdin` and a quoted heredoc, or `--brief FILE` for a brief file:
 
    ```sh
-   herdr-runner-kit new ~/code/demo-app --remote git@github.com:me/demo-app.git --stdin <<'EOF'
+   hrk new ~/code/demo-app --remote git@github.com:me/demo-app.git --stdin <<'EOF'
    <the user's idea, as given>
    EOF
    ```
 
 4. Relay the output, including any `not added`, `not created` or `not registered` line. Tell the user the original brief stays on disk, untracked, and is never committed.
 
-`new` refuses a folder that already holds files: ask the user before adding `--allow-non-empty`. For an existing git repository, run `herdr-runner-kit project register <path>` instead.
+`new` refuses a folder that already holds files: ask the user before adding `--allow-non-empty`. For an existing git repository, run `hrk project register <path>` instead.
 
 ### Where are we
 
-At the start of a session that touches a project, and when the user asks "where were we?" or "đến đâu rồi?", run `herdr-runner-kit project status <name>` and relay it. It reads only the kit's record and tasks, so it works with herdr down.
+At the start of a session that touches a project, and when the user asks "where were we?" or "đến đâu rồi?", run `hrk project status <name>` and relay it. It reads only the kit's record and tasks, so it works with herdr down.
 
 ### Discovery stages
 
-`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held, except a `pack` chained with `--after`: it waits so the user can review the earlier stages first. Ask the user, then `release` it. Before UX or prototype work, run `herdr-runner-kit doctor --tools` and tell the user which optional tools are missing.
+`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held, except a `pack` chained with `--after`: it waits so the user can review the earlier stages first. Ask the user, then `release` it. Before UX or prototype work, run `hrk doctor --tools` and tell the user which optional tools are missing.
 
 The `ux` and `design` runners first sample the one or two main screens and ask one direction round through `needs-human`: layout, navigation and density for `ux`; for `design`, pick, combine or another round of at least two visual directions. Relay the sample paths and every option in one message, suggest viewing the samples with Lavish when it is installed, and pass the user's choice with `answer`. The round is a question, not a gate. Notes that ask to skip the round, or give a design system to follow, skip it.
 
@@ -90,7 +90,7 @@ Two gates stop the project: the spec and the stakeholder pack. Only the user pas
 
 ### Change control
 
-- A change the user asks for after the spec is approved: `echo "<the change>" | herdr-runner-kit project run change --stdin`. Its runner reports the class as `decided: class -> tweak`, `within-milestone` or `scope`, and the impact file as output.
+- A change the user asks for after the spec is approved: `echo "<the change>" | hrk project run change --stdin`. Its runner reports the class as `decided: class -> tweak`, `within-milestone` or `scope`, and the impact file as output.
 - Ask the user, then `project cr decide <n> now|next|backlog|reject`. A tweak goes to the runner building that part with `send` instead. A scope change decided `now` while a milestone runs needs `--blocking`; one decided `now` or `next` after the pack was approved needs a new pack approval (`project run pack`), and the output says so.
 - An idea for later: `project backlog add --stdin`. A decision the user made in chat: `project decide --stdin`.
 - Something outside the project, such as sandbox keys: `project dep add`. Record where a secret is kept with `--secret-location`, never its value. Spawn runners that need it with `--gate human --reason "needs D<n>"`; when `project dep set D<n> --status ready` lists them, `release` each.
@@ -117,7 +117,7 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 
 ### Telegram
 
-- `meta: project status <name>`: the user sent `status <name>`. Run `herdr-runner-kit project status <name>` and reply with its output.
+- `meta: project status <name>`: the user sent `status <name>`. Run `hrk project status <name>` and reply with its output.
 - `ambiguous: "status <name>" could be an answer for t3; …`: a task is waiting, so ask on Telegram whether the user meant the answer for that task (`#t3 status <name>`) or the project status.
 - `meta: user approves spec of <name>; confirm and run …`: the user sent `approve spec <name>` (or `pack`). Confirm with them, then run the printed command with `--by`.
 - `ambiguous: t3 is held (needs D2); …`: a task held with `--reason` starts only on a tagged reply such as `#t3 ok`.

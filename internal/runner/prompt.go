@@ -49,7 +49,7 @@ func (r *Runner) contract(t *task.Task, outDir string, h task.Harness) (string, 
 	}
 	rec, err := project.Load(r.Store, t.Project)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: project record: %v; the preamble has no context pack\n", t.ID, err)
+		fmt.Fprintf(os.Stderr, "hrk: %s: project record: %v; the preamble has no context pack\n", t.ID, err)
 		rec = project.NewRecord(t.Project)
 	}
 	root := t.RepoRoot

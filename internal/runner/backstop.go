@@ -323,7 +323,7 @@ func (r *Runner) errIfLost(ctx context.Context, t *task.Task) error {
 		return nil
 	}
 	r.failLost(t.ID, reason)
-	return fmt.Errorf("%s's runner is gone (%s); its worktree and branch are in herdr-runner-kit show %s", t.ID, reason, t.ID)
+	return fmt.Errorf("%s's runner is gone (%s); its worktree and branch are in hrk show %s", t.ID, reason, t.ID)
 }
 
 // CheckLaunch fails a task stuck in starting: its launch deadline passed, or

@@ -162,7 +162,7 @@ func StartMilestone(ctx context.Context, s *state.Store, p state.Project, id str
 		}
 		if i > 0 && rec.Milestones[i-1].Status != MilestoneDone {
 			prev := rec.Milestones[i-1]
-			return fmt.Errorf("milestone %s starts after %s, which is %s; to change the order, raise a change request (herdr-runner-kit project run change --stdin) and approve a new pack",
+			return fmt.Errorf("milestone %s starts after %s, which is %s; to change the order, raise a change request (hrk project run change --stdin) and approve a new pack",
 				id, prev.ID, orDash(prev.Status))
 		}
 		m.Status, m.Started = MilestoneInProgress, stamp(now)
@@ -233,7 +233,7 @@ func waivedRoadmap(ctx context.Context, root string, rec Record, id string) ([]b
 	case id == ScaffoldMilestone:
 		return nil, nil
 	}
-	return nil, fmt.Errorf("project %s has no roadmap yet: with the pack waived, a milestone start imports the committed %s, and HEAD holds none; write it with herdr-runner-kit project run roadmap --project %s, then start %s again",
+	return nil, fmt.Errorf("project %s has no roadmap yet: with the pack waived, a milestone start imports the committed %s, and HEAD holds none; write it with hrk project run roadmap --project %s, then start %s again",
 		rec.Name, RoadmapProposalPath, rec.Name, id)
 }
 
@@ -302,15 +302,15 @@ func CheckChainable(rec Record, name, id string, tasks []*task.Task) error {
 		return err
 	}
 	if id == ScaffoldMilestone {
-		return fmt.Errorf("milestone %s has no plan to chain: its scaffold runner starts with herdr-runner-kit project milestone start %s", id, id)
+		return fmt.Errorf("milestone %s has no plan to chain: its scaffold runner starts with hrk project milestone start %s", id, id)
 	}
 	if st := rec.Milestones[i].Status; st != MilestoneInProgress {
-		return fmt.Errorf("milestone %s is %s; start it first with herdr-runner-kit project milestone start %s", id, orDash(st), id)
+		return fmt.Errorf("milestone %s is %s; start it first with hrk project milestone start %s", id, orDash(st), id)
 	}
 	plan := latestTask(tasks, name, FirstStage(id))
 	switch {
 	case plan == nil:
-		return fmt.Errorf("milestone %s has no plan runner; start it with herdr-runner-kit project milestone start %s", id, id)
+		return fmt.Errorf("milestone %s has no plan runner; start it with hrk project milestone start %s", id, id)
 	case plan.Status != task.Done:
 		return fmt.Errorf("the plan runner %s of %s is %s, not done", plan.ID, id, plan.Status)
 	}

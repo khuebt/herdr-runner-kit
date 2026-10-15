@@ -59,11 +59,11 @@ func TestCodexLaunchArgs(t *testing.T) {
 		{"codex", "", []string{"--dangerously-bypass-approvals-and-sandbox"}},
 		{"codex:gpt-6-astra", "", []string{"--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-6-astra"}},
 		{
-			"codex:gpt-6-astra:xhigh", "/usr/local/bin/herdr-runner-kit",
+			"codex:gpt-6-astra:xhigh", "/usr/local/bin/hrk",
 			[]string{
 				"--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-6-astra",
 				"-c", `model_reasoning_effort="xhigh"`,
-				"-c", `notify=["/usr/local/bin/herdr-runner-kit","__turn-end","--harness","codex"]`,
+				"-c", `notify=["/usr/local/bin/hrk","__turn-end","--harness","codex"]`,
 			},
 		},
 	}
@@ -199,7 +199,7 @@ func TestShows(t *testing.T) {
 }
 
 func TestClaudeSettings(t *testing.T) {
-	data, err := ClaudeSettings("/home/u/bin/herdr-runner-kit")
+	data, err := ClaudeSettings("/home/u/bin/hrk")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestClaudeSettings(t *testing.T) {
 			t.Fatalf("hooks = %s", data)
 		}
 		h := hooks[0].Hooks[0]
-		if h.Type != "command" || h.Command != "/home/u/bin/herdr-runner-kit __turn-end --harness claude" {
+		if h.Type != "command" || h.Command != "/home/u/bin/hrk __turn-end --harness claude" {
 			t.Errorf("hook = %+v", h)
 		}
 	}
@@ -236,10 +236,10 @@ func TestClaudeSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	pre, start := compact.Hooks.PreCompact, compact.Hooks.SessionStart
-	if len(pre) != 1 || pre[0].Matcher != "" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Command != "/home/u/bin/herdr-runner-kit __context --harness claude" {
+	if len(pre) != 1 || pre[0].Matcher != "" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
 		t.Errorf("PreCompact hooks = %s", data)
 	}
-	if len(start) != 1 || start[0].Matcher != "compact" || len(start[0].Hooks) != 1 || start[0].Hooks[0].Command != "/home/u/bin/herdr-runner-kit __context --harness claude" {
+	if len(start) != 1 || start[0].Matcher != "compact" || len(start[0].Hooks) != 1 || start[0].Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
 		t.Errorf("SessionStart hooks = %s", data)
 	}
 	data, _ = ClaudeSettings("/opt/it's here/hrk")

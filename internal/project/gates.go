@@ -288,13 +288,13 @@ func RequireGate(ctx context.Context, root string, rec Record, name string) erro
 			name, o.Version, root, committedLabel(name, g.Committed))
 	}
 	if o := g.Outcome; o.Status == GateApproved && g.Changed {
-		return fmt.Errorf("%s %s changed since its approval: HEAD of %s holds other content under the same version; ask the user to approve it again (herdr-runner-kit project approve %s)",
+		return fmt.Errorf("%s %s changed since its approval: HEAD of %s holds other content under the same version; ask the user to approve it again (hrk project approve %s)",
 			name, o.Version, root, name)
 	}
 	if g.Outcome.Waived && g.Track != "lite" {
-		return fmt.Errorf("the pack gate was waived for the lite track, but the committed spec is on the %s track; approve a pack (herdr-runner-kit project approve pack)", orDash(g.Track))
+		return fmt.Errorf("the pack gate was waived for the lite track, but the committed spec is on the %s track; approve a pack (hrk project approve pack)", orDash(g.Track))
 	}
-	return fmt.Errorf("the %s gate is %s; record its approval first with: herdr-runner-kit project approve %s", name, g.Status(), name)
+	return fmt.Errorf("the %s gate is %s; record its approval first with: hrk project approve %s", name, g.Status(), name)
 }
 
 func committedLabel(gate string, n int) string {

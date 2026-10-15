@@ -32,7 +32,7 @@ func newVersionCommand() *cobra.Command {
 			case err != nil:
 				return fmt.Errorf("check for a newer release: %w", err)
 			case newer:
-				_, err = fmt.Fprintf(out, "%s is available; run herdr-runner-kit upgrade\n", latest)
+				_, err = fmt.Fprintf(out, "%s is available; run hrk upgrade\n", latest)
 			default:
 				_, err = fmt.Fprintf(out, "up to date (latest release %s)\n", latest)
 			}

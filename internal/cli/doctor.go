@@ -144,24 +144,56 @@ func checkKit() checkResult {
 		}
 		if meta.SchemaVersion > buildinfo.SchemaVersion {
 			return fail(fmt.Sprintf("state schema v%d is newer than this binary (v%d)", meta.SchemaVersion, buildinfo.SchemaVersion),
-				"herdr-runner-kit upgrade")
+				"hrk upgrade")
 		}
 	}
 	bin, err := ownBinary()
 	if err != nil {
 		return fail(err.Error(), "")
 	}
-	onPath, err := exec.LookPath("herdr-runner-kit")
+	onPath, err := exec.LookPath("hrk")
 	if err != nil {
-		return fail("herdr-runner-kit is not on PATH", "put "+filepath.Dir(bin)+" on PATH, or install the binary into a folder on PATH")
+		return fail("hrk is not on PATH", notOnPathFix(bin))
 	}
 	if resolved, err := filepath.EvalSymlinks(onPath); err == nil {
 		onPath = resolved
 	}
 	if onPath != bin {
-		return warn("herdr-runner-kit on PATH is "+onPath+", not this binary ("+bin+")", "run doctor with the binary on PATH")
+		return warn("hrk on PATH is "+onPath+", not this binary ("+bin+")", "run doctor with the binary on PATH")
+	}
+	if old, resolved := staleAlias(bin); old != "" {
+		return warn("herdr-runner-kit on PATH is "+resolved+", not this binary ("+bin+")", "delete "+old+", or link it here: ln -sf "+bin+" "+old)
 	}
 	return ok("%s, state schema v%d", buildinfo.Version, buildinfo.SchemaVersion)
+}
+
+// notOnPathFix is the fix when no hrk is on PATH. A binary still named
+// herdr-runner-kit, from before the rename, needs an hrk link, which setup
+// makes when it can.
+func notOnPathFix(bin string) string {
+	if filepath.Base(bin) == "herdr-runner-kit" {
+		short := shortLinkPath(bin)
+		return "ln -sf herdr-runner-kit " + short + ", and keep " + filepath.Dir(short) + " on PATH"
+	}
+	return "put " + filepath.Dir(bin) + " on PATH, or install the binary into a folder on PATH"
+}
+
+// staleAlias finds a herdr-runner-kit on PATH that is another binary than
+// bin, such as one left by a go install from before the rename. It returns
+// its path and where it leads, or "" when there is none.
+func staleAlias(bin string) (string, string) {
+	old, err := exec.LookPath("herdr-runner-kit")
+	if err != nil {
+		return "", ""
+	}
+	resolved := old
+	if r, err := filepath.EvalSymlinks(old); err == nil {
+		resolved = r
+	}
+	if resolved == bin {
+		return "", ""
+	}
+	return old, resolved
 }
 
 func checkHerdr(ctx context.Context) checkResult {
@@ -237,7 +269,7 @@ func checkUpdates(ctx context.Context) checkResult {
 	case err != nil:
 		return ok("could not check for a newer release: %v", err)
 	case newer:
-		return warn(latest+" is available (this is "+buildinfo.Version+")", "herdr-runner-kit upgrade --check, then herdr-runner-kit upgrade")
+		return warn(latest+" is available (this is "+buildinfo.Version+")", "hrk upgrade --check, then hrk upgrade")
 	}
 	return ok("%s is the latest release", buildinfo.Version)
 }
@@ -278,11 +310,11 @@ func checkSkill(dir string) checkResult {
 	version, intact, err := install.SkillVersion(dir)
 	switch {
 	case err != nil:
-		return fail("not installed", "herdr-runner-kit setup --claude-config "+dir)
+		return fail("not installed", "hrk setup --claude-config "+dir)
 	case !intact:
-		return warn("SKILL.md was edited by you, so setup no longer updates it", "herdr-runner-kit setup --force --claude-config "+dir)
+		return warn("SKILL.md was edited by you, so setup no longer updates it", "hrk setup --force --claude-config "+dir)
 	case version != buildinfo.Version:
-		return fail("installed by "+version+", this binary is "+buildinfo.Version, "herdr-runner-kit setup --claude-config "+dir)
+		return fail("installed by "+version+", this binary is "+buildinfo.Version, "hrk setup --claude-config "+dir)
 	}
 	return ok("%s", version)
 }
@@ -293,11 +325,11 @@ func checkHook(dir string) checkResult {
 		return fail(err.Error(), "")
 	}
 	if cmd == "" {
-		return warn("not installed; the main agent must rerun wait itself", "herdr-runner-kit setup --claude-config "+dir)
+		return warn("not installed; the main agent must rerun wait itself", "hrk setup --claude-config "+dir)
 	}
 	bin, err := ownBinary()
 	if err == nil && cmd != install.HookCommand(bin) {
-		return fail("points at another binary: "+cmd, "herdr-runner-kit setup --claude-config "+dir)
+		return fail("points at another binary: "+cmd, "hrk setup --claude-config "+dir)
 	}
 	return ok("installed")
 }
@@ -351,7 +383,7 @@ func checkTelegramPlugin(dir string, s claudeSettings, tokenSource string) check
 	}
 	data, err := os.ReadFile(filepath.Join(stateDir, "access.json"))
 	if err != nil {
-		return fail("no access list, so your replies are dropped", "herdr-runner-kit setup --claude-config "+dir)
+		return fail("no access list, so your replies are dropped", "hrk setup --claude-config "+dir)
 	}
 	if err := json.Unmarshal(data, &access); err != nil {
 		return fail("access.json is unreadable: "+err.Error(), "")
@@ -363,7 +395,7 @@ func checkTelegramPlugin(dir string, s claudeSettings, tokenSource string) check
 		return warn("dmPolicy is "+access.DMPolicy+"; strangers get pairing replies", "/telegram:access policy allowlist")
 	}
 	if env := filepath.Join(stateDir, ".env"); hasToken(env) {
-		fix := "delete " + env + "; herdr-runner-kit main --exec passes the token to the main session only"
+		fix := "delete " + env + "; hrk main --exec passes the token to the main session only"
 		if abs, err := filepath.Abs(tokenSource); err == nil && abs == env {
 			// The kit reads its token from this file, so deleting it alone would turn Telegram off.
 			fix = "move the token into a file named by telegram.envFile in the kit's config, then " + fix
@@ -372,9 +404,9 @@ func checkTelegramPlugin(dir string, s claudeSettings, tokenSource string) check
 	}
 	if s.EnabledPlugins[telegramPlugin] {
 		return warn("enabled for every session; each one starts the plugin, which fails without a token",
-			"CLAUDE_CONFIG_DIR="+dir+" claude plugin disable "+telegramPlugin+"; herdr-runner-kit main enables it for the main session")
+			"CLAUDE_CONFIG_DIR="+dir+" claude plugin disable "+telegramPlugin+"; hrk main enables it for the main session")
 	}
-	return ok("installed, %d chat(s) allowed; only `herdr-runner-kit main` loads it", len(access.AllowFrom))
+	return ok("installed, %d chat(s) allowed; only `hrk main` loads it", len(access.AllowFrom))
 }
 
 // runnerClaudeConfigs returns the Claude config folders runners start with:

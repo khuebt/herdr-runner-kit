@@ -20,11 +20,15 @@ import (
 )
 
 func tarball(t *testing.T, bin []byte) []byte {
+	return tarballAs(t, binaryName, bin)
+}
+
+func tarballAs(t *testing.T, name string, bin []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	for name, data := range map[string][]byte{"README.md": []byte("readme"), binaryName: bin} {
+	for name, data := range map[string][]byte{"README.md": []byte("readme"), name: bin} {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
 			t.Fatal(err)
 		}
@@ -223,5 +227,23 @@ func TestBetween(t *testing.T) {
 	}
 	if strings.Join(tags, " ") != "v0.2.0 v0.3.0" {
 		t.Fatalf("got %v", tags)
+	}
+}
+
+func TestArchiveKeepsTheOldName(t *testing.T) {
+	if got := ArchiveName("v0.9.0"); !strings.HasPrefix(got, "herdr-runner-kit_0.9.0_") {
+		t.Fatalf("archive = %s; releases are published as herdr-runner-kit_<version>_<os>_<arch>.tar.gz", got)
+	}
+}
+
+func TestExtractTakesEitherName(t *testing.T) {
+	for _, name := range []string{binaryName, oldBinaryName} {
+		got, err := extract(tarballAs(t, name, []byte("bin")))
+		if err != nil || string(got) != "bin" {
+			t.Fatalf("%s: %q %v", name, got, err)
+		}
+	}
+	if _, err := extract(tarballAs(t, "other", []byte("bin"))); err == nil {
+		t.Fatal("extracted an archive without the binary")
 	}
 }

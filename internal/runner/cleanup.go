@@ -372,7 +372,7 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 		}
 		if err := r.record(ev); err != nil {
 			// Not marked offered, so the next check offers it again.
-			fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: write event: %v\n", t.ID, err)
+			fmt.Fprintf(os.Stderr, "hrk: %s: write event: %v\n", t.ID, err)
 			continue
 		}
 		_, _ = r.Store.Update(t.ID, func(t *task.Task) error {

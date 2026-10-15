@@ -33,7 +33,7 @@ func fakeRelease(t *testing.T, schema int) (target string) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	_ = tw.WriteHeader(&tar.Header{Name: "herdr-runner-kit", Mode: 0o755, Size: int64(len(script)), Typeflag: tar.TypeReg})
+	_ = tw.WriteHeader(&tar.Header{Name: "hrk", Mode: 0o755, Size: int64(len(script)), Typeflag: tar.TypeReg})
 	_, _ = tw.Write([]byte(script))
 	_ = tw.Close()
 	_ = gz.Close()

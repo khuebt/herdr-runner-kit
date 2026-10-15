@@ -11,7 +11,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 - **The main agent answers directly** for ordinary questions, explanations and quick lookups.
 - **Everything else becomes a runner:** code changes of any size, research, analysis reports, and skill or multi-step flows. The main agent first replies with a short brief (goal, approach, checks, kind and branch) and starts the runner when you agree, so you can add what is missing.
 - **Each runner is visible.** It is an interactive agent in a herdr tab, so you can watch it or type into it.
-- **Results arrive as events.** A runner calls `herdr-runner-kit report`, and the main agent's background `wait` wakes at once. Tasks chained with `--after` start automatically when their parent is done.
+- **Results arrive as events.** A runner calls `hrk report`, and the main agent's background `wait` wakes at once. Tasks chained with `--after` start automatically when their parent is done.
 - **Plans run phase by phase.** `plan run` gives each phase of an AgentKit plan a fresh runner on one shared branch, runs independent phases side by side, checks each finished phase against the files it declared, and resumes after a failure without redoing done phases.
 - **Decisions never stall a runner.** A runner that needs input stays alive in its session, and your answer resumes it in the same context.
 - **Projects keep their own record.** `new` starts a git repository with a project record and a herdr workspace, and `project status` shows where it stands. A project's runners open in its workspace and report to the main session from any folder.
@@ -35,20 +35,20 @@ On Linux or macOS (amd64 or arm64):
 curl -fsSL https://raw.githubusercontent.com/khuebt/herdr-runner-kit/main/install.sh | sh
 ```
 
-It verifies the download, installs to `~/.local/bin` and runs `setup`. `herdr-runner-kit upgrade` installs newer releases. See [installation](docs/installation.md) and [upgrading](docs/upgrading.md).
+It verifies the download, installs the `hrk` command to `~/.local/bin` (with `herdr-runner-kit` kept as an alias) and runs `setup`. `hrk upgrade` installs newer releases. See [installation](docs/installation.md) and [upgrading](docs/upgrading.md).
 
 To build from source:
 
 ```sh
-go install github.com/khuebt/herdr-runner-kit/cmd/herdr-runner-kit@latest
+go install github.com/khuebt/herdr-runner-kit/cmd/hrk@latest
 ```
 
 ## Get started
 
 ```sh
-herdr-runner-kit setup     # skill, auto re-arm hook, config and state
-herdr-runner-kit doctor    # checks herdr, the agents and Telegram, and prints fixes
-herdr-runner-kit main --exec
+hrk setup     # skill, auto re-arm hook, config and state
+hrk doctor    # checks herdr, the agents and Telegram, and prints fixes
+hrk main --exec
 ```
 
 `main --exec` starts the main Claude Code session with the routing rules in its system prompt and, when configured, the Telegram channel. Run it inside herdr, so runners open as tabs next to it. See [setup](docs/setup.md).

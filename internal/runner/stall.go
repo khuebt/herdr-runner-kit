@@ -196,7 +196,7 @@ func (r *Runner) loadProgress(id string) progressState {
 		return st
 	}
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: read progress: %v\n", id, err)
+		fmt.Fprintf(os.Stderr, "hrk: %s: read progress: %v\n", id, err)
 	}
 	return progressState{}
 }
@@ -207,6 +207,6 @@ func (r *Runner) saveProgress(id string, st progressState) {
 		err = fsutil.WriteFileAtomic(r.progressPath(id), data, 0o600)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: save progress: %v\n", id, err)
+		fmt.Fprintf(os.Stderr, "hrk: %s: save progress: %v\n", id, err)
 	}
 }

@@ -1,6 +1,6 @@
 # Installation
 
-herdr-runner-kit is one binary for Linux and macOS, on amd64 or arm64. It needs [herdr](https://herdr.dev), git, and Claude Code or Codex. `herdr-runner-kit doctor` checks all of them.
+herdr-runner-kit is one binary for Linux and macOS, on amd64 or arm64. It needs [herdr](https://herdr.dev), git, and Claude Code or Codex. `hrk doctor` checks all of them.
 
 ## One-line install
 
@@ -12,9 +12,9 @@ The script:
 
 1. picks the archive for your OS and CPU from the latest [GitHub Release](https://github.com/khuebt/herdr-runner-kit/releases);
 2. downloads it with the release's `checksums.txt` and checks the SHA-256 with `sha256sum` or `shasum -a 256`; on a mismatch it stops and installs nothing;
-3. puts the binary in `~/.local/bin`, swapping it in by rename, so a copy that is running keeps working;
+3. puts the `hrk` binary in `~/.local/bin`, swapping it in by rename, so a copy that is running keeps working, and links the old name `herdr-runner-kit` to it;
 4. tells you when that folder is not on your `PATH`;
-5. runs `herdr-runner-kit setup` (see [setup.md](setup.md)).
+5. runs `hrk setup` (see [setup.md](setup.md)).
 
 It never uses `sudo` and needs only `curl`, `tar` and a SHA-256 tool.
 
@@ -25,21 +25,21 @@ It never uses `sudo` and needs only `curl`, `tar` and a SHA-256 tool.
 | `HRK_NO_SETUP=1` | Skip `setup`. Run it yourself later, for example with `--claude-config`. |
 | `HRK_BASE_URL` | Download from another copy of the releases folder. Used by the install test. |
 
-To set up more than one Claude config folder, install with `HRK_NO_SETUP=1` and run `herdr-runner-kit setup --claude-config ~/.claude --claude-config ~/.claude2`.
+To set up more than one Claude config folder, install with `HRK_NO_SETUP=1` and run `hrk setup --claude-config ~/.claude --claude-config ~/.claude2`.
 
 ## From source
 
 ```sh
-go install github.com/khuebt/herdr-runner-kit/cmd/herdr-runner-kit@latest
-herdr-runner-kit setup
+go install github.com/khuebt/herdr-runner-kit/cmd/hrk@latest
+hrk setup
 ```
 
-A source build reports its version as `dev`, so `doctor` does not look for updates.
+A source build installs only `hrk`, without the `herdr-runner-kit` alias; delete a `herdr-runner-kit` an earlier `go install` left in `$(go env GOPATH)/bin`, which `doctor` warns about. It reports its version as `dev`, so `doctor` does not look for updates.
 
 ## Checking the install
 
 ```sh
-herdr-runner-kit doctor
+hrk doctor
 ```
 
 It prints one line per check and the fix for each problem, and exits 1 when a check fails. On a machine without herdr, for example, it reports `fail herdr` with the install hint.

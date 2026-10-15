@@ -291,7 +291,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 			return nil, "", err
 		}
 		if project.Reserved {
-			return nil, "", fmt.Errorf("project %s is still being set up; if herdr-runner-kit new was interrupted, drop it with: herdr-runner-kit project forget %s, then run new again", project.Name, project.Name)
+			return nil, "", fmt.Errorf("project %s is still being set up; if hrk new was interrupted, drop it with: hrk project forget %s, then run new again", project.Name, project.Name)
 		}
 	}
 	cwd := o.Cwd
@@ -485,7 +485,7 @@ func (r *Runner) startDetached(id, verb, logName string) (int, error) {
 func (r *Runner) emit(t *task.Task, typ, summary, question string) {
 	ev := state.Event{Task: t.ID, Owner: t.Owner, Type: typ, Status: t.Status, Summary: summary, Question: question, Attempt: eventAttempt(t)}
 	if err := r.record(ev); err != nil {
-		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: write event: %v\n", t.ID, err)
+		fmt.Fprintf(os.Stderr, "hrk: %s: write event: %v\n", t.ID, err)
 	}
 }
 

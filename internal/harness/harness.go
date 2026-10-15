@@ -7,7 +7,7 @@
 //     makes `herdr agent start` wait for the whole first turn.
 //   - The first prompt goes through `herdr agent prompt`. herdr uses bracketed
 //     paste, so `/ak:plan` and `$ak-plan` both submit without a settle delay.
-//   - A turn-end hook calls `herdr-runner-kit __turn-end`. A turn-end is only
+//   - A turn-end hook calls `hrk __turn-end`. A turn-end is only
 //     a hint, because agents end turns while background work continues.
 package harness
 

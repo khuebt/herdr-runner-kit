@@ -4,7 +4,7 @@ herdr-runner-kit versions three things independently. Each one changes only when
 
 | Version | What it describes | Where it lives |
 |---|---|---|
-| Product version | The released binary, following SemVer | git tags `vX.Y.Z`, `herdr-runner-kit version` |
+| Product version | The released binary, following SemVer | git tags `vX.Y.Z`, `hrk version` |
 | `schemaVersion` | The shape of config and state files | `internal/buildinfo`, and every config and state file |
 | `contractVersion` | The `report` contract that runners follow | `internal/buildinfo`, `docs/report-contract.md` |
 

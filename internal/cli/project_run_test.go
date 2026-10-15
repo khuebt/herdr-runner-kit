@@ -44,7 +44,7 @@ func stageRunner(t *testing.T) (*runner.Runner, string) {
 	if _, _, err := project.Register(context.Background(), store, dir, "demo-app", ""); err != nil {
 		t.Fatal(err)
 	}
-	r := runner.New(store, config.Default(), "/usr/local/bin/herdr-runner-kit")
+	r := runner.New(store, config.Default(), "/usr/local/bin/hrk")
 	env := map[string]string{"HERDR_ENV": "1", "HERDR_WORKSPACE_ID": "w1"}
 	r.Getenv = func(k string) string { return env[k] }
 	r.StartLauncher = func(string) (int, error) { return 4242, nil }
@@ -365,7 +365,7 @@ func TestProjectGateCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "spec v2 approved of demo-app by Lan Pham") || !strings.Contains(out, "next: run the next discovery stage: herdr-runner-kit project run ux") {
+	if !strings.Contains(out, "spec v2 approved of demo-app by Lan Pham") || !strings.Contains(out, "next: run the next discovery stage: hrk project run ux") {
 		t.Errorf("approve output:\n%s", out)
 	}
 	if got, _ := r.Store.Get(spec.ID); got.Keep {
@@ -389,7 +389,7 @@ func TestProjectGateCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "feedback: no open pack runner; start a revision with the same feedback on stdin: herdr-runner-kit project run pack --project demo-app --stdin") {
+	if !strings.Contains(out, "feedback: no open pack runner; start a revision with the same feedback on stdin: hrk project run pack --project demo-app --stdin") {
 		t.Errorf("changes pack output:\n%s", out)
 	}
 	if len(fake.prompts()) != 1 {
@@ -576,7 +576,7 @@ func TestProjectChangeBacklogAndDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err = runIn("", "project", "dep", "set", "d1", "--status", "ready", "--project", "demo-app")
-	if err != nil || !strings.Contains(out, "held: "+held.ID+" payments (needs D1); release it with: herdr-runner-kit release "+held.ID+"\n") {
+	if err != nil || !strings.Contains(out, "held: "+held.ID+" payments (needs D1); release it with: hrk release "+held.ID+"\n") {
 		t.Fatalf("dep set: %q %v", out, err)
 	}
 

@@ -104,3 +104,44 @@ func TestDoctorChecksTaskClaudeConfigs(t *testing.T) {
 		t.Errorf("configs = %q, want \"\" and %s", got, c3)
 	}
 }
+
+func TestNotOnPathFix(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if got := notOnPathFix("/opt/kit/herdr-runner-kit"); got != "ln -sf herdr-runner-kit /opt/kit/hrk, and keep /opt/kit on PATH" {
+		t.Errorf("old name: %q", got)
+	}
+	if got := notOnPathFix("/opt/kit/hrk"); !strings.HasPrefix(got, "put /opt/kit on PATH") {
+		t.Errorf("new name: %q", got)
+	}
+}
+
+func TestStaleAlias(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "hrk")
+	alias := filepath.Join(dir, "herdr-runner-kit")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if old, _ := staleAlias(bin); old != "" {
+		t.Fatalf("no alias, yet %q", old)
+	}
+	if err := os.Symlink("hrk", alias); err != nil {
+		t.Fatal(err)
+	}
+	if old, _ := staleAlias(bin); old != "" {
+		t.Fatalf("alias to this binary reported as stale: %q", old)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(alias, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if old, resolved := staleAlias(bin); old != alias || resolved != alias {
+		t.Fatalf("stale alias: %q %q", old, resolved)
+	}
+}
