@@ -1,0 +1,9 @@
+
+✻ Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED) · Retrying in 8s · attempt 5/10
+                                                                                                      0 tokens
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 medium fast off │ ⌂ Org: Acme │ ~/Work/demo-app
+  $0.00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents

@@ -313,6 +313,10 @@ type Agent struct {
 	PaneID      string `json:"pane_id"`
 	TabID       string `json:"tab_id"`
 	WorkspaceID string `json:"workspace_id"`
+	// Revision and StateChangeSeq are herdr's counters for the agent; they
+	// change with its state, not while it keeps working.
+	Revision       int `json:"revision"`
+	StateChangeSeq int `json:"state_change_seq"`
 }
 
 type agentResult struct {
@@ -383,4 +387,21 @@ func (c *Client) AgentSendKeys(ctx context.Context, target string, keys ...strin
 // AgentFocus switches the UI to the agent's pane.
 func (c *Client) AgentFocus(ctx context.Context, target string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "agent", "focus", target)
+}
+
+// ProcessInfo is herdr's view of the processes in a pane. Only the shell
+// is decoded: everything the pane started descends from it.
+type ProcessInfo struct {
+	ShellPID int `json:"shell_pid"`
+}
+
+// PaneProcessInfo returns the processes in pane.
+func (c *Client) PaneProcessInfo(ctx context.Context, pane string) (ProcessInfo, error) {
+	var resp struct {
+		Result struct {
+			ProcessInfo ProcessInfo `json:"process_info"`
+		} `json:"result"`
+	}
+	err := c.runJSON(ctx, DefaultTimeout, &resp, "pane", "process-info", "--pane", pane)
+	return resp.Result.ProcessInfo, err
 }

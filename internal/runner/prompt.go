@@ -26,6 +26,7 @@ Rules:
 - When you settle an open question yourself with the recommended option, pass it to report done as --decision "<question> -> <choice>" (up to 7, each under 200 characters), so the main session sees what you decided.
 - Never ask for, type or echo a secret value (password, token, key) in a question, summary or file. Ask where it is stored instead.
 - If you hand work to background shells or subagents, wait for them before reporting done.
+- Do not run rm -r on directories, alone or inside compound commands, because the agent stops on a safety prompt for it; write scratch output into a new folder under %[4]s instead.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Never add files under plans/ or agent folders such as .claude/, .codex/ or .agents/. Do not push and do not open pull requests.
 - Commit on the branch you start on. Do not create, switch or delete branches.
 - If your prompt names a branch other than the one you are on, stay on this one and say so in your report summary.`,

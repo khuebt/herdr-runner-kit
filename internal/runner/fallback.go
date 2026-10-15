@@ -31,16 +31,23 @@ var (
 // usageLimited reads t's pane and reports whether its agent shows its own
 // usage-limit line. A screen that cannot be read counts as no limit.
 func (r *Runner) usageLimited(ctx context.Context, t *task.Task) bool {
-	spec, err := task.ParseAgentSpec(t.Agent)
-	if err != nil {
-		return false
-	}
-	adapter, err := harness.For(spec.Harness)
-	if err != nil {
+	adapter, ok := adapterOf(t)
+	if !ok {
 		return false
 	}
 	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
 	return err == nil && adapter.ShowsUsageLimit(screen)
+}
+
+// adapterOf returns the adapter of t's agent, and false for an agent the
+// kit cannot read.
+func adapterOf(t *task.Task) (harness.Adapter, bool) {
+	spec, err := task.ParseAgentSpec(t.Agent)
+	if err != nil {
+		return nil, false
+	}
+	adapter, err := harness.For(spec.Harness)
+	return adapter, err == nil
 }
 
 // switchable reports whether t has a fallback agent left to switch to.

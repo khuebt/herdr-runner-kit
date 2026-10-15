@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -15,14 +16,16 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
+	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/upgrade"
 )
 
-// newUpgradeClient and upgradeTarget are replaced in tests.
+// newUpgradeClient, upgradeTarget and execSetup are replaced in tests.
 var (
 	newUpgradeClient = upgrade.New
 	upgradeTarget    = ownBinary
+	execSetup        = syscall.Exec
 )
 
 func newUpgradeCommand() *cobra.Command {
@@ -88,18 +91,64 @@ func newUpgradeCommand() *cobra.Command {
 			}
 			// The new binary's setup refreshes the skill and hook, and its
 			// first state load runs any migration.
+			configs, err := upgradeConfigs(dirs)
+			if err != nil {
+				return err
+			}
 			argv := []string{bin, "setup"}
-			for _, d := range dirs {
+			for _, d := range configs {
+				fmt.Fprintf(out, "refreshing %s\n", d)
 				argv = append(argv, "--claude-config", d)
 			}
-			return syscall.Exec(bin, argv, os.Environ())
+			return execSetup(bin, argv, os.Environ())
 		},
 	}
 	cmd.Flags().StringVar(&version, "version", "", "install this release instead of the latest, such as v0.2.0; allows a downgrade")
 	cmd.Flags().BoolVar(&check, "check", false, "only print the current and latest versions and what changed")
 	cmd.Flags().BoolVar(&yes, "yes", false, "do not ask before a release that may hold incompatible changes")
-	cmd.Flags().StringArrayVar(&dirs, "claude-config", nil, "Claude config folder for the setup that follows (repeatable; default $CLAUDE_CONFIG_DIR or ~/.claude)")
+	cmd.Flags().StringArrayVar(&dirs, "claude-config", nil, "Claude config folder for the setup that follows (repeatable); $CLAUDE_CONFIG_DIR or ~/.claude and every ~/.claude* folder holding the kit's skill are refreshed too")
 	return cmd
+}
+
+// upgradeConfigs returns the Claude config folders the setup after an
+// upgrade refreshes, each once: the given ones, the default one, and every
+// ~/.claude* folder that holds the kit's skill.
+func upgradeConfigs(dirs []string) ([]string, error) {
+	given, err := claudeConfigs(dirs)
+	if err != nil {
+		return nil, err
+	}
+	all := given
+	if len(dirs) > 0 {
+		def, err := claudeConfigs(nil)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, def...)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	found, _ := filepath.Glob(filepath.Join(home, ".claude*"))
+	for _, d := range found {
+		if _, _, err := install.SkillVersion(d); err == nil {
+			all = append(all, d)
+		}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range all {
+		key := d
+		if resolved, err := filepath.EvalSymlinks(d); err == nil {
+			key = resolved
+		}
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }
 
 // printNotes prints the release notes from current up to rel.

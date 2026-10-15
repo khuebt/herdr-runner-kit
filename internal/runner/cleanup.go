@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,12 +53,26 @@ const scratchDir = "plans/"
 // maxListedPaths is how many untracked paths a dirty verdict names.
 const maxListedPaths = 5
 
-// Cleanable lists the owner's finished worktree tasks with a worktree or
+// Owners selects tasks by owner: one main session's folder, and with
+// Projects the tasks of every project too. An empty Owner selects every
+// task.
+type Owners struct {
+	Owner    string
+	Projects bool
+}
+
+// Has reports whether o selects the tasks of owner.
+func (o Owners) Has(owner string) bool {
+	return o.Owner == "" || owner == o.Owner || (o.Projects && task.IsProjectOwner(owner))
+}
+
+// Cleanable lists the owners' finished worktree tasks with a worktree or
 // branch left, and whether removing them is safe. With fetch it first
 // fetches origin once per repository, so merges made on the remote count.
 // It reads each worktree live rather than trust the task's report-time git
-// snapshot, since the worktree may have changed after the report.
-func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]CleanupItem, error) {
+// snapshot, since the worktree may have changed after the report. A
+// worktree removed outside the kit is marked removed on the way.
+func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]CleanupItem, error) {
 	tasks, err := r.Store.List()
 	if err != nil {
 		return nil, err
@@ -65,8 +80,13 @@ func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]Cle
 	bases := map[string]string{}
 	var items []CleanupItem
 	for _, t := range tasks {
-		if (owner != "" && t.Owner != owner) || !t.Status.Terminal() || t.Worktree == nil {
+		if !owners.Has(t.Owner) || !t.Status.Terminal() || t.Worktree == nil {
 			continue
+		}
+		if !t.Worktree.Removed && t.Worktree.Path != "" && notExist(t.Worktree.Path) {
+			if t = r.markRemovedOutside(ctx, t); t == nil {
+				continue
+			}
 		}
 		it := CleanupItem{
 			Task:     t,
@@ -94,6 +114,37 @@ func (r *Runner) Cleanable(ctx context.Context, owner string, fetch bool) ([]Cle
 		items = append(items, it)
 	}
 	return items, nil
+}
+
+// markRemovedOutside records that t's worktree folder was removed outside
+// the kit. When its branch is gone too, or was never the task's, nothing is
+// left to clean: the task is marked cleaned, with a cleaned event, and nil
+// is returned. Otherwise the branch stays for the verdict.
+func (r *Runner) markRemovedOutside(ctx context.Context, t *task.Task) *task.Task {
+	owns := t.Worktree.OwnsBranch()
+	// A repository that cannot be read keeps the branch for the verdict.
+	branchGone := !owns || t.Worktree.BranchDeleted || (isDir(t.RepoRoot) && !BranchExists(ctx, t.RepoRoot, t.Worktree.Branch))
+	errSame := errors.New("unchanged")
+	nt, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		if t.Worktree == nil || t.Worktree.Removed {
+			return errSame
+		}
+		t.Worktree.Removed = true
+		if branchGone && owns {
+			t.Worktree.BranchDeleted = true
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, errSame):
+		return nil // another process marked it
+	case err != nil:
+		return t
+	case branchGone:
+		r.emit(nt, "cleaned", "removed outside the kit", "")
+		return nil
+	}
+	return nt
 }
 
 func verdict(ctx context.Context, t *task.Task, base string, it *CleanupItem) (string, string) {
@@ -124,13 +175,19 @@ func verdict(ctx context.Context, t *task.Task, base string, it *CleanupItem) (s
 	if it.Worktree {
 		refs = append(refs, gitRef{"HEAD", t.Worktree.Path}) // the runner may have left another branch checked out
 	}
+	squashed := false
 	for _, r := range refs {
-		if !isAncestor(ctx, r.dir, r.ref, base) {
+		ok, bySquash := merged(ctx, r.dir, r.ref, base)
+		if !ok {
 			n := gitOut(ctx, r.dir, "rev-list", "--count", base+".."+r.ref)
 			return Unmerged, fmt.Sprintf("%s on %s not in %s", plural(n, "commit"), r.ref, base)
 		}
+		squashed = squashed || bySquash
 	}
 	detail := "merged into " + base
+	if squashed {
+		detail += " (squash or rebase)"
+	}
 	var deleted []string
 	if it.Scratch > 0 {
 		deleted = append(deleted, plural(fmt.Sprint(it.Scratch), "plan file"))
@@ -235,7 +292,7 @@ func recheckWorktree(ctx context.Context, path, base string) (bool, error) {
 		return false, err
 	}
 	scratch, other := splitUntracked(st.Untracked)
-	if len(st.Changed) > 0 || len(other) > 0 || !isAncestor(ctx, path, "HEAD", base) {
+	if ok, _ := merged(ctx, path, "HEAD", base); len(st.Changed) > 0 || len(other) > 0 || !ok {
 		return false, errors.New("worktree changed since the check")
 	}
 	return len(scratch) > 0, nil
@@ -250,7 +307,7 @@ func deleteMergedBranch(ctx context.Context, root, branch, base string) (bool, e
 	if !BranchExists(ctx, root, branch) {
 		return true, nil
 	}
-	if !isAncestor(ctx, root, branch, base) {
+	if ok, _ := merged(ctx, root, branch, base); !ok {
 		return false, fmt.Errorf("branch %s moved since the check", branch)
 	}
 	if checkedOut(ctx, root, branch) {
@@ -288,7 +345,7 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 	}
 	now := time.Now()
 	_ = os.Chtimes(mark, now, now)
-	items, err := r.Cleanable(ctx, owner, true)
+	items, err := r.Cleanable(ctx, Owners{Owner: owner}, true)
 	if err != nil {
 		return
 	}
@@ -357,6 +414,28 @@ func defaultBranch(ctx context.Context, root string) string {
 	return ""
 }
 
+// merged reports whether ref's work is in base: ref is an ancestor of base,
+// or merging ref into base would change nothing, as after a squash or
+// rebase merge. bySquash is set when only the second test held. A git
+// without merge-tree --write-tree (before 2.38), or a repository with a
+// custom merge driver, which may drop one side's changes, has ancestry only.
+func merged(ctx context.Context, dir, ref, base string) (ok, bySquash bool) {
+	if isAncestor(ctx, dir, ref, base) {
+		return true, false
+	}
+	if gitOut(ctx, dir, "config", "--get-regexp", `^merge\..*\.driver$`) != "" {
+		return false, false
+	}
+	// On success the first line is the merged tree; a conflict exits 1.
+	out := gitOut(ctx, dir, "merge-tree", "--write-tree", base, ref)
+	tree, _, _ := strings.Cut(out, "\n")
+	baseTree := gitOut(ctx, dir, "rev-parse", base+"^{tree}")
+	if tree != "" && tree == baseTree {
+		return true, true
+	}
+	return false, false
+}
+
 func isAncestor(ctx context.Context, dir, ref, base string) bool {
 	return exec.CommandContext(ctx, "git", "-C", dir, "merge-base", "--is-ancestor", ref, base).Run() == nil
 }
@@ -366,6 +445,12 @@ func plural(n, word string) string {
 		return n + " " + word
 	}
 	return n + " " + word + "s"
+}
+
+// notExist reports whether path is known to be gone, not merely unreadable.
+func notExist(path string) bool {
+	_, err := os.Stat(path)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 func isDir(path string) bool {

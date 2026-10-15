@@ -24,13 +24,11 @@ const gitWaitDelay = 500 * time.Millisecond
 // empty. It only runs local git, never a fetch.
 func gitState(t *task.Task) *task.GitState {
 	g := &task.GitState{}
-	dir := t.Cwd
-	switch {
-	case t.Worktree != nil && t.Worktree.Path != "" && !t.Worktree.Removed:
-		dir, g.Worktree = t.Worktree.Path, true
-	case t.RepoRoot == "":
+	dir, own := checkoutDir(t)
+	if dir == "" {
 		return nil
 	}
+	g.Worktree = own
 	ctx, cancel := context.WithTimeout(context.Background(), gitStateTimeout)
 	defer cancel()
 	s, err := readStatus(ctx, dir)
@@ -39,6 +37,14 @@ func gitState(t *task.Task) *task.GitState {
 	}
 	g.Branch, g.Upstream, g.Ahead, g.Behind = s.Head, s.Upstream, s.Ahead, s.Behind
 	g.Uncommitted, g.Untracked = len(s.Changed), len(s.Untracked)
+	scratch, _ := splitUntracked(s.Untracked)
+	g.UntrackedPlans = len(scratch)
+	g.Head = gitOut(ctx, dir, "rev-parse", "--short", "HEAD")
+	if !own && t.RoundHead != "" {
+		if n, err := strconv.Atoi(gitOut(ctx, dir, "rev-list", "--count", t.RoundHead+"..HEAD")); err == nil {
+			g.SinceStart = n
+		}
+	}
 	if g.Base = defaultBranch(ctx, dir); g.Base != "" {
 		n, err := strconv.Atoi(gitOut(ctx, dir, "rev-list", "--count", g.Base+"..HEAD"))
 		if err != nil {
@@ -51,6 +57,31 @@ func gitState(t *task.Task) *task.GitState {
 	}
 	g.CheckedAt = time.Now().UTC()
 	return g
+}
+
+// checkoutDir returns the checkout t works in, and whether it is the task's
+// own worktree: else it is the repository t was spawned in. It is empty
+// outside git.
+func checkoutDir(t *task.Task) (string, bool) {
+	switch {
+	case t.Worktree != nil && t.Worktree.Path != "" && !t.Worktree.Removed:
+		return t.Worktree.Path, true
+	case t.RepoRoot == "":
+		return "", false
+	}
+	return t.Cwd, false
+}
+
+// roundHead returns the full sha of HEAD in t's checkout, or "" outside git
+// or when git takes longer than gitStateTimeout.
+func roundHead(t *task.Task) string {
+	dir, _ := checkoutDir(t)
+	if dir == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitStateTimeout)
+	defer cancel()
+	return gitOut(ctx, dir, "rev-parse", "--verify", "--quiet", "HEAD")
 }
 
 // maxStacked is the most stacked branches a snapshot lists.

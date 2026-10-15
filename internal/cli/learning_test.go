@@ -65,12 +65,12 @@ func TestLearningCountsReopensTabAnswersAndSwitches(t *testing.T) {
 		rows[f[0]] = f
 	}
 	want := map[string]string{
-		//    project kind agents status attempts nudges sends answers needs-human unreported switches duration waited
-		"t1": "demo-app code codex done 2 1 1 0 0 0 0 5m0s 0s",
+		//    project kind agents status attempts nudges sends answers needs-human unreported switches duration active stalled idle-kept waited
+		"t1": "demo-app code codex done 2 1 1 0 0 0 0 5m0s 3m15s 0s - 0s",
 		// Time held before the spawn is no wait: waited stays within duration.
-		"t2": "- research claude done 1 0 1 2 2 0 0 2m0s 1m10s",
-		"t3": "demo-app code codex->claude needs-human 1 0 0 0 1 1 1 - 20s",
-		"t4": "- fix claude done 1 0 1 1 1 0 0 50s 10s",
+		"t2": "- research claude done 1 0 1 2 2 0 0 2m0s 45s 0s - 1m10s",
+		"t3": "demo-app code codex->claude needs-human 1 0 0 0 1 1 1 - 1m18s 0s - 20s",
+		"t4": "- fix claude done 1 0 1 1 1 0 0 50s 39s 0s - 10s",
 	}
 	for id, w := range want {
 		if got := strings.Join(rows[id][1:], " "); got != w {
@@ -99,5 +99,57 @@ func TestLearningCountsReopensTabAnswersAndSwitches(t *testing.T) {
 	}
 	if strings.Join(got, " ") != "TASK t1 t3" {
 		t.Errorf("--project demo-app:\n%s", out.String())
+	}
+}
+
+func TestLearningActiveStalledAndIdleKept(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+	ev := func(s int, id, typ string, st task.Status, summary string) state.Event {
+		return state.Event{TS: at(s), Task: id, Type: typ, Status: st, Summary: summary}
+	}
+	events := []state.Event{
+		// t1 works two rounds, blocks once on a prompt, and its kept tab
+		// closes an hour after the finish.
+		ev(0, "t1", "spawned", task.Starting, ""),
+		ev(10, "t1", "started", task.Running, ""),
+		ev(40, "t1", "stalled", task.Running, "blocked on a prompt: …"),
+		ev(70, "t1", "unstalled", task.Running, "unblocked after 30s"),
+		ev(100, "t1", "needs-human", task.NeedsHuman, ""),
+		ev(400, "t1", "answered", task.Running, "yes"),
+		ev(500, "t1", "done", task.Done, ""),
+		ev(4100, "t1", "closed", task.Done, "kept tab closed"),
+		// t2 is still working, stalled since 50 s ago; its earlier tab
+		// close was not kept.
+		ev(0, "t2", "spawned", task.Starting, ""),
+		ev(5, "t2", "started", task.Running, ""),
+		ev(4150, "t2", "stalled", task.Running, "no progress for 20 min after a nudge and an interrupt; the runner is left open"),
+		ev(0, "t3", "spawned", task.Starting, ""),
+		ev(1, "t3", "started", task.Running, ""),
+		ev(9, "t3", "done", task.Done, ""),
+		ev(1809, "t3", "closed", task.Done, "tab closed"),
+	}
+	tasks := []*task.Task{
+		{ID: "t1", Kind: "code", Agent: "claude", Status: task.Done},
+		{ID: "t2", Kind: "code", Agent: "claude", Status: task.Running},
+		{ID: "t3", Kind: "code", Agent: "claude", Status: task.Done},
+	}
+	var out strings.Builder
+	if err := printLearning(&out, events, tasks, nil, "", at(4200)); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		// duration active stalled idle-kept waited
+		"t1": "8m20s 3m10s 30s 1h0m0s 5m0s",
+		"t2": "- 1h9m55s 50s - 0s",
+		"t3": "9s 8s 0s - 0s",
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+		f := strings.Fields(line)
+		if w, ok := want[f[0]]; ok {
+			if got := strings.Join(f[len(f)-5:], " "); got != w {
+				t.Errorf("%s = %q, want %q\n%s", f[0], got, w, out.String())
+			}
+		}
 	}
 }

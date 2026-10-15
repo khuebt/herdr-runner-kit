@@ -9,7 +9,7 @@ Every command prints short plain text, so the main agent's context stays small. 
 | `setup [--claude-config DIR]… [--force] [--no-hook]` | Installs the main-agent skill and the auto re-arm hook, and creates the config and state. A second run prints `no changes`. |
 | `doctor [--claude-config DIR]… [--tools]` | Checks every dependency and prints the fix for each problem. `--tools` also lists the optional tools the project stage templates use when present; a missing one is never a failure. |
 | `uninstall [--claude-config DIR]… [--purge [--yes]]` | Removes what `setup` installed; `--purge` also deletes config and state. |
-| `upgrade [--version vX.Y.Z] [--check] [--yes] [--claude-config DIR]…` | Installs the latest release, or the named one, after verifying its checksum, then runs the new binary's `setup`. `--check` only shows what would change. It asks before a new major version, or before 1.0 a new minor one. |
+| `upgrade [--version vX.Y.Z] [--check] [--yes] [--claude-config DIR]…` | Installs the latest release, or the named one, after verifying its checksum, then runs the new binary's `setup` for the given folders, the default one and every `~/.claude*` folder that holds the kit's skill, and names each. `--check` only shows what would change. It asks before a new major version, or before 1.0 a new minor one. |
 | `version [--json] [--check]` | Prints the version, schema and contract. `--check` also asks GitHub for a newer release. |
 
 See [setup.md](setup.md) and [upgrading.md](upgrading.md).
@@ -27,14 +27,17 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | `main [--exec]` | Prints, or runs, the command that starts the main session with the skill and the Telegram channel. |
 | `send <id> <text>` | Types a new prompt into a live runner. A `done` or `failed` task whose tab is still open becomes `running` again, and its next report wakes `wait`. A `stopped` task refuses it. |
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
-| `list [--all]`, `show <id>` | Your tasks and every project's, or every owner's with `--all`: stored status, herdr's live state, and the TAB column: `open` (with when `gc` closes it), `kept`, `closed`, or `-` before a tab exists; one task in full. |
+| `list [--all]` | Your tasks and every project's, or every owner's with `--all`: stored status, herdr's live state, the TAB column (`open` with when `gc` closes it, `kept until HH:MM`, `kept`, `closed`, or `-` before a tab exists), AGE since the spawn and LAST, the age of the task's latest event. |
+| `show <id> [--prompt] [--events N]` | One task as compact text: status, kind, agent, title, project and stage, times and tab, worktree, the `git:` line, error, summary (whole), decisions, question, outputs, the last 5 events and the output folder. Other fields are cut to 400 characters. The prompt and the inputs from `--after` tasks show only with `--prompt`. |
+| `show <id> --json [--events N]` | The task as one JSON object and nothing else, for scripts. With `--events` it prints `{"task": …, "events": […]}`. Parse this, never the text view. |
+| `peek <id> [--lines N]` | The last lines of the runner's visible pane (default 30, at most 200), with anything that looks like a secret hidden. It only reads, and refuses a task whose tab is closed. |
 | `events [--since 1h] [--task ID] [--follow] [--timings]` | The event log, or the measured latencies per task. |
-| `events --learning [--since 1h] [--task ID] [--project NAME]` | Per task: kind, agents, status, attempts (starts, plus sends that reopened a finished task), nudges, sends, answers, `needs-human` reports, unreported turns, agent switches, duration from spawn to last finish, and time waited on a human after the spawn. Every number comes from the event log. |
+| `events --learning [--since 1h] [--task ID] [--project NAME]` | Per task: kind, agents, status, attempts (starts, plus sends that reopened a finished task), nudges (at a turn end without a report, or for no visible progress), sends, answers, `needs-human` reports, unreported turns, agent switches, DURATION from spawn to last finish, ACTIVE (time in working rounds, from a start, send or answer to the next report or stop; a time on the task that includes turns idled without a report), STALLED (time blocked on a prompt or stalled), IDLE-KEPT (time a kept tab stayed open after the finish, or `-`), and time waited on a human after the spawn. Open rounds and stalls count up to now. Every number comes from the event log. |
 | `focus <id>` | Switches herdr to the runner's tab. |
-| `stop <id> [--remove-worktree]`, `gc` | Quits runners and closes their tabs. `gc` closes those that finished at least 30 minutes ago (`--older-than`), except kept runners (see `keep`) and a runner whose agent is working or blocked because someone kept using its tab; `wait` does the same for its owners' runners while it watches, and the auto re-arm hook once nothing is left to watch. Worktrees and branches are kept unless removal is asked; `gc --remove-worktree` also closes kept runners. |
+| `stop <id>... [--remove-worktree]`, `gc [--kept]` | Quits runners and closes their tabs. `stop` takes several ids, prints one line per id, still stops the others when one fails, and names the ids that failed. For a task without a worktree it notes up to 5 untracked files the runner may have left in the checkout, and deletes none. `gc` closes those that finished at least 30 minutes ago (`--older-than`), and kept runners once they finished `keepFor` ago (see `keep`), except a runner whose agent is working or blocked because someone kept using its tab; `wait` does the same for its owners' runners while it watches, and the auto re-arm hook once nothing is left to watch. `gc --kept` also closes kept runners that finished at least `--older-than` ago. Worktrees and branches are kept unless removal is asked; `gc --remove-worktree` also closes kept runners. See [Closing runners](#closing-runners). |
 | `sync <id> [--from REF] [--no-send]` | Merges origin's default branch (such as `origin/main`), or `--from REF`, into the branch checked out in the task's worktree, then asks the runner to re-run its checks and report. See [Syncing a branch](#syncing-a-branch). |
-| `keep <id> [--off]` | Keeps a finished runner's tab open until `keep --off` or `stop`. `--off` lets `gc` close it again, at once when its close time has passed. |
-| `cleanup [id]... [--yes] [--no-fetch]` | Fetches origin, then lists your finished worktree tasks whose worktree or branch is still there, as `merged`, `unmerged`, `dirty` or `kept`. `--yes` removes the worktree and deletes the local branch of each merged one, or of the given ids. See [Cleaning up](#cleaning-up). |
+| `keep <id> [--off]` | Keeps a finished runner's tab open for the config's `keepFor` after it finished (4 hours by default; `0` means until `keep --off` or `stop`). `--off` lets `gc` close it again, at once when its close time has passed. Running a project stage again turns keep off for the stage's earlier finished runs. |
+| `cleanup [id]... [--yes] [--no-fetch] [--owner DIR]` | Fetches origin, then lists the finished worktree tasks of the current folder's owner and of every project (only `--owner` with that flag) whose worktree or branch is still there, as `merged`, `unmerged`, `dirty` or `kept`. `--yes` removes the worktree and deletes the local branch of each merged one, or of the given ids. See [Cleaning up](#cleaning-up). |
 
 ## Projects
 
@@ -46,7 +49,7 @@ A project is a git repository the kit keeps a record for, so a main session can 
 | `project status [name]` | Where the project stands: stage, gates, milestone, runners, tasks waiting on you, and one next step. It reads only the kit's record and tasks, never herdr, and changes nothing. Without a name: the project holding the current folder, else the only one, else one line per project. |
 | `project register <path> [--name NAME] [--reference PATH]` | Registers an existing git repository, importing a committed `handbook/product/project.md` when there is one. The committed files name the reference repository by its origin URL (credentials removed) or its folder name, never by a local path; when the imported record has only a name, register says so, and `--reference PATH` gives the path on this machine. Nothing is written to the repository. It refuses a linked worktree; register the main checkout. |
 | `project forget <name> [--yes]` | Removes the registry entry and the kit's record, never the repository. It refuses while the project has unfinished tasks or record changes not yet committed, unless `--yes`. |
-| `project run <stage> [--stdin]` | Spawns a discovery stage runner from the kit's stage template; `--stdin` adds your notes as untrusted data. See **Discovery and gates** below. |
+| `project run <stage> [--stdin] [--after t1] [--gate auto\|human]` | Spawns a discovery stage runner from the kit's stage template; `--stdin` adds your notes as untrusted data. A `pack` given `--after` waits for `release` by default, with the reason "review the earlier stages before the pack; release to build it", so you can review the earlier stages first; `--gate auto` starts it on its own. Every other stage defaults to `--gate auto`. See **Discovery and gates** below. |
 | `project approve\|changes\|reject <spec\|pack>` | Records a gate outcome for the committed version, with `--by` and `--note`, and commits the project's records. `changes` sends the feedback from stdin to the stage's runner. |
 | `project share <stitch\|lavish-hosted> <on\|off>` | Records whether the project's runners may share work outside this machine. Off by default. |
 | `project decide --stdin` | Keeps one decision of yours in the decision log. |
@@ -101,12 +104,16 @@ Codex only shows the limit on screen, as its own `■ You've hit your usage limi
 
 Finished runners close on their own (see `gc`), but their worktrees and branches stay until you remove them. `cleanup` without `--yes` only reports, however old a worktree is:
 
-- **merged:** the branch, and the commit the worktree has checked out, are in the default branch (`origin/HEAD`, else `origin/main` or `origin/master`), no tracked file has changes, and no untracked file lies outside `plans/`. `cleanup --yes` removes these. Untracked files under `plans/` and ignored files are deleted with the worktree; the list says how many. When the last worktree of a repository goes, its now empty folder in herdr's `worktrees/` root goes too. The worktree and branch are checked again right before removal. Only a branch the task created is deleted, and only while it is still merged; a branch another worktree has checked out is kept.
-- **unmerged:** commits are not in the default branch. A branch merged with squash or rebase looks unmerged, since its commits never land as they are; delete it yourself.
+- **merged:** the branch, and the commit the worktree has checked out, are in the default branch (`origin/HEAD`, else `origin/main` or `origin/master`), no tracked file has changes, and no untracked file lies outside `plans/`. A branch merged with squash or rebase counts too: merging it into the default branch would change nothing (`git merge-tree --write-tree`, git 2.38 or later), and the list says `(squash or rebase)`. A branch whose changes were reverted on the default branch also adds nothing, so removing it loses no work. With an older git, or in a repository that configures a custom merge driver, only commits that landed as they are count. `cleanup --yes` removes these. Untracked files under `plans/` and ignored files are deleted with the worktree; the list says how many. When the last worktree of a repository goes, its now empty folder in herdr's `worktrees/` root goes too. The worktree and branch are checked again right before removal. Only a branch the task created is deleted, and only while it is still merged; a branch another worktree has checked out is kept.
+- **unmerged:** the branch holds work the default branch lacks, or a squash merge conflicts with later changes there; delete it yourself when you know it landed.
 - **dirty:** tracked files have changes, or untracked files lie outside `plans/`; the list names the first few. They are never removed.
 - **kept:** the runner is kept open with `keep`. Run `keep --off <id>` first.
 
 `cleanup --yes` never closes a runner whose agent is still working or waiting at a prompt; it skips that task, and a later run cleans it.
+
+A worktree removed outside the kit, such as with `git worktree remove`, is marked removed the next time `cleanup` or `wait` looks. When its branch is gone too, the task gets a `cleaned` event with "removed outside the kit"; otherwise the branch is still listed.
+
+`cleanup` without `--owner` covers the current folder's owner and every project, as `list` does. Pass `--owner DIR` for one main session only.
 
 While `wait` runs, it fetches origin at most every 10 minutes and reports each newly merged worktree once as `cleanable` news, so the main agent can ask you. Nothing is removed until you agree.
 
@@ -114,15 +121,15 @@ While `wait` runs, it fetches origin at most every 10 minutes and reports each n
 
 The main agent runs `wait` in the background. In the session `main --exec` starts, the auto re-arm hook that `setup` installs also runs it after every turn, so no news is missed when the agent forgets to rerun it.
 
-`wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped`, `turn-ended-unreported`, `usage-limit` and `cleanable`. Other events, such as `started`, only move its cursor.
+`wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped`, `turn-ended-unreported`, `usage-limit`, `cleanable` and `processes-left`. Other events, such as `started`, `blocked`, `unstalled`, `nudged`, `interrupted`, `closed`, `process-check-skipped` and `notify-deferred`, only move its cursor.
 
 ```
 t3 done · fix login · git: on hrk/t3-fix-login, 1 commit, no upstream · tab closes 15:42 · Login fixed; tests pass · out: /…/tasks/t3/out/notes.md
 t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 ```
 
-- A `done` or `failed` line carries `git:`, the state of the task's checkout when the runner reported: its worktree, or `repo state` for a task without one. It counts uncommitted and untracked files, and commits not pushed, behind, diverged from the upstream, or with no upstream.
-- A `done` line says `tab closes HH:MM` when `gc` will close the runner, or `tab kept` after `keep`.
+- A `done` or `failed` line carries `git:`, the state of the task's checkout when the runner reported: its worktree, or `repo state` for a task without one. It counts uncommitted and untracked files, naming the share under `plans/` (`1536 untracked (1530 under plans/)`), and commits not pushed, behind, diverged from the upstream, or with no upstream, and ends with `head <sha>`, the short sha of HEAD. For a task without a worktree it counts the commits made since the round began (the launch, or the latest `send` or `answer`): `2 commits since start, head abc1234`, so a runner that commits on the default branch itself is never reported as "no new commits".
+- A `done` line says `tab closes HH:MM` when `gc` will close the runner, `tab kept until HH:MM` after `keep`, or `tab kept` with `keepFor: 0`.
 - A `done` line lists the runner's own decisions as `decided: …` right after the title, and a round of questions spans a header and one numbered line per question. See [report-contract.md](report-contract.md#question-rounds).
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.
@@ -130,7 +137,22 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 - When every task has finished, it exits with an `idle:` line. A task that is `needs-human` or `held` keeps it waiting, because the answer or release can come from another main session's Telegram or from the runner's tab. It waits up to a second after the latest status change first, so news written right after that change is not lost.
 - After 30 minutes without news it prints `timeout` and exits 0 (`--timeout` changes this).
 
-While it runs, `wait` also watches each runner through herdr. An agent that exits without reporting fails its task. An agent blocked on a prompt in its pane is reported as `stalled`. A launch that never finishes fails its task.
+While it runs, `wait` also watches each runner through herdr:
+
+- An agent that exits without reporting fails its task. A launch that never finishes fails its task.
+- A running or waiting task whose herdr pane is gone, or whose pane now holds another agent, as after a herdr or machine restart, fails with `runner lost: herdr pane gone` (or `… now holds another agent`) when `wait` starts and at each check a minute apart; its waiting dependents fail with it. `answer` and `send` to such a task say the runner is gone and point to `show <id>` for its worktree and branch.
+- An agent blocked on a prompt in its pane is reported as `stalled`, with the last lines of the prompt: `stalled · blocked on a prompt: Do you want to proceed? / ❯ 1. Yes / 2. No`. The excerpt has secrets hidden and is at most 240 characters. A prompt the agent answers itself after a timeout, such as Claude Code's auto-denied safety prompt ("Claude Code will automatically deny this request in …", denied after 2 minutes), is only a `blocked` progress event; it becomes `stalled` news when it is still there 30 seconds after its timeout. A block that clears records `unstalled` with its duration, such as `unblocked after 2m01s`.
+- An agent that stays `working` with no visible progress for `stallAfter` (10 minutes by default, see [config.md](config.md#keys)) climbs a ladder, each step once: a queued nudge (`nudged`), then `esc` and, if it is still working, one `ctrl+c`, followed by a prompt to continue (`interrupted`), then `stalled` news, `no progress for N min after a nudge and an interrupt; the runner is left open`. The kit samples the screen once a minute, without the agent's own animated status line and timers, and needs 3 samples before it acts. A retry the agent shows on its own status line is progress: after 3 times `stallAfter` of retrying, one `stalled` line says `retrying for N min`. A report, `send` or `answer` starts the ladder over, and so does visible work for a whole `stallAfter` after a step; a reply to a nudge alone does not. A prompt the agent answers itself that a `wait` saw is still escalated by the next `wait` when the first one ended. Nothing is failed or killed.
+
+## Closing runners
+
+A runner closes when `stop`, `gc`, `keep --off` past its close time or `cleanup --yes` ends it, and the event log gets a `closed` event that says whether the tab was kept. Before quitting the agent, the kit lists the processes the runner's pane started: its shell's process tree, and on Linux also every process that carries the runner's `HRK_TASK` and `HRK_STATE_DIR`, such as a server started with `&` whose shell exited, which leaves the tree. Those still running 3 seconds after the tab closed are reported once as `processes-left` news, such as:
+
+```
+t7 processes-left · fix login · 2 processes the runner started still run after its tab closed: 4123 `npm run dev`, 4188 `vite` (stop them yourself if not needed)
+```
+
+At most 3 are named, the rest counted, and secrets in their commands hidden. The kit never kills them. When the process list cannot be read, the close goes on and the event log gets `process-check-skipped`.
 
 ## Runner side
 

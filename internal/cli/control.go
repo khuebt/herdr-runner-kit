@@ -107,36 +107,58 @@ func newFocusCommand() *cobra.Command {
 func newStopCommand() *cobra.Command {
 	var removeWorktree bool
 	cmd := &cobra.Command{
-		Use:   "stop <id>",
-		Short: "Quit a runner's agent, close its tab and mark the task stopped",
-		Long: "stop quits the agent and closes its tab. A worktree task keeps its workspace " +
+		Use:   "stop <id>...",
+		Short: "Quit runners' agents, close their tabs and mark the tasks stopped",
+		Long: "stop quits each runner's agent and closes its tab. A worktree task keeps its workspace " +
 			"and branch unless --remove-worktree is given; a dirty worktree is never removed, " +
-			"and the branch is never deleted.",
-		Args: cobra.ExactArgs(1),
+			"and the branch is never deleted. Untracked files a runner without a worktree may have " +
+			"left are named, never deleted. One id that fails does not keep the others running.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := parseTaskID(args[0])
-			if err != nil {
-				return err
-			}
 			r, err := openRunner()
 			if err != nil {
 				return err
 			}
-			t, err := r.Stop(cmd.Context(), id, removeWorktree)
-			if err != nil {
-				return err
+			out := cmd.OutOrStdout()
+			var failed []string
+			var errs []error
+			for _, arg := range args {
+				t, err := stopOne(cmd, r, arg, removeWorktree)
+				if err != nil {
+					failed = append(failed, arg)
+					errs = append(errs, fmt.Errorf("%s: %w", arg, err))
+					continue
+				}
+				fmt.Fprintf(out, "%s %s\n", t.ID, t.Status)
+				if dir, n, list := runner.LeftFiles(cmd.Context(), t); n > 0 {
+					fmt.Fprintf(out, "note: %d untracked files in %s, which the runner may have left: %s\n", n, dir, list)
+				}
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", t.ID, t.Status)
-			return err
+			switch {
+			case len(errs) == 1 && len(args) == 1:
+				return errors.Unwrap(errs[0])
+			case len(errs) > 0:
+				return fmt.Errorf("could not stop %s: %w", strings.Join(failed, ", "), errors.Join(errs...))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&removeWorktree, "remove-worktree", false, "also remove a clean worktree (the branch is kept)")
 	return cmd
 }
 
+// stopOne stops the task named by arg.
+func stopOne(cmd *cobra.Command, r *runner.Runner, arg string, removeWorktree bool) (*task.Task, error) {
+	id, err := parseTaskID(arg)
+	if err != nil {
+		return nil, err
+	}
+	return r.Stop(cmd.Context(), id, removeWorktree)
+}
+
 func newGCCommand() *cobra.Command {
 	var olderThan time.Duration
-	var removeWorktree bool
+	var removeWorktree, kept bool
 	cmd := &cobra.Command{
 		Use:   "gc",
 		Short: "Close runners of finished tasks so they stop using memory",
@@ -146,7 +168,7 @@ func newGCCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			closed, err := r.GC(cmd.Context(), "", olderThan, removeWorktree)
+			closed, err := r.GC(cmd.Context(), "", olderThan, removeWorktree, kept)
 			if len(closed) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "closed %s\n", strings.Join(closed, ", "))
 			} else if err == nil {
@@ -157,6 +179,7 @@ func newGCCommand() *cobra.Command {
 	}
 	cmd.Flags().DurationVar(&olderThan, "older-than", runner.GCAge, "close runners whose task finished at least this long ago")
 	cmd.Flags().BoolVar(&removeWorktree, "remove-worktree", false, "also remove clean worktrees (branches are kept)")
+	cmd.Flags().BoolVar(&kept, "kept", false, "also close kept runners whose task finished at least --older-than ago")
 	return cmd
 }
 
@@ -166,7 +189,7 @@ func newCleanupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cleanup [id]...",
 		Short: "List finished worktrees and branches left behind, and remove the merged ones with --yes",
-		Long: "cleanup fetches origin, then lists this main session's finished worktree tasks whose " +
+		Long: "cleanup fetches origin, then lists the finished worktree tasks of this main session and of every project whose " +
 			"worktree or branch is still there: merged (safe to remove), unmerged, dirty or kept. With --yes " +
 			"it removes the worktree and deletes the local branch of each merged one, or of the given " +
 			"ids. Unmerged branches and worktrees with changes are never removed.",
@@ -183,10 +206,13 @@ func newCleanupCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Without --owner, project tasks count along with the folder's,
+			// as in list.
+			owners := runner.Owners{Owner: owner}
 			if owner == "" {
-				owner = currentOwner(cmd)
+				owners = runner.Owners{Owner: currentOwner(cmd), Projects: true}
 			}
-			items, err := r.Cleanable(cmd.Context(), owner, !noFetch)
+			items, err := r.Cleanable(cmd.Context(), owners, !noFetch)
 			if err != nil {
 				return err
 			}
@@ -224,7 +250,7 @@ func newCleanupCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "remove the worktree and branch of each merged task")
 	cmd.Flags().BoolVar(&noFetch, "no-fetch", false, "compare with the local refs, without fetching origin")
-	cmd.Flags().StringVar(&owner, "owner", "", "main session whose tasks to clean (default: git top-level of the current folder)")
+	cmd.Flags().StringVar(&owner, "owner", "", "main session whose tasks to clean (default: git top-level of the current folder, plus the tasks of every project)")
 	return cmd
 }
 
@@ -234,7 +260,7 @@ func newListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List tasks with their stored status and herdr's live state",
+		Short:   "List tasks with their stored status, herdr's live state and their last event's age",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			r, err := openRunner()
@@ -252,9 +278,13 @@ func newListCommand() *cobra.Command {
 				owner = currentOwner(cmd)
 			}
 			live, _ := r.Herdr.AgentList(cmd.Context()) // herdr down: show stored state only
+			last, err := lastEvents(r.Store)
+			if err != nil {
+				return err
+			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			now := time.Now()
-			fmt.Fprintln(w, "ID\tKIND\tAGENT\tSTATUS\tLIVE\tTAB\tAGE\tTITLE")
+			fmt.Fprintln(w, "ID\tKIND\tAGENT\tSTATUS\tLIVE\tTAB\tAGE\tLAST\tTITLE")
 			for _, t := range tasks {
 				if !all && t.Owner != owner && (!projects || !task.IsProjectOwner(t.Owner)) {
 					continue
@@ -263,8 +293,12 @@ func newListCommand() *cobra.Command {
 				if a, ok := live[t.Herdr.PaneID]; ok && t.Herdr.PaneID != "" && !t.Herdr.Closed && a.Kind != "" {
 					state = a.Status
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Kind, t.Agent, t.Status, state,
-					tabState(t, now), age(t.CreatedAt), t.Title)
+				lastAge := "-"
+				if at, ok := last[t.ID]; ok {
+					lastAge = age(at)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Kind, t.Agent, t.Status, state,
+					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), lastAge, t.Title)
 			}
 			return w.Flush()
 		},
@@ -274,18 +308,35 @@ func newListCommand() *cobra.Command {
 	return cmd
 }
 
+// lastEvents returns the time of each task's latest event.
+func lastEvents(store *state.Store) (map[string]time.Time, error) {
+	all, _, err := store.ReadEventsSince(0)
+	if err != nil {
+		return nil, err
+	}
+	last := map[string]time.Time{}
+	for _, ev := range all {
+		if ev.Task != "" && ev.TS.After(last[ev.Task]) {
+			last[ev.Task] = ev.TS
+		}
+	}
+	return last, nil
+}
+
 // tabState says whether a task's tab is open, and when gc closes it.
-func tabState(t *task.Task, now time.Time) string {
+func tabState(t *task.Task, now time.Time, keepFor time.Duration) string {
 	switch {
 	case t.Herdr.PaneID == "":
 		return "-"
 	case t.Herdr.Closed:
 		return "closed"
+	}
+	at, ok := runner.CloseAt(t, keepFor)
+	switch {
+	case t.Keep && ok:
+		return "kept until " + at.Local().Format("15:04")
 	case t.Keep:
 		return "kept"
-	}
-	at, ok := runner.CloseAt(t)
-	switch {
 	case !ok:
 		return "open"
 	case now.Before(at):
@@ -300,8 +351,9 @@ func newKeepCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "keep <id>",
 		Short: "Keep a finished runner's tab open instead of letting gc close it",
-		Long: "keep holds a runner's tab open after its task finishes, until keep --off or stop. " +
-			"keep --off lets gc close it again, at once when its close time has passed.",
+		Long: "keep holds a runner's tab open after its task finishes, for keepFor (default 4h; " +
+			"0 means until keep --off or stop). keep --off lets gc close it again, at once when " +
+			"its close time has passed.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseTaskID(args[0])
@@ -316,7 +368,7 @@ func newKeepCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), keepLine(t, time.Now()))
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), keepLine(t, time.Now(), r.Config.KeepFor))
 			return err
 		},
 	}
@@ -325,14 +377,19 @@ func newKeepCommand() *cobra.Command {
 }
 
 // keepLine tells the user what happens to the runner's tab after keep.
-func keepLine(t *task.Task, now time.Time) string {
+func keepLine(t *task.Task, now time.Time, keepFor time.Duration) string {
 	if t.Herdr.Closed {
 		return t.ID + " closed now"
 	}
-	if t.Keep {
+	at, ok := runner.CloseAt(t, keepFor)
+	switch {
+	case t.Keep && keepFor > 0 && !ok:
+		return fmt.Sprintf("%s kept open for %s after it finishes; close it sooner with stop %s", t.ID, shortDuration(keepFor), t.ID)
+	case t.Keep && ok:
+		return fmt.Sprintf("%s kept open until %s; close it sooner with stop %s", t.ID, at.Local().Format("15:04"), t.ID)
+	case t.Keep:
 		return t.ID + " kept open; close it with stop " + t.ID
 	}
-	at, ok := runner.CloseAt(t)
 	switch {
 	case !ok:
 		return fmt.Sprintf("%s closes on its own %d minutes after it finishes", t.ID, int(runner.GCAge.Minutes()))
@@ -343,12 +400,28 @@ func keepLine(t *task.Task, now time.Time) string {
 	}
 }
 
+// shortDuration prints d without zero trailing units, such as 4h or 1h30m.
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
+
 func newShowCommand() *cobra.Command {
 	var events int
+	var asJSON, withPrompt bool
 	cmd := &cobra.Command{
 		Use:   "show <id>",
 		Short: "Show a task, its recent events and its output folder",
-		Args:  cobra.ExactArgs(1),
+		Long: "show prints a compact view of a task: its state, git line, report, last events and " +
+			"output folder. The prompt and inputs show with --prompt. --json prints the task as one " +
+			"JSON object for scripts; with --events it prints {task, events}.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseTaskID(args[0])
 			if err != nil {
@@ -362,15 +435,6 @@ func newShowCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
-			enc := json.NewEncoder(out)
-			enc.SetIndent("", "  ")
-			if err := enc.Encode(t); err != nil {
-				return err
-			}
-			if t.Git != nil {
-				fmt.Fprintf(out, "\ngit: %s (checked %s)\n", t.Git.Short(), t.Git.CheckedAt.Local().Format("15:04"))
-			}
 			all, _, err := r.Store.ReadEventsSince(0)
 			if err != nil {
 				return err
@@ -381,24 +445,118 @@ func newShowCommand() *cobra.Command {
 					mine = append(mine, ev)
 				}
 			}
-			fmt.Fprintf(out, "\nevents (last %d):\n", min(events, len(mine)))
-			for _, ev := range mine[max(0, len(mine)-events):] {
-				line := ev.TS.Local().Format("15:04:05") + "  " + ev.Type
-				if ev.Summary != "" {
-					line += " · " + ev.Summary
+			mine = mine[max(0, len(mine)-max(events, 0)):]
+			out := cmd.OutOrStdout()
+			if asJSON {
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				if !cmd.Flags().Changed("events") {
+					return enc.Encode(t)
 				}
-				if ev.Question != "" {
-					line += " · Q: " + ev.Question
-				}
-				fmt.Fprintln(out, "  "+line)
+				return enc.Encode(struct {
+					Task   *task.Task    `json:"task"`
+					Events []state.Event `json:"events"`
+				}{t, mine})
 			}
-			dir := r.Store.TaskDir(id)
-			fmt.Fprintf(out, "\noutput: %s/out\nlaunch log: %s/launch.log\n", dir, dir)
-			return nil
+			_, err = fmt.Fprint(out, showText(t, mine, r.Store.TaskDir(id), r.Config.KeepFor, withPrompt))
+			return err
 		},
 	}
-	cmd.Flags().IntVar(&events, "events", 10, "how many recent events to show")
+	cmd.Flags().IntVar(&events, "events", 5, "how many recent events to show")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the task as JSON only")
+	cmd.Flags().BoolVar(&withPrompt, "prompt", false, "also print the prompt and the inputs from --after tasks")
 	return cmd
+}
+
+// maxShowField is the most characters show prints of one field; the
+// summary is printed whole.
+const maxShowField = 400
+
+// showText is the compact view of a task that show prints.
+func showText(t *task.Task, events []state.Event, dir string, keepFor time.Duration, withPrompt bool) string {
+	var b strings.Builder
+	field := func(name, value string) {
+		if value != "" {
+			fmt.Fprintf(&b, "%s: %s\n", name, truncate(value, maxShowField))
+		}
+	}
+	list := func(name string, items []string) {
+		if len(items) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "%s:\n", name)
+		for _, it := range items {
+			fmt.Fprintf(&b, "  %s\n", truncate(it, maxShowField))
+		}
+	}
+	fmt.Fprintf(&b, "%s · %s · %s · %s\n", t.ID, t.Status, t.Kind, t.Agent)
+	field("title", t.Title)
+	if t.Project != "" {
+		project := t.Project
+		if t.Stage != "" {
+			project += ", stage " + t.Stage
+		}
+		field("project", project)
+	}
+	when := "created " + t.CreatedAt.Local().Format("2006-01-02 15:04")
+	if !t.FinishedAt.IsZero() {
+		when += " · finished " + t.FinishedAt.Local().Format("2006-01-02 15:04")
+	}
+	if tab := tabState(t, time.Now(), keepFor); tab != "-" {
+		when += " · tab " + tab
+	}
+	field("time", when)
+	if w := t.Worktree; w != nil && w.Path != "" {
+		where := w.Path + " on " + w.Branch
+		if w.Removed {
+			where += " (removed)"
+		}
+		field("worktree", where)
+	} else {
+		field("cwd", t.Cwd)
+	}
+	if t.Git != nil {
+		field("git", t.Git.Short()+" (checked "+t.Git.CheckedAt.Local().Format("15:04")+")")
+	}
+	field("error", t.Error)
+	if t.Summary != "" {
+		fmt.Fprintf(&b, "summary: %s\n", t.Summary)
+	}
+	list("decisions", t.Decisions)
+	if t.Question != "" {
+		list("question", strings.Split(t.Question, "\n"))
+	}
+	list("outputs", t.Outputs)
+	if withPrompt {
+		fmt.Fprintf(&b, "prompt:\n%s\n", t.Prompt)
+		if t.Inputs != "" {
+			fmt.Fprintf(&b, "inputs:\n%s\n", t.Inputs)
+		}
+	}
+	if len(events) > 0 {
+		fmt.Fprintf(&b, "events (last %d):\n", len(events))
+		for _, ev := range events {
+			line := ev.TS.Local().Format("15:04:05") + "  " + ev.Type
+			if ev.Summary != "" {
+				line += " · " + ev.Summary
+			}
+			if ev.Question != "" {
+				line += " · Q: " + ev.Question
+			}
+			fmt.Fprintf(&b, "  %s\n", truncate(strings.Join(strings.Fields(line), " "), maxShowField))
+		}
+	}
+	fmt.Fprintf(&b, "output: %s/out\nlaunch log: %s/launch.log\n", dir, dir)
+	return b.String()
+}
+
+// truncate cuts s to at most n characters, marking a cut with an ellipsis.
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n-1]) + "…"
 }
 
 func currentOwner(cmd *cobra.Command) string {

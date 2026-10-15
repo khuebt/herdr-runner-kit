@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -37,7 +38,7 @@ const (
 
 // newsTypes are the events that wake the main session. Everything else is
 // progress and only moves the cursor.
-var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "cleanable"}
+var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "cleanable", "processes-left"}
 
 // IsNews reports whether an event type wakes the main session.
 func IsNews(typ string) bool { return slices.Contains(newsTypes, typ) }
@@ -103,7 +104,7 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
-	b := backstop{r: r, watched: map[string]bool{}}
+	b := backstop{r: r, watched: map[string]bool{}, sampled: map[string]bool{}}
 	timeout := time.NewTimer(o.Timeout)
 	defer timeout.Stop()
 	scan := time.NewTicker(scanEvery)
@@ -174,14 +175,14 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 		}
 		b.scan(ctx, tasks)
 		// tasks holds only the watched owners' tasks.
-		if due, ok := runner.NextGC(tasks, ""); ok && time.Now().After(due) && time.Now().After(gcAfter) {
+		if due, ok := runner.NextGC(tasks, "", r.Config.KeepFor); ok && time.Now().After(due) && time.Now().After(gcAfter) {
 			// In the background, so a slow agent exit never delays news; at
 			// most once a minute, so a runner that is in use or will not close is not
 			// sent Ctrl+C every scan.
 			gcAfter = time.Now().Add(runner.GCRetry)
 			go func(owners []string) {
 				for _, owner := range owners {
-					_, _ = r.GC(ctx, owner, runner.GCAge, false)
+					_, _ = r.GC(ctx, owner, runner.GCAge, false, false)
 				}
 			}(o.owners(tasks))
 		}
@@ -297,7 +298,7 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 	ids := make([]string, 0, len(news))
 	for _, ev := range news {
 		t, _ := r.Store.Get(ev.Task) // nil when unreadable: the line goes without task details
-		lines = append(lines, Line(ev, t))
+		lines = append(lines, Line(ev, t, r.Config.KeepFor))
 		if !slices.Contains(ids, ev.Task) {
 			ids = append(ids, ev.Task)
 		}
@@ -312,8 +313,9 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 // snapshot of that report, and a done line says when the runner's tab
 // closes, all ahead of the summary so the cut drops the summary first. A
 // round of questions is a header line followed by one indented line per
-// question, each at most MaxLine characters. t may be nil.
-func Line(ev state.Event, t *task.Task) string {
+// question, each at most MaxLine characters. t may be nil. keepFor is how
+// long a kept tab stays open.
+func Line(ev state.Event, t *task.Task, keepFor time.Duration) string {
 	parts := []string{ev.Task + " " + ev.Type}
 	if t != nil && t.Title != "" {
 		parts = append(parts, t.Title)
@@ -332,7 +334,7 @@ func Line(ev state.Event, t *task.Task) string {
 		parts = append(parts, "git: "+ev.Git)
 	}
 	if ev.Type == "done" && t != nil {
-		if tab := tabNote(t); tab != "" {
+		if tab := tabNote(t, keepFor); tab != "" {
 			parts = append(parts, tab)
 		}
 	}
@@ -353,16 +355,19 @@ func oneLine(parts []string) string {
 	return truncate(strings.Join(strings.Fields(strings.Join(parts, " · ")), " "), MaxLine)
 }
 
-// tabNote says what happens to a finished runner's open tab: kept, or
-// closed by gc at a given time.
-func tabNote(t *task.Task) string {
+// tabNote says what happens to a finished runner's open tab: kept, kept
+// until a given time, or closed by gc at a given time.
+func tabNote(t *task.Task, keepFor time.Duration) string {
 	if t.Herdr.PaneID == "" || t.Herdr.Closed {
 		return ""
 	}
-	if t.Keep {
+	at, ok := runner.CloseAt(t, keepFor)
+	switch {
+	case t.Keep && ok:
+		return "tab kept until " + at.Local().Format("15:04")
+	case t.Keep:
 		return "tab kept"
-	}
-	if at, ok := runner.CloseAt(t); ok {
+	case ok:
 		return "tab closes " + at.Local().Format("15:04")
 	}
 	return ""
@@ -376,14 +381,33 @@ func truncate(s string, n int) string {
 	return string(runes[:n-1]) + "…"
 }
 
-// backstop watches each live runner's agent once per wait, and fails
-// launches that never finished.
+// lostEvery is how often wait checks that herdr still has each live
+// runner's pane and agent.
+const lostEvery = time.Minute
+
+// backstop watches each live runner's agent and its progress once per
+// wait, fails launches that never finished, and fails runners herdr lost.
 type backstop struct {
 	r       *runner.Runner
 	watched map[string]bool
+	sampled map[string]bool
+	lostAt  time.Time // last check for lost runners
+	// checking is set while a check for lost runners runs.
+	checking atomic.Bool
 }
 
 func (b *backstop) scan(ctx context.Context, tasks []*task.Task) {
+	if time.Since(b.lostAt) >= lostEvery && b.checking.CompareAndSwap(false, true) {
+		// In the background, so a slow herdr never delays news; one check
+		// at a time.
+		b.lostAt = time.Now()
+		go func() {
+			defer b.checking.Store(false)
+			for _, t := range tasks {
+				b.r.CheckLost(ctx, t)
+			}
+		}()
+	}
 	for _, t := range tasks {
 		switch t.Status {
 		case task.Starting:
@@ -392,6 +416,10 @@ func (b *backstop) scan(ctx context.Context, tasks []*task.Task) {
 			if !b.watched[t.ID] && t.Herdr.PaneID != "" {
 				b.watched[t.ID] = true
 				go b.r.WatchAgent(ctx, t.ID)
+			}
+			if !b.sampled[t.ID] && t.Herdr.PaneID != "" && b.r.Config.StallAfter > 0 {
+				b.sampled[t.ID] = true
+				go b.r.WatchProgress(ctx, t.ID)
 			}
 		}
 	}

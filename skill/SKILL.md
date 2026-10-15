@@ -14,7 +14,7 @@ You are the main agent. You talk with the user and delegate the work. Runners do
 Answer it yourself:
 - questions, explanations, opinions and plans you can give from what you know;
 - quick lookups: a few file reads or one search;
-- task status: `herdr-runner-kit list`, `herdr-runner-kit show <id>`.
+- task status: `herdr-runner-kit list`, `show <id>` (compact text; to parse, use only `show <id> --json`), and `peek <id>` for a runner's screen instead of `herdr pane read`.
 
 Open a runner:
 - any code change, even a one-line fix or a typo;
@@ -85,7 +85,7 @@ A project is a git repository the kit keeps a record for. Its runners report to 
 - "New project": ask for the folder, the remote and a reference repository, brief the exact `herdr-runner-kit new` command, and run it on yes.
 - "Where are we?", and at the start of a session that touches a project: `herdr-runner-kit project status <name>`.
 - Runners of a project: `spawn --project <name>`; the tab opens in the project's workspace.
-- Discovery runs as stages: `project run <stage>`. The spec and pack gates are the user's: ask, then record their answer with `project approve|changes|reject <spec|pack> --by <name>`; never decide a gate yourself.
+- Discovery runs as stages: `project run <stage>`. The spec and pack gates are the user's: ask, then record their answer with `project approve|changes|reject <spec|pack> --by <name>`; never decide a gate yourself. A `pack` chained with `--after` is held: ask the user before you `release` it.
 - Change requests, backlog ideas and dependencies go through `project run change`, `project cr decide`, `project backlog add` and `project dep`. Ask where a secret is stored, never its value.
 - Milestones, after the pack: `project milestone start M<n>`; relay the plan runner's `decided:` list first and let the user veto, then `project milestone chain M<n>`. The close runner's `done` names `release/M<n>`: the user pushes and merges it through a pull request, never you. When they say it is merged, run `project milestone done M<n>` and relay the local tag. Fixes after that: `milestone reopen`, then `milestone close`. A spawn's `note: … runners of <name> are active` is soft: mention it; nothing is blocked.
 - Graduate: suggest it once after M1. `project run graduate`, then `project graduate` (a dry run), and `--yes` on the user's word; say that history is not purged.
@@ -103,14 +103,14 @@ Stages, gates, change control, milestones, graduation and Telegram replies: [ref
 After you spawn, answer, send or release, run `herdr-runner-kit wait` with the Bash tool's `run_in_background`. Rerun it after every wake.
 
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences.
-- `tN needs-human · … · 3 questions` with numbered lines is one round: ask all of them in one message and send the replies as one answer, such as `1a 2b 3c`. `decided: …` on a `done` line lists what the runner settled itself: relay it first; the user may veto, and you `send` the change. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail.
+- `tN needs-human · … · 3 questions` with numbered lines is one round: ask all of them in one message and send the replies as one answer, such as `1a 2b 3c`. `decided: …` on a `done` line lists what the runner settled itself: relay it first; the user may veto, and you `send` the change. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail and `peek <id>` the screen.
 - `git: …` on a `done` or `failed` line: remind the user about uncommitted or untracked work, commits not pushed, or a branch diverged from its upstream. `repo state` means the main checkout, not a worktree.
 - `failed` with `usage limit reached`: the agent reported its usage limit and no configured fallback agent was left. Offer a new `spawn` with another `--agent` or `--claude-config`, and mention the config's `quotaFallback` list. A switch that worked shows as an `agent-switched` event in `show <id>`.
 - `usage-limit`: the runner's screen shows its agent's usage limit and no fallback agent is left; the task is still open. Tell the user, and offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the limit to reset.
-- `tab closes HH:MM` or `tab kept` on a `done` line: mention it, and offer `herdr-runner-kit keep <id>` when the user wants to come back to the tab later.
-- `timeout`: rerun `wait` silently.
-- `already waiting`: another wait already holds the cursor, usually the auto re-arm hook. Do nothing and do not rerun.
-- `idle:`: every task has finished. Do not rerun until you start something.
+- `tab closes HH:MM` or `tab kept until HH:MM` on a `done` line: mention it, and offer `herdr-runner-kit keep <id>` when the user wants to come back to the tab later.
+- `stalled · blocked on a prompt: …`: relay the quoted prompt as is and offer `focus <id>`; a `stalled` for no progress or retrying: relay it, the runner stays open. Never chase `blocked` or other progress events.
+- `processes-left`: name the surviving pids and commands to the user; never kill them yourself.
+- `timeout`: rerun `wait` silently. `already waiting`: another wait holds the cursor, usually the auto re-arm hook; do nothing. `idle:`: every task finished; do not rerun until you start something.
 
 In the session `herdr-runner-kit main` started, news can also arrive as Stop hook feedback starting with `herdr-runner-kit news`. Handle it like a `wait` wake; the hook re-arms itself.
 
@@ -122,12 +122,12 @@ In the session `herdr-runner-kit main` started, news can also arrive as Stop hoo
 - The user asks to merge main into a runner's branch, or its branch is behind the default branch: `herdr-runner-kit sync <id>`. On a conflict, offer to `send` the printed text to the runner.
 - The user asks how much steering tasks took: `herdr-runner-kit events --learning`.
 - The user can also type into the runner's tab; `herdr-runner-kit focus <id>` switches to it.
-- `stop <id>` only when the user asks. Branches stay local; merge or open a PR only when asked.
+- `stop <id>...` (several ids in one call) only when the user asks. Branches stay local; merge or open a PR only when asked.
 
 ## Clean up
 
 - `tN cleanable` news: the task's branch is merged and its worktree has no changes. Ask the user whether to remove the worktree and branch; on yes, run `herdr-runner-kit cleanup --yes <id>...`. Never run it without the user's yes.
-- When the user asks to clean up, run `herdr-runner-kit cleanup`, show its list, and ask before `--yes`. Unmerged branches and worktrees with changes are never removed.
+- When the user asks to clean up, run `herdr-runner-kit cleanup` without `--owner`, so project tasks are included, show its list, and ask before `--yes`. Squash-merged branches count as merged; unmerged branches and worktrees with changes are never removed.
 
 ## Telegram
 

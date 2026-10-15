@@ -1,0 +1,40 @@
+  - Your own shell. You can type ! python3 -c 'import time; time.sleep(100)' in the prompt, and the output will
+    land in this session.
+
+  Tell me which you'd like, or if you want me to run the Python sleep anyway, confirm that and I'll run it.
+
+✻ Brewed for 4s · done 1:35 AM
+
+❯ New task: check whether the host 10.255.255.1 answers HTTP. Run this one command in the foreground (not in
+  the background) and tell me its output: curl -sS --max-time 100 http://10.255.255.1/
+
+  Ran 1 shell command
+
+● The host 10.255.255.1 does not answer HTTP. The command ran in the foreground and timed out after 100 seconds
+  with curl: (28) Connection timed out after 100001 milliseconds (exit code 28). That means the connection never
+  completed, so either nothing is listening on port 80 or traffic to that address is being dropped.
+
+✻ Sautéed for 1m 45s · done 1:37 AM
+
+❯ Write a 900-word story about a lighthouse keeper, directly in your reply, no tools.
+
+● The lighthouse on Carrow Point had stood for a hundred and twelve years, and for the last thirty of them Elias
+  Wren had kept its lamp. He climbed the iron stairs every evening at dusk, one hundred and forty-seven steps,
+  and every morning he climbed down again. In between, he wound the clockwork, trimmed the wick, polished the
+  great lens until the glass held no fingerprints, and wrote the weather in a ledger that nobody read.
+
+  The ledger was the only thing he had kept from his father, who had kept the light before him. The first page
+  was filled with a careful copper-plate hand that recorded wind from the northwest, fog in the early hours, a
+  schooner lost off the eastern reef in the autumn of 1931. Elias had continued the record in his own cramped
+  handwriting, and sometimes he turned back through the pages in the long winter nights just to hear the rhythm
+  of the entries, the small daily facts that added up to a life.
+
+  Most of the village had moved inland decades ago. The fishing fleet had dwindled to three boats, and the
+  cannery was a shell of rusted tin with gulls nesting in its rafters. Elias saw the mail boat twice a month and
+                                                                        ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 medium fast off │ ⌂ Org: Acme │ ~/Work/demo-app
+  ctx █░░░░░░░░░ 6% 57K/1.0M │ 5h 13% ↻3h42m │ $0.01
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

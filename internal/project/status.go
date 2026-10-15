@@ -184,6 +184,9 @@ func (r Report) Text() string {
 		fmt.Fprintf(&b, "active runners: %d\n", r.Active)
 	}
 	fmt.Fprintf(&b, "records not yet committed: %d\n", rec.Pending)
+	if rec.clipped > 0 {
+		fmt.Fprintf(&b, "note: %d old decision entries will be shortened at the next commit\n", rec.clipped)
+	}
 	fmt.Fprintf(&b, "next: %s\n", r.Next())
 	return b.String()
 }

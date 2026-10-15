@@ -64,6 +64,9 @@ type Record struct {
 	// Pending counts the changes made since the snapshot was last
 	// committed. It lives only in kit state.
 	Pending int `json:"pending,omitempty" yaml:"-"`
+	// clipped counts the decision entries Load shortened, which the next
+	// save writes.
+	clipped int
 }
 
 // Share holds the user's opt-ins to share work outside the machine.
@@ -312,6 +315,17 @@ func Load(s *state.Store, name string) (Record, error) {
 	var rec Record
 	if err := dec.Decode(&rec); err != nil {
 		return Record{}, fmt.Errorf("parse project record %s: %w", name, err)
+	}
+	// Entries recorded before notes were bounded can be long; they are
+	// shortened like new ones, as one more change for the next commit.
+	for i, d := range rec.Decisions {
+		if short := clip(d.Text, maxNote); short != d.Text {
+			rec.Decisions[i].Text = short
+			rec.clipped++
+		}
+	}
+	if rec.clipped > 0 {
+		rec.Pending++
 	}
 	return rec, nil
 }

@@ -80,6 +80,15 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		}); err != nil {
 			return err
 		}
+		// The first round starts here; the git line counts its commits.
+		if head := roundHead(t); head != "" {
+			if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
+				t.RoundHead = head
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
 	}
 
 	spec, adapter, files, err := r.startAgent(ctx, t, name, loc.PaneID)
@@ -177,7 +186,7 @@ type runnerFiles struct {
 // output directory.
 func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (runnerFiles, error) {
 	dir := r.Store.TaskDir(t.ID)
-	outDir := filepath.Join(dir, "out")
+	outDir := r.OutDir(t.ID)
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return runnerFiles{}, err
 	}

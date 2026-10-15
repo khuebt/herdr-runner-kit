@@ -2,6 +2,7 @@ package config
 
 import (
 	"slices"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
 )
@@ -29,5 +30,7 @@ func Default() Config {
 			Notify: slices.Clone(NotifyEvents),
 		},
 		UpdateCheck: true,
+		KeepFor:     4 * time.Hour,
+		StallAfter:  10 * time.Minute,
 	}
 }

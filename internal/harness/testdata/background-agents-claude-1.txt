@@ -1,0 +1,8 @@
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 medium fast off │ ⌂ Org: Acme │ /tmp/demo-app…
+  ctx █░░░░░░░░░ 6% 57K/1.0M │ 5h 3% ↻4h16m │ $0.00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+  ● main
+  ◯ general-purpose  Sleep 25 seconds                                                     1s · ↓ 39.8k tokens
+  ◯ general-purpose  Sleep 70 seconds                                                                      0s

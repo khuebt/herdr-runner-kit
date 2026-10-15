@@ -29,6 +29,8 @@ quotaFallback:            # tried in order when a runner hits a usage limit
   - agent: claude:claude-opus-5-5:high
     claudeConfig: claude2
   - agent: codex
+keepFor: 2h               # kept tabs close 2 hours after the task finished
+stallAfter: 15m           # nudge an agent that shows no progress for 15 minutes
 ```
 
 ## Keys
@@ -44,8 +46,10 @@ quotaFallback:            # tried in order when a runner hits a usage limit
 | `telegram.envFile` | none | Dotenv file holding `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used instead of the plugin's files. `~/` is expanded. See [telegram.md](telegram.md). |
 | `telegram.stateDir` | the plugin's directory | Directory holding the Telegram channel plugin's `.env` and `access.json`. By default it is `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. |
 | `telegram.chatId` | the plugin's `allowFrom` | Chat to notify, when it should differ from the plugin's allow list. |
-| `telegram.notify` | every accepted value | Events that send a Telegram message. `done` is sent only for a task that no other task waits on. Accepted values: `needs-human`, `failed`, `stalled`, `held`, `done`, `turn-ended-unreported`, `usage-limit`. |
+| `telegram.notify` | every accepted value | Events that send a Telegram message. A task's first `done` is held back while a task that waits on it has not started; see [telegram.md](telegram.md#messages). Accepted values: `needs-human`, `failed`, `stalled`, `held`, `done`, `turn-ended-unreported`, `usage-limit`. |
 | `quotaFallback` | none | Agents a runner switches to, in order, when its agent hits a usage limit. Each entry has an `agent` spec and, for a Claude agent only, an optional `claudeConfig` folder, as a path or a name such as `claude2`; without it the runner keeps its own. An entry that is the current agent, already hit its limit on the task, or names a missing folder is skipped. With none left, a limit Claude reports fails the task, and a limit only seen on a Codex screen becomes `usage-limit` news instead. See [commands.md](commands.md#usage-limits). |
+| `keepFor` | `4h` | How long a kept runner's tab stays open after its task finished, as a duration such as `4h` or `90m`. `gc`, and `wait` while it runs, then close it once its agent is idle. `0` keeps it until `keep --off` or `stop`, as before this key existed. See [commands.md](commands.md#closing-runners). |
+| `stallAfter` | `10m` | How long a `working` agent may show no visible progress before the kit nudges it, then interrupts it, then reports it `stalled` with the runner left open. `0` turns the check off; otherwise at least `2m`. See [commands.md](commands.md#what-wait-reports). |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -324,6 +325,16 @@ func worktreeRunning(t *testing.T, r *Runner, branch string) (*task.Task, string
 	return tk, wt
 }
 
+// gitHead returns the short sha of HEAD in dir.
+func gitHead(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func TestReportRecordsGitState(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	tk, wt := worktreeRunning(t, r, "hrk/t1-x")
@@ -343,7 +354,10 @@ func TestReportRecordsGitState(t *testing.T) {
 		g.Ahead != 1 || g.Behind != 0 || g.Uncommitted != 1 || g.AheadOfBase != 2 || g.CheckedAt.IsZero() {
 		t.Fatalf("git = %+v", g)
 	}
-	want := "on hrk/t1-x, 1 uncommitted, 1 commit not pushed"
+	want := "on hrk/t1-x, 1 uncommitted, 1 commit not pushed, head " + gitHead(t, wt)
+	if g.Head != gitHead(t, wt) || g.SinceStart != 0 {
+		t.Errorf("head = %q, since start = %d", g.Head, g.SinceStart)
+	}
 	if ev := lastEvent(t, r); ev.Git != want || g.Short() != want {
 		t.Errorf("event git = %q, task git = %q, want %q", ev.Git, g.Short(), want)
 	}
@@ -357,7 +371,7 @@ func TestReportDiverged(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := lastEvent(t, r)
-	if ev.Git != "on hrk/t1-x, diverged from origin/hrk/t1-x (1 ahead, 1 behind)" {
+	if ev.Git != "on hrk/t1-x, diverged from origin/hrk/t1-x (1 ahead, 1 behind), head "+gitHead(t, wt) {
 		t.Errorf("git = %q", ev.Git)
 	}
 }
@@ -376,6 +390,32 @@ func TestReportLabelsRepoState(t *testing.T) {
 	}
 	if ev := lastEvent(t, r); !strings.HasPrefix(ev.Git, "repo state, on main, 1 untracked") {
 		t.Errorf("git = %q", ev.Git)
+	}
+}
+
+func TestReportCountsCommitsSinceTheRoundStarted(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	tk := running(t, r, SpawnOptions{Kind: "fix", Prompt: "x", Cwd: repo})
+	// send starts a round at the current HEAD.
+	if _, err := r.Send(context.Background(), tk.ID, "go on"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.txt", "b.txt"} {
+		writeFile(t, filepath.Join(repo, name))
+		git(t, repo, "add", name)
+		git(t, repo, "commit", "-q", "-m", "feat: "+name)
+	}
+	writeFile(t, filepath.Join(repo, "plans", "p1.md"))
+	writeFile(t, filepath.Join(repo, "plans", "p2.md"))
+	writeFile(t, filepath.Join(repo, "notes.txt"))
+	got, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "repo state, on main, 3 untracked (2 under plans/), 2 commits since start, head " + gitHead(t, repo)
+	if ev := lastEvent(t, r); ev.Git != want || got.Git.SinceStart != 2 {
+		t.Errorf("git = %q, want %q", ev.Git, want)
 	}
 }
 
@@ -468,5 +508,31 @@ func TestRecentBranchesEmptyPrefix(t *testing.T) {
 	slices.Sort(got)
 	if !slices.Equal(got, []string{"feat/a", "main"}) {
 		t.Errorf("branches = %v", got)
+	}
+}
+
+func TestReportNotesWarnWithoutRefusing(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	out := r.OutDir(tk.ID)
+	inside, outside := filepath.Join(out, "notes.md"), filepath.Join(t.TempDir(), "notes.md")
+	writeFile(t, inside)
+	writeFile(t, outside)
+	long := strings.Repeat("word ", 100)
+	o := ReportOptions{Status: task.Done, Summary: long, Outputs: []string{inside, outside}}
+	notes := r.ReportNotes(tk.ID, o)
+	want := []string{
+		"note: summaries over 400 characters are cut in wait and Telegram; keep one or two sentences and put detail in an --output file under " + out,
+		"note: " + outside + " is outside " + out + "; files for the main session belong there",
+	}
+	if !slices.Equal(notes, want) {
+		t.Errorf("notes = %q", notes)
+	}
+	got, err := r.Report(tk.ID, o)
+	if err != nil || got.Summary != strings.TrimSpace(long) || len(got.Outputs) != 2 {
+		t.Fatalf("report = %+v, %v", got, err)
+	}
+	if notes := r.ReportNotes(tk.ID, ReportOptions{Status: task.Done, Summary: "ok", Outputs: []string{inside}}); len(notes) != 0 {
+		t.Errorf("a short summary with an output in out/ got notes: %q", notes)
 	}
 }
