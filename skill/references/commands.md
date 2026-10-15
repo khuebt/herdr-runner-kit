@@ -21,7 +21,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `keep <id> [--off]` | Keep a finished runner's tab open for `keepFor` (4h by default) instead of letting `gc` close it after 30 minutes. `--off` lets `gc` close it again. |
 | `cleanup [id]... [--yes]` | List finished worktrees and branches left behind, yours and every project's: merged (squash and rebase merges included), unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
-| `events --learning [--task ID] [--project NAME]` | Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish) and time waited on a human after the spawn. |
+| `events --learning [--task ID] [--project NAME]` | Use it when the user asks how much steering tasks took. Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish) and time waited on a human after the spawn. |
 | `sync <id> [--from REF] [--no-send]` | Merge origin's default branch (such as `origin/main`), or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent, background work, an agent herdr cannot check, or a dirty worktree, and fetches only after those checks; a conflict is aborted and the text to `send` is printed. When it suggests `--from main`, local main has commits origin lacks. |
 
 ## Projects
@@ -122,6 +122,24 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 - `meta: user approves spec of <name>; confirm and run …`: the user sent `approve spec <name>` (or `pack`). Confirm with them, then run the printed command with `--by`.
 - `ambiguous: t3 is held (needs D2); …`: a task held with `--reason` starts only on a tagged reply such as `#t3 ok`.
 
+## Plans
+
+`plan run <plan.md|dir>` runs an AgentKit plan (`plan.md` plus `phase-NN-*.md` files) one fresh runner per phase. Use it when the plan has phase files; a plan without them, or a small one, still gets one `spawn --kind flow --skill ak:cook -- <plan.md>` runner.
+
+| Flag | Meaning |
+|---|---|
+| `--dry-run` | Print the waves (phase, dependencies, scope size, why a phase runs alone) and spawn nothing. Put this in the brief. |
+| `--parallel N` | Most phases at once (default 2). Only phases with declared, disjoint write scopes run side by side. |
+| `--branch NAME` | Branch of the run's worktree, after the repository's convention. Refused on a rerun that already has a checkout. |
+| `--kind`, `--agent`, `--claude-config`, `--language`, `--skill` | As for `spawn`, for every phase runner (default kind `flow`, skill `ak:cook`). |
+| `--gate human` | Hold every phase after the first for `release`. |
+
+- The first phase opens the worktree; every later phase works in the same checkout and branch, so the user gets one branch and one pull request.
+- When a phase is `done`, the kit checks its commits and the checkout against the phase's declared files and sets the phase file's `status: completed`. A phase that changed files outside its scope, or left uncommitted files, holds the next wave: `tN held · … (phase 3 changed files outside its scope: a.go; release to continue)`. Ask the user before `release`; they may prefer to `send` the runner a fix first.
+- `plan-done` names the report `<plan dir>/reports/plan-run-<YYMMDD-HHMM>.md`, with each runner's claim next to the kit's check, and `N/N phases done, K verified in scope`. Relay both.
+- After a failed or stopped phase, `plan run` again resumes: done phases are kept and the checkout is reused. It refuses while a phase is still running or held.
+- Runners never edit plan status; the kit does.
+
 ## spawn flags
 
 | Flag | Meaning |
@@ -159,3 +177,4 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `tN usage-limit` | The runner's screen shows its agent's usage limit and no `quotaFallback` agent is left | Tell the user; offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the reset. |
 | `tN stopped` | Stopped by `stop` | Relay it. |
 | `tN cleanable` | Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
+| `tN plan-done` | Every phase of a `plan run` is done; `out:` is the run report | Relay the verified count and the report path. |

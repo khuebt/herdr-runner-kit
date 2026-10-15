@@ -32,7 +32,7 @@ A project record written by this release uses `manifestVersion: 2`, in the kit's
 
 An older binary refuses a config key it does not know. Before going back to a release older than a key you set, such as `quotaFallback`, `keepFor` or `stallAfter`, remove that key from the config.
 
-An older binary reads a task that a newer one wrote, since it ignores fields it does not know, but drops those fields when it rewrites the task: for example `roundHead` and the `git` fields `head`, `sinceStart` and `untrackedPlans`. The per-task `progress.json` that the stall check writes is ignored by older binaries.
+An older binary reads a task that a newer one wrote, since it ignores fields it does not know, but drops those fields when it rewrites the task: for example `roundHead` and the `git` fields `head`, `sinceStart` and `untrackedPlans`, and the plan run fields `plan`, `phase`, `checkoutOf`, `phaseStart` and `phaseCheck`. Finish or stop plan runs before going back to a release without `plan run`: an older binary would launch a waiting phase in the main checkout instead of the run's worktree. The per-task `progress.json` that the stall check writes is ignored by older binaries.
 
 ## Changes to know about
 
@@ -43,6 +43,7 @@ An older binary reads a task that a newer one wrote, since it ignores fields it 
 - **New news.** `processes-left` names processes a closed runner left running. A task whose herdr pane is gone after a restart now fails with `runner lost: herdr pane gone`.
 - **Cleanup.** Squash- and rebase-merged branches count as merged, and `cleanup` without `--owner` includes project tasks.
 - **Projects.** `project run pack --after …` waits for `release` unless `--gate auto`.
+- **Plan runs.** `plan run <plan>` runs an AgentKit plan one runner per phase on one branch, and `wait` wakes for the new `plan-done` news. It writes the frontmatter `status:` lines of `plan.md` and the phase files.
 
 ## Update notes
 

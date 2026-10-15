@@ -30,6 +30,7 @@ A lookup that grows past a few steps moves to a runner. Do not do runner work yo
 | "Fix the typo in README" | brief, then runner, kind `fix` |
 | "Compare fsnotify and polling and write it up" | brief, then runner, kind `research` |
 | "Plan the auth feature, then build it" | brief, then two chained runners |
+| "Run the auth plan" (a plan with phase files) | brief with the `plan run --dry-run` waves, then `plan run` |
 
 ## Brief first
 
@@ -71,13 +72,14 @@ A chain. `--skill` is rendered for the runner's harness (`/ak:plan` for Claude, 
 herdr-runner-kit spawn --kind research --title "auth plan" --skill ak:plan --stdin <<'EOF'
 Plan the auth feature
 EOF
-# prints: t4 queued · …
 herdr-runner-kit spawn --after t4 --kind flow --skill ak:cook --stdin <<'EOF'
 Implement the plan from the previous task
 EOF
 ```
 
 `spawn` returns at once with one line such as `t4 starting · claude:… · fix · Fix the typo`. Tell the user the id and title in one sentence, then end your turn.
+
+Plans: for an AgentKit plan with phase files, put the waves from `herdr-runner-kit plan run <plan> --dry-run` in the brief and run `plan run <plan>` on yes; a plan without phase files gets one `--skill ak:cook` runner. A `held` that names files outside a phase's scope: ask the user before `release`. `plan-done`: relay the report path and the verified count. Details: [references/commands.md#plans](references/commands.md#plans).
 
 ## Projects
 
@@ -88,9 +90,8 @@ A project is a git repository the kit keeps a record for. Its runners report to 
 - Discovery runs as stages: `project run <stage>`. The spec and pack gates are the user's: ask, then record their answer with `project approve|changes|reject <spec|pack> --by <name>`; never decide a gate yourself. A `pack` chained with `--after` is held: ask the user before you `release` it.
 - Change requests, backlog ideas and dependencies go through `project run change`, `project cr decide`, `project backlog add` and `project dep`. Ask where a secret is stored, never its value.
 - Milestones, after the pack: `project milestone start M<n>`; relay the plan runner's `decided:` list first and let the user veto, then `project milestone chain M<n>`. The close runner's `done` names `release/M<n>`: the user pushes and merges it through a pull request, never you. When they say it is merged, run `project milestone done M<n>` and relay the local tag. Fixes after that: `milestone reopen`, then `milestone close`. A spawn's `note: … runners of <name> are active` is soft: mention it; nothing is blocked.
-- Graduate: suggest it once after M1. `project run graduate`, then `project graduate` (a dry run), and `--yes` on the user's word; say that history is not purged.
 
-Stages, gates, change control, milestones, graduation and Telegram replies: [references/commands.md#projects](references/commands.md#projects).
+Stages, gates, change control, milestones, graduation (suggest it once after M1) and Telegram replies: [references/commands.md#projects](references/commands.md#projects).
 
 ## Gates
 
@@ -120,7 +121,6 @@ In the session `herdr-runner-kit main` started, news can also arrive as Stop hoo
 - The user wants to steer a runner, or give a done or failed one more work while its tab is open: `herdr-runner-kit send <id> --stdin`. It runs again and reports again; a stopped task cannot be reopened.
 - Reuse a runner: before spawning a follow-up on the same topic, check `list`. If a recent runner's TAB is open, propose `send <id>` in the brief instead of a new runner.
 - The user asks to merge main into a runner's branch, or its branch is behind the default branch: `herdr-runner-kit sync <id>`. On a conflict, offer to `send` the printed text to the runner.
-- The user asks how much steering tasks took: `herdr-runner-kit events --learning`.
 - The user can also type into the runner's tab; `herdr-runner-kit focus <id>` switches to it.
 - `stop <id>...` (several ids in one call) only when the user asks. Branches stay local; merge or open a PR only when asked.
 
