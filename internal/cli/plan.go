@@ -131,6 +131,12 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 		// The phase that creates the checkout runs before any that share it.
 		waves = append([][]planrun.Phase{waves[0][:1], waves[0][1:]}, waves[1:]...)
 	}
+	// A run whose worktree is gone continues from its branch, so the work
+	// of the done phases is kept.
+	base := ""
+	if anchor == nil {
+		base = lostRunBranch(ctx, root, own)
+	}
 	if anchor != nil && o.Branch != "" {
 		return fmt.Errorf("--branch names a new checkout, but this run already works in %s on %s; drop --branch", anchor.Worktree.Path, anchor.Worktree.Branch)
 	}
@@ -146,8 +152,12 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 			fmt.Fprintf(out, "kept phase %d: its file says %s\n", ph.Number, ph.Status)
 		}
 	}
-	if anchor != nil && len(waves) > 0 {
+	switch {
+	case len(waves) == 0:
+	case anchor != nil:
 		fmt.Fprintf(out, "checkout: %s on %s, from %s\n", anchor.Worktree.Path, anchor.Worktree.Branch, anchor.ID)
+	case base != "":
+		fmt.Fprintf(out, "checkout: a new worktree from %s, whose worktree is gone\n", base)
 	}
 	if o.DryRun || len(waves) == 0 {
 		for i, wave := range waves {
@@ -203,7 +213,7 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 				so.Gate, so.Reason = task.GateHuman, "plan run --gate human"
 			}
 			if anchorID == "" {
-				so.Worktree, so.Branch, so.BranchTitle = new(true), o.Branch, plan.Title
+				so.Worktree, so.Branch, so.BranchTitle, so.Base = new(true), o.Branch, plan.Title, base
 			} else {
 				so.CheckoutOf = anchorID
 			}
@@ -224,6 +234,18 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 		prev = cur
 	}
 	return nil
+}
+
+// lostRunBranch returns the branch of the plan's newest worktree that the
+// run created and that still exists, or "".
+func lostRunBranch(ctx context.Context, root string, planTasks []*task.Task) string {
+	for _, t := range slices.Backward(planTasks) {
+		w := t.Worktree
+		if w != nil && w.BranchCreated != nil && *w.BranchCreated && w.Branch != "" && runner.BranchExists(ctx, root, w.Branch) {
+			return w.Branch
+		}
+	}
+	return ""
 }
 
 // waveLine describes one phase of a wave for --dry-run, and why it runs

@@ -114,6 +114,13 @@ func TestScopeHeadingVariants(t *testing.T) {
 	}
 }
 
+func TestScopePlaceholdersAndModulePaths(t *testing.T) {
+	got := Scope([]byte("## Files\n- `internal/x/testdata/<small synthetic plans>/`\n- `gopkg.in/yaml.v3`\n- `github.com/a/b`\n- `.github/workflows/ci.yml`\n"))
+	if want := []string{"internal/x/testdata/", ".github/workflows/ci.yml"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("scope = %q, want %q", got, want)
+	}
+}
+
 func write(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {

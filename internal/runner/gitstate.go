@@ -28,7 +28,8 @@ func gitState(t *task.Task) *task.GitState {
 	if dir == "" {
 		return nil
 	}
-	g.Worktree = own
+	// A plan phase that shares the run's worktree works in a worktree too.
+	g.Worktree = own || t.CheckoutOf != ""
 	ctx, cancel := context.WithTimeout(context.Background(), gitStateTimeout)
 	defer cancel()
 	s, err := readStatus(ctx, dir)

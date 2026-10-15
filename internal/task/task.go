@@ -216,6 +216,9 @@ type PhaseCheck struct {
 	Changed []string `json:"changed,omitempty"`
 	Outside []string `json:"outside,omitempty"`
 	Commits int      `json:"commits"`
+	// Dirty lists the files left uncommitted in the checkout, including
+	// those an earlier phase left, and Clean says there are none.
+	Dirty   []string `json:"dirty,omitempty"`
 	Clean   bool     `json:"clean"`
 	Verdict string   `json:"verdict"`
 	// Note says why the verdict is unknown, or which files left the

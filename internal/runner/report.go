@@ -259,7 +259,7 @@ func (r *Runner) After(ctx context.Context, id string) error {
 		// A plan phase is checked before the next wave may start, and the
 		// plan is done once its last phase is.
 		r.acceptPhase(ctx, t)
-		return errors.Join(r.startDependents(ctx, t), r.planDone(t))
+		return errors.Join(r.startDependents(ctx, t), r.planDone(ctx, t))
 	case task.Failed, task.Stopped:
 		return r.failDependents(t)
 	}

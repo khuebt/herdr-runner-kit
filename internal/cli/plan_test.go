@@ -288,6 +288,9 @@ func TestPlanRunSharedCheckoutHoldAndDone(t *testing.T) {
 	if c := getTask(t, r, "t2").PhaseCheck; c == nil || c.Verdict != task.PhaseOutside || !slices.Equal(c.Outside, []string{"README.md"}) {
 		t.Fatalf("t2 check = %+v", c)
 	}
+	if g := getTask(t, r, "t2").Git; g == nil || !g.Worktree || g.Branch != "feat/demo" || g.SinceStart != 1 {
+		t.Errorf("a sharer's git line describes the run's worktree: %+v", g)
+	}
 
 	// The anchor's checkout cannot go while sharers work in it.
 	if _, err := r.Stop(t.Context(), "t1", true); err == nil || !strings.Contains(err.Error(), "works in this checkout") {
@@ -396,6 +399,38 @@ func TestPlanRunResumesAfterAFailedPhase(t *testing.T) {
 	}
 	if _, err := runPlanCmd(t, r, planDir, planRunOptions{Branch: "other"}); err == nil || !strings.Contains(err.Error(), "drop --branch") {
 		t.Errorf("--branch on a run with a checkout: %v", err)
+	}
+}
+
+func TestPlanRunContinuesFromTheBranchOfAGoneCheckout(t *testing.T) {
+	r, _, _, planDir := planRunner(t, map[string]string{
+		"phase-01-a.md": phaseFile(1, "", "src/one.go"),
+		"phase-02-b.md": phaseFile(2, "", "src/two.go"),
+	})
+	if _, err := runPlanCmd(t, r, planDir, planRunOptions{Branch: "feat/first"}); err != nil {
+		t.Fatal(err)
+	}
+	commitIn(t, getTask(t, r, "t1").Worktree.Path, "src/one.go")
+	reportDone(t, r, "t1")
+	if _, err := r.Report("t2", runner.ReportOptions{Status: task.Failed, Summary: "broke"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Stop(t.Context(), "t1", true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runPlanCmd(t, r, planDir, planRunOptions{Branch: "feat/second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "checkout: a new worktree from feat/first, whose worktree is gone") {
+		t.Errorf("output:\n%s", out)
+	}
+	fresh := getTask(t, r, "t3")
+	if fresh.Phase != 2 || fresh.Worktree == nil || fresh.Worktree.Base != "feat/first" || fresh.Worktree.Branch != "feat/second" {
+		t.Fatalf("new anchor = %+v %+v", fresh, fresh.Worktree)
+	}
+	if _, err := os.Stat(filepath.Join(fresh.Worktree.Path, "src/one.go")); err != nil {
+		t.Errorf("the new checkout lacks the done phase's work: %v", err)
 	}
 }
 

@@ -113,7 +113,10 @@ func PhasePrompt(plan *planrun.Plan, ph planrun.Phase, parallel []planrun.Phase,
 			". Stage only your own paths (`git add -- <paths>`, never `git add -A`). If git reports `index.lock`, wait and retry. "+
 			"A failing check caused by files outside your scope is not yours to fix; say so in your report.")
 	}
-	if earlier != nil && (earlier.Status == task.Failed || earlier.Status == task.Stopped) {
+	// An attempt that never launched, such as one failed with its parent,
+	// left nothing in the checkout.
+	launched := earlier != nil && (earlier.PhaseStart != "" || earlier.Herdr.PaneID != "")
+	if launched && (earlier.Status == task.Failed || earlier.Status == task.Stopped) {
 		what := string(earlier.Status)
 		if earlier.Error != "" && earlier.Status == task.Failed {
 			what += ": " + earlier.Error
@@ -175,6 +178,13 @@ func (r *Runner) checkPhase(ctx context.Context, t *task.Task) *task.PhaseCheck 
 	if err != nil {
 		return unknown(err.Error())
 	}
+	// Files an earlier phase left uncommitted were judged with that phase.
+	var inherited []string
+	for _, id := range t.After {
+		if p, err := r.Store.Get(id); err == nil && p.PhaseCheck != nil {
+			inherited = append(inherited, p.PhaseCheck.Dirty...)
+		}
+	}
 	scope := slices.Clone(ph.Scope)
 	var siblingScope []string
 	for _, s := range phaseSiblings(t, tasks) {
@@ -198,7 +208,7 @@ func (r *Runner) checkPhase(ctx context.Context, t *task.Task) *task.PhaseCheck 
 	}
 
 	check := &task.PhaseCheck{}
-	var changed, dirty []string
+	var changed, dirty, fresh []string
 	add := func(f string) {
 		if f != "" && !slices.Contains(changed, f) {
 			changed = append(changed, f)
@@ -220,24 +230,36 @@ func (r *Runner) checkPhase(ctx context.Context, t *task.Task) *task.PhaseCheck 
 	_, untracked := splitUntracked(st.Untracked)
 	for _, f := range append(slices.Clone(st.Changed), untracked...) {
 		// A sibling still at work leaves its own files uncommitted.
-		if !planrun.InScope(siblingScope, f) {
+		if planrun.InScope(siblingScope, f) {
+			continue
+		}
+		dirty = append(dirty, f)
+		if !slices.Contains(inherited, f) {
 			add(f)
-			dirty = append(dirty, f)
+			fresh = append(fresh, f)
 		}
 	}
 	for _, f := range changed {
-		if len(ph.Scope) > 0 && !planrun.InScope(scope, f) {
+		// Plan scratch, such as a runner's reports, belongs to no scope.
+		if len(ph.Scope) > 0 && !planrun.InScope(scope, f) && !strings.HasPrefix(f, scratchDir) {
 			check.Outside = append(check.Outside, f)
 		}
 	}
 	check.Clean = len(dirty) == 0
 	check.Changed = changed[:min(len(changed), maxCheckedFiles)]
 	check.Outside = check.Outside[:min(len(check.Outside), maxCheckedFiles)]
+	check.Dirty = dirty[:min(len(dirty), maxCheckedFiles)]
+	switch {
+	case len(fresh) > 0:
+		check.Note = "uncommitted: " + listPaths(fresh)
+	case len(dirty) > 0:
+		check.Note = "uncommitted, left by an earlier phase: " + listPaths(dirty)
+	}
 	switch {
 	case len(check.Outside) > 0:
 		check.Verdict = task.PhaseOutside
-	case !check.Clean:
-		check.Verdict, check.Note = task.PhaseDirty, "uncommitted: "+listPaths(dirty)
+	case len(fresh) > 0:
+		check.Verdict = task.PhaseDirty
 	case check.Commits == 0 && len(changed) == 0:
 		check.Verdict = task.PhaseNoChanges
 	case len(ph.Scope) == 0:
@@ -307,7 +329,7 @@ func phaseSiblings(t *task.Task, tasks []*task.Task) []*task.Task {
 // gitStrict runs git in dir and returns trimmed stdout, or an error that
 // names a timeout.
 func gitStrict(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-optional-locks", "-C", dir}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-optional-locks", "-c", "core.quotePath=false", "-C", dir}, args...)...)
 	cmd.WaitDelay = gitWaitDelay
 	out, err := cmd.Output()
 	if ctx.Err() != nil {
@@ -382,7 +404,7 @@ func clip(s string, n int) string {
 // planDone emits plan-done once every phase of t's plan is done and no
 // task of it is left unfinished: it writes the run report into the plan's
 // reports folder and marks plan.md completed.
-func (r *Runner) planDone(t *task.Task) error {
+func (r *Runner) planDone(ctx context.Context, t *task.Task) error {
 	unlock, err := r.Store.Lock(PlanLock(t.Plan))
 	if err != nil {
 		return err
@@ -410,6 +432,16 @@ func (r *Runner) planDone(t *task.Task) error {
 		}
 		if q := latest[ph.Number]; q != nil {
 			ids = append(ids, q.ID)
+		}
+	}
+	// A phase that finished beside this one may still be in its own
+	// follow-up's check; the report waits for it.
+	for _, q := range latest {
+		if q.Status == task.Done && q.PhaseCheck == nil {
+			r.acceptPhase(ctx, q)
+			if cur, err := r.Store.Get(q.ID); err == nil {
+				latest[q.Phase] = cur
+			}
 		}
 	}
 	// One plan-done per set of finished phase tasks, however many

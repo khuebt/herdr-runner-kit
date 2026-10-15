@@ -65,7 +65,9 @@ func TestAcceptPhaseVerdicts(t *testing.T) {
 		clean   bool
 	}{
 		{"accepted", func(t *testing.T, repo string) {
-			writeFiles(t, repo, map[string]string{"src/a.go": "a"})
+			// A non-ASCII name stays in scope, and committed plan scratch
+			// is in no one's way.
+			writeFiles(t, repo, map[string]string{"src/a.go": "a", "src/ghi-chú.md": "b", "plans/reports/r.md": "r"})
 			git(t, repo, "add", "-A")
 			git(t, repo, "commit", "-q", "-m", "a")
 		}, task.PhaseAccepted, true},
@@ -131,6 +133,82 @@ func TestAcceptPhaseRunsOnceAndReportsUnknowns(t *testing.T) {
 	}
 }
 
+func TestAcceptPhaseLeavesAnEarlierPhasesLeftoversToIt(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	parent, _ := planTask(t, r, repo, srcPhase)
+	writeFiles(t, repo, map[string]string{"src/gen.txt": "left"})
+	r.acceptPhase(context.Background(), parent)
+	got, _ := r.Store.Get(parent.ID)
+	if got.PhaseCheck.Verdict != task.PhaseDirty || !slices.Equal(got.PhaseCheck.Dirty, []string{"src/gen.txt"}) {
+		t.Fatalf("parent check = %+v", got.PhaseCheck)
+	}
+
+	child, _ := planTask(t, r, repo, srcPhase)
+	if _, err := r.Store.Update(child.ID, func(t *task.Task) error {
+		t.After = []string{parent.ID}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, repo, map[string]string{"src/b.go": "b"})
+	git(t, repo, "add", "src/b.go")
+	git(t, repo, "commit", "-q", "-m", "b")
+	r.acceptPhase(context.Background(), child)
+	c, _ := r.Store.Get(child.ID)
+	if c.PhaseCheck.Verdict != task.PhaseAccepted || c.PhaseCheck.Clean || c.PhaseCheck.Holds() ||
+		!strings.Contains(c.PhaseCheck.Note, "left by an earlier phase: src/gen.txt") || slices.Contains(c.PhaseCheck.Changed, "src/gen.txt") {
+		t.Fatalf("child check = %+v", c.PhaseCheck)
+	}
+}
+
+func TestPlanDoneWaitsForASiblingsCheck(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	planDir := filepath.Join(t.TempDir(), "plan")
+	writeFiles(t, planDir, map[string]string{
+		"plan.md":       "---\ntitle: P\nstatus: in-progress\n---\n",
+		"phase-01-a.md": "---\nphase: 1\nstatus: pending\ndependencies: []\n---\n## Files\n- `a/`\n",
+		"phase-02-b.md": "---\nphase: 2\nstatus: pending\ndependencies: []\n---\n## Files\n- `b/`\n",
+	})
+	start := headOf(t, repo)
+	var tasks []*task.Task
+	for n := 1; n <= 2; n++ {
+		tk := &task.Task{
+			Kind: "flow", Agent: "claude", Prompt: "x", Cwd: repo, RepoRoot: repo, Owner: repo,
+			Plan: planDir, Phase: n, PhaseStart: start, Status: task.Done, FinishedAt: time.Now(),
+		}
+		if err := r.Store.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, tk)
+	}
+	writeFiles(t, repo, map[string]string{"a/x.go": "x", "b/y.go": "y", "z.go": "z"})
+	git(t, repo, "add", "a/x.go")
+	git(t, repo, "commit", "-q", "-m", "a")
+	git(t, repo, "add", "b/y.go", "z.go")
+	git(t, repo, "commit", "-q", "-m", "b")
+	// Phase 1's follow-up checks it and finds the plan done while phase 2's
+	// own follow-up has not checked phase 2 yet.
+	r.acceptPhase(context.Background(), tasks[0])
+	if err := r.planDone(context.Background(), tasks[0]); err != nil {
+		t.Fatal(err)
+	}
+	all, _, _ := r.Store.ReadEventsSince(0)
+	var done []string
+	for _, ev := range all {
+		if ev.Type == "plan-done" {
+			done = append(done, ev.Summary)
+		}
+	}
+	if len(done) != 1 || done[0] != "plan P: 2/2 phases done, 1 verified in scope" {
+		t.Fatalf("plan-done = %q", done)
+	}
+	if c, _ := r.Store.Get(tasks[1].ID); c.PhaseCheck == nil || c.PhaseCheck.Verdict != task.PhaseOutside {
+		t.Fatalf("phase 2 check = %+v", c.PhaseCheck)
+	}
+}
+
 func TestPhaseSiblingsAreTheRunnersOfTheSameWave(t *testing.T) {
 	now := time.Now()
 	mk := func(id string, after []string, started bool, finished time.Time, created time.Time) *task.Task {
@@ -178,7 +256,11 @@ func TestPhasePrompt(t *testing.T) {
 		t.Errorf("a lone first attempt gets no extra rules:\n%s", got)
 	}
 	sib := planrun.Phase{Number: 3, Scope: []string{"c/"}}
-	earlier := &task.Task{ID: "t7", Status: task.Stopped}
+	never := &task.Task{ID: "t6", Status: task.Failed, Error: "parent t5 stopped"}
+	if got := PhasePrompt(plan, ph, nil, never); strings.Contains(got, "earlier attempt") {
+		t.Errorf("an attempt that never launched left no work:\n%s", got)
+	}
+	earlier := &task.Task{ID: "t7", Status: task.Stopped, PhaseStart: "abc"}
 	got = PhasePrompt(plan, planrun.Phase{Number: 2, File: "/p/x.md"}, []planrun.Phase{sib}, earlier)
 	for _, want := range []string{
 		"It declares no write scope",

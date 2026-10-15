@@ -291,6 +291,9 @@ var (
 	lineSufRe  = regexp.MustCompile(`:\d+(-\d+)?$`)
 	pathRe     = regexp.MustCompile(`^[A-Za-z0-9_.*@+/-]+$`)
 	extRe      = regexp.MustCompile(`[^./]\.[a-z0-9]{1,8}$`)
+	// moduleHostRe matches the host that starts a module path, such as
+	// "gopkg.in" or "github.com".
+	moduleHostRe = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|in|io|org|net|dev)$`)
 )
 
 // Scope returns the write scope a phase body declares: the backticked
@@ -337,7 +340,16 @@ func Scope(body []byte) []string {
 // scopePath turns a code span into a scope path, or reports that it is not
 // a repo-relative path.
 func scopePath(s string) (string, bool) {
-	s = lineSufRe.ReplaceAllString(strings.TrimSpace(s), "")
+	s = strings.TrimSpace(s)
+	// A placeholder such as "testdata/<small plans>/" names a folder.
+	if i := strings.Index(s, "/<"); i > 0 {
+		s = s[:i+1]
+	}
+	s = lineSufRe.ReplaceAllString(s, "")
+	// A Go module path such as "gopkg.in/yaml.v3" is no repository path.
+	if first, _, ok := strings.Cut(s, "/"); ok && moduleHostRe.MatchString(first) {
+		return "", false
+	}
 	if s == "" || !pathRe.MatchString(s) || strings.HasPrefix(s, "/") || strings.HasPrefix(s, "-") {
 		return "", false
 	}
