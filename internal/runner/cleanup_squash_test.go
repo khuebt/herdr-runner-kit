@@ -141,3 +141,33 @@ func TestCleanableKeepsTheBranchOfAVanishedWorktree(t *testing.T) {
 		t.Errorf("cleaned events = %+v", evs)
 	}
 }
+
+func TestMergedIgnoresTheTreeTestWithACustomMergeDriver(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "feat/a")
+	// A driver that keeps base's side makes merge-tree report base's tree
+	// although the branch's change is not in base.
+	git(t, repo, "config", "merge.ours.driver", "true")
+	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("lock.txt merge=ours\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "lock.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".gitattributes", "lock.txt")
+	git(t, repo, "commit", "-q", "-m", "chore: lock")
+	git(t, repo, "push", "-q", "origin", "main")
+	git(t, tk.Worktree.Path, "merge", "-q", "main")
+	if err := os.WriteFile(filepath.Join(tk.Worktree.Path, "lock.txt"), []byte("feature\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, tk.Worktree.Path, "commit", "-q", "-am", "feat: lock")
+	if err := os.WriteFile(filepath.Join(repo, "lock.txt"), []byte("base 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "commit", "-q", "-am", "chore: lock 2")
+	if ok, _ := merged(ctx, repo, "feat/a", "main"); ok {
+		t.Error("a branch with work base lacks is merged under a custom merge driver")
+	}
+}

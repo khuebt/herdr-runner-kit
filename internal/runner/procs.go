@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -163,8 +164,9 @@ func procEnviron(pid int) ([]byte, error) {
 // markedProcs returns the processes outside the pane shell's tree that carry
 // t's runner environment: a command the agent started with & in a shell that
 // exited at once, as Claude's Bash tool does, is re-parented to init or a
-// subreaper long before the close. The shell, its tree and this process are
-// left out.
+// subreaper long before the close. The shell, its tree, this process and
+// the kit's own commands, such as a report's detached follow-up, are left
+// out.
 func (r *Runner) markedProcs(table []proc, t *task.Task, shell int) []proc {
 	if r.ProcEnv == nil {
 		return nil
@@ -175,8 +177,9 @@ func (r *Runner) markedProcs(table []proc, t *task.Task, shell int) []proc {
 	}
 	marks := [][]byte{[]byte("HRK_TASK=" + t.ID), []byte("HRK_STATE_DIR=" + r.Store.Dir())}
 	var out []proc
+	kit := filepath.Base(r.Bin)
 	for _, p := range table {
-		if inTree[p.PID] {
+		if inTree[p.PID] || filepath.Base(strings.Fields(p.Command + " x")[0]) == kit {
 			continue
 		}
 		env, err := r.ProcEnv(p.PID)

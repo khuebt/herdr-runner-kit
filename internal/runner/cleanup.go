@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,7 +83,7 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 		if !owners.Has(t.Owner) || !t.Status.Terminal() || t.Worktree == nil {
 			continue
 		}
-		if !t.Worktree.Removed && t.Worktree.Path != "" && !isDir(t.Worktree.Path) {
+		if !t.Worktree.Removed && t.Worktree.Path != "" && notExist(t.Worktree.Path) {
 			if t = r.markRemovedOutside(ctx, t); t == nil {
 				continue
 			}
@@ -121,7 +122,8 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 // is returned. Otherwise the branch stays for the verdict.
 func (r *Runner) markRemovedOutside(ctx context.Context, t *task.Task) *task.Task {
 	owns := t.Worktree.OwnsBranch()
-	branchGone := !owns || t.Worktree.BranchDeleted || !BranchExists(ctx, t.RepoRoot, t.Worktree.Branch)
+	// A repository that cannot be read keeps the branch for the verdict.
+	branchGone := !owns || t.Worktree.BranchDeleted || (isDir(t.RepoRoot) && !BranchExists(ctx, t.RepoRoot, t.Worktree.Branch))
 	errSame := errors.New("unchanged")
 	nt, err := r.Store.Update(t.ID, func(t *task.Task) error {
 		if t.Worktree == nil || t.Worktree.Removed {
@@ -415,10 +417,14 @@ func defaultBranch(ctx context.Context, root string) string {
 // merged reports whether ref's work is in base: ref is an ancestor of base,
 // or merging ref into base would change nothing, as after a squash or
 // rebase merge. bySquash is set when only the second test held. A git
-// without merge-tree --write-tree (before 2.38) has ancestry only.
+// without merge-tree --write-tree (before 2.38), or a repository with a
+// custom merge driver, which may drop one side's changes, has ancestry only.
 func merged(ctx context.Context, dir, ref, base string) (ok, bySquash bool) {
 	if isAncestor(ctx, dir, ref, base) {
 		return true, false
+	}
+	if gitOut(ctx, dir, "config", "--get-regexp", `^merge\..*\.driver$`) != "" {
+		return false, false
 	}
 	// On success the first line is the merged tree; a conflict exits 1.
 	out := gitOut(ctx, dir, "merge-tree", "--write-tree", base, ref)
@@ -439,6 +445,12 @@ func plural(n, word string) string {
 		return n + " " + word
 	}
 	return n + " " + word + "s"
+}
+
+// notExist reports whether path is known to be gone, not merely unreadable.
+func notExist(path string) bool {
+	_, err := os.Stat(path)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 func isDir(path string) bool {

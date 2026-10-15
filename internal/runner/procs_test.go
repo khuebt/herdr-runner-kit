@@ -200,6 +200,7 @@ func TestCloseFindsAProcessThatLeftTheTree(t *testing.T) {
 		300: mine,                                                       // started with & by a shell that exited, now under a subreaper
 		301: "HRK_TASK=" + tk.ID + "\x00HRK_STATE_DIR=/other/state\x00", // another kit state's task
 		302: "PATH=/bin\x00",
+		303: mine, // the report's detached follow-up
 	}
 	r.ProcEnv = func(pid int) ([]byte, error) {
 		if e, ok := envs[pid]; ok {
@@ -210,8 +211,9 @@ func TestCloseFindsAProcessThatLeftTheTree(t *testing.T) {
 	before := append(slices.Clone(runnerTree[:2]),
 		proc{PID: 300, PPID: 2414, Start: "a", Command: "python3 -m http.server 8765"},
 		proc{PID: 301, PPID: 2414, Start: "a", Command: "other kit"},
-		proc{PID: 302, PPID: 1, Start: "a", Command: "unrelated"})
-	after := []proc{{PID: 300, PPID: 2414, Start: "a", Command: "python3 -m http.server 8765"}, before[3], before[4]}
+		proc{PID: 302, PPID: 1, Start: "a", Command: "unrelated"},
+		proc{PID: 303, PPID: 1, Start: "a", Command: r.Bin + " __after " + tk.ID})
+	after := []proc{{PID: 300, PPID: 2414, Start: "a", Command: "python3 -m http.server 8765"}, before[3], before[4], before[5]}
 	r.ProcTable = procTables(before, after)
 	if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
 		t.Fatal(err)
