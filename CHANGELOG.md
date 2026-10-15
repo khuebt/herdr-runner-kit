@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.9.0...v0.10.0) (2026-10-15)
+
+
+### Features
+
+* shorten the command to hrk and keep herdr-runner-kit as an alias ([#37](https://github.com/khuebt/herdr-runner-kit/issues/37)) ([a14ef07](https://github.com/khuebt/herdr-runner-kit/commit/a14ef07ea91fbbcd24c8b0c94ca442345056d00e))
+
 ## [0.9.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.8.0...v0.9.0) (2026-10-15)
 
 
