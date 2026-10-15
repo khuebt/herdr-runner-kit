@@ -2,6 +2,15 @@
 
 herdr-runner-kit is one binary for Linux and macOS, on amd64 or arm64. It needs [herdr](https://herdr.dev), git, and Claude Code or Codex. `hrk doctor` checks all of them.
 
+pi and omp runners are optional. To use them, install [pi](https://github.com/earendil-works/pi) or [omp](https://github.com/can1357/oh-my-pi) (oh-my-pi) by their own instructions, then herdr's integration for each, so herdr can see the agent's state:
+
+```sh
+herdr integration install pi
+herdr integration install omp
+```
+
+`doctor` warns about a missing one, and fails only when your [config](config.md#agent-spec) uses it.
+
 ## One-line install
 
 ```sh

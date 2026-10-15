@@ -42,8 +42,9 @@ hrk doctor [--claude-config DIR]…
 
 - the binary on `PATH` is this one, the config loads, and the state schema is not newer than the binary;
 - herdr is installed and its server is running;
-- herdr's Claude and Codex integrations are current;
-- `claude`, `codex` and `git` are installed, and the flags the kit passes still appear in their `--help`;
+- herdr's Claude, Codex, pi and omp integrations are current;
+- `claude`, `codex`, `pi`, `omp` and `git` are installed, the flags the kit passes still appear in their `--help`; the `ok` line shows the version;
+- pi and omp are optional: a missing binary or herdr integration is a `warn` that says "(not used by your config)", and a `fail` only when a kind or a `quotaFallback` entry in your config names that harness;
 - Telegram credentials are found;
 - for each Claude config folder:
   - the skill is installed by this version, and unedited;

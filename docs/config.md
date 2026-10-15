@@ -29,9 +29,10 @@ quotaFallback:            # tried in order when a runner hits a usage limit
   - agent: claude:claude-opus-5-5:high
     claudeConfig: claude2
   - agent: codex
+  - agent: omp:openai-codex/gpt-6-luna:high
 keepFor: 2h               # kept tabs close 2 hours after the task finished
 stallAfter: 15m           # nudge an agent that shows no progress for 15 minutes
-contextHandoffAt: 20      # ask a Codex runner to hand off at 20% context left
+contextHandoffAt: 20      # ask a Codex, pi or omp runner to hand off at 20% context left
 ```
 
 ## Keys
@@ -48,11 +49,11 @@ contextHandoffAt: 20      # ask a Codex runner to hand off at 20% context left
 | `telegram.stateDir` | the plugin's directory | Directory holding the Telegram channel plugin's `.env` and `access.json`. By default it is `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. |
 | `telegram.chatId` | the plugin's `allowFrom` | Chat to notify, when it should differ from the plugin's allow list. |
 | `telegram.notify` | every accepted value | Events that send a Telegram message. A task's first `done` is held back while a task that waits on it has not started; see [telegram.md](telegram.md#messages). Accepted values: `needs-human`, `failed`, `stalled`, `held`, `done`, `turn-ended-unreported`, `usage-limit`. |
-| `quotaFallback` | none | Agents a runner switches to, in order, when its agent hits a usage limit. Each entry has an `agent` spec and, for a Claude agent only, an optional `claudeConfig` folder, as a path or a name such as `claude2`; without it the runner keeps its own. An entry that is the current agent, already hit its limit on the task, or names a missing folder is skipped. With none left, a limit Claude reports fails the task, and a limit only seen on a Codex screen becomes `usage-limit` news instead. See [commands.md](commands.md#usage-limits). |
+| `quotaFallback` | none | Agents a runner switches to, in order, when its agent hits a usage limit. Each entry has an `agent` spec, such as `omp:openai-codex/gpt-6-luna:high`, and, for a Claude agent only, an optional `claudeConfig` folder, as a path or a name such as `claude2`; without it the runner keeps its own. An entry that is the current agent, already hit its limit on the task, or names a missing folder is skipped. With none left, a limit Claude, pi or omp reports fails the task, and a limit only seen on a Codex screen becomes `usage-limit` news instead. See [commands.md](commands.md#usage-limits). |
 | `keepFor` | `4h` | How long a kept runner's tab stays open after its task finished, as a duration such as `4h` or `90m`. `gc`, and `wait` while it runs, then close it once its agent is idle. `0` keeps it until `keep --off` or `stop`, as before this key existed. See [commands.md](commands.md#closing-runners). |
 | `stallAfter` | `10m` | How long a `working` agent may show no visible progress before the kit nudges it, then interrupts it, then reports it `stalled` with the runner left open. `0` turns the check off; otherwise at least `2m`. See [commands.md](commands.md#what-wait-reports). |
-| `contextHandoff` | `true` | Lets the kit ask a runner near its context limit to hand off once to a fresh session of its task: a Claude runner at its first automatic compaction, a Codex runner at a turn end with little context left. `false` leaves runners to compact on their own. See [commands.md](commands.md#context-handoff). |
-| `contextHandoffAt` | `15` | For Codex runners: the context left, in percent of the window as Codex's footer shows it, at or below which a turn end asks for the handoff. From 5 to 50. |
+| `contextHandoff` | `true` | Lets the kit ask a runner near its context limit to hand off once to a fresh session of its task: a Claude runner at its first automatic compaction, a Codex runner at a turn end with little context left, and a pi or omp runner at either. `false` leaves runners to compact on their own. See [commands.md](commands.md#context-handoff). |
+| `contextHandoffAt` | `15` | For Codex, pi and omp runners: the context left, in percent of the window, at or below which a turn end asks for the handoff. Codex's footer shows it; for pi and omp the kit's runner extension sends it at each turn end. From 5 to 50. |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.
@@ -73,11 +74,13 @@ An explicit `--agent` or `--worktree` / `--no-worktree` on `spawn` always wins o
 
 `harness[:model[:effort]]`
 
-- `harness` is `claude` or `codex`.
-- `model` is passed to the CLI as is (`--model` for Claude, `-m` for Codex). Leave it empty to use the CLI's own default.
-- `effort` is optional. Claude accepts `low`, `medium`, `high`, `xhigh` and `max`. Codex accepts `minimal`, `low`, `medium`, `high` and `xhigh`.
+- `harness` is `claude`, `codex`, `pi` or `omp` (oh-my-pi).
+- `model` is passed to the CLI as is (`--model` for Claude, pi and omp, `-m` for Codex). Leave it empty to use the CLI's own default. pi and omp require it, as `provider/model`, because without one omp picks whichever provider it finds first; a bare `pi` or `omp` is refused by `spawn` and by this file.
+- `effort` is optional. Claude accepts `low`, `medium`, `high`, `xhigh` and `max`. Codex accepts `minimal`, `low`, `medium`, `high` and `xhigh`. pi accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, and omp the same plus `auto`; both get it as `--thinking`.
 
-Examples: `codex`, `codex:gpt-6-astra:xhigh`, `claude::max`, `claude:claude-sonnet-5-5`.
+Examples: `codex`, `codex:gpt-6-astra:xhigh`, `claude::max`, `claude:claude-sonnet-5-5`, `pi:openai-codex/gpt-6-luna:high`, `omp:openai-codex/gpt-6-luna:max`.
+
+pi's own `--model provider/id:thinking` shorthand does not apply: the spec's third field replaces it, so write `pi:openai-codex/gpt-6-luna:high`.
 
 ## What runners are allowed to do
 
@@ -85,10 +88,14 @@ Runners start with permission prompts turned off, so they never stall waiting fo
 
 - Claude Code runs with `--dangerously-skip-permissions`.
 - Codex runs with `--dangerously-bypass-approvals-and-sandbox`, which also turns off its sandbox. A Codex runner can read and write anything your user account can.
+- pi runs with `--approve`, which trusts the project's own settings, extensions and skills for this run only and saves nothing to `~/.pi`. A pi runner, like a Codex one, can do anything your user account can.
+- omp runs with `--auto-approve`, plus a per-task config overlay (`omp-runner.yml`) that turns off its `ask` tool, which would wait for an answer forever. Approval policies you set under `tools.approval` in your own omp config still apply and may still prompt; the runner then shows as blocked.
 
 Before the first Codex runner in a repository, the kit adds that repository root to `~/.codex/config.toml` as trusted, because Codex asks again in every new worktree otherwise. Running `spawn` in a repository is taken as your consent for that repository. The kit appends the entry and never changes existing lines. If you marked the repository as untrusted in Codex, `spawn` stops and tells you instead.
 
 For Claude, the same consent applies: the kit marks the folder the runner starts in (the repository, or the runner's worktree) as trusted in the runner's Claude config: `<config folder>/.claude.json`, or `~/.claude.json` for the default `~/.claude`. Claude asks again for a git repository even when a parent folder is trusted, so copying parent trust is not enough. Approval of external `CLAUDE.md` imports is only copied from the repository's own entry; the kit never approves imports you did not approve. When the kit writes nothing, because Claude has never run with that config folder or the folder is already trusted, the event log gets a `claude-trust-skipped` event for the task saying which. `doctor` checks that Claude has run with each config folder runners use; see [setup.md](setup.md#doctor).
+
+pi and omp need no trust file: the kit writes nothing under `~/.pi` or `~/.omp`. If pi's "Trust project folder?" dialog shows anyway, the task moves to `needs-human` like any trust dialog.
 
 If a trust dialog still appears, the task moves to `needs-human` and waits up to 30 minutes for you to answer it in the runner's tab.
 
@@ -98,7 +105,7 @@ Task state lives in `${XDG_STATE_HOME:-~/.local/state}/herdr-runner-kit/`, or in
 
 - `state.json` records the schema version;
 - `seq` is the task id counter;
-- `tasks/<id>/task.json` holds one task, next to its runner files (`contract.md`, `claude-settings.json`, `launch.log`) and its `out/` directory;
+- `tasks/<id>/task.json` holds one task, next to its runner files (`contract.md`, `claude-settings.json` for Claude, `hrk-runner.ts` for pi and omp, `omp-runner.yml` for omp, `launch.log`) and its `out/` directory;
 - `events.jsonl` is the event log shared by every task.
 
 Do not edit these files by hand. When the schema changes, a new binary migrates the directory forward on first use. An older binary refuses state written by a newer one.

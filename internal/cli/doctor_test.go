@@ -1,12 +1,43 @@
 package cli
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
+
+func TestOptional(t *testing.T) {
+	f := fail("omp is not installed", "install omp")
+	if r := optional(f, false); r.level != "warn" || r.fix != f.fix || r.detail != f.detail+" (not used by your config)" {
+		t.Errorf("unused fail = %+v", r)
+	}
+	if r := optional(f, true); r != f {
+		t.Errorf("used fail = %+v", r)
+	}
+	if r := optional(ok("pi 1.2.0"), false); r != ok("pi 1.2.0") {
+		t.Errorf("unused ok = %+v", r)
+	}
+}
+
+func TestConfigHarnesses(t *testing.T) {
+	cfg := config.Default()
+	cfg.Kinds["code"] = config.Kind{Agent: "codex"}
+	cfg.QuotaFallback = []config.Fallback{{Agent: "omp:openai-codex/gpt-6-luna"}}
+	got := configHarnesses(cfg)
+	want := map[task.Harness]bool{task.Codex: true, task.Claude: true, task.Omp: true}
+	if !maps.Equal(got, want) {
+		t.Errorf("configHarnesses = %v, want %v", got, want)
+	}
+	if got := configHarnesses(config.Config{}); len(got) != 0 {
+		t.Errorf("zero config = %v", got)
+	}
+}
 
 func TestDoctorClaudeTrust(t *testing.T) {
 	home, _, c2 := setupEnv(t)

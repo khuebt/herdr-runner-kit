@@ -10,7 +10,7 @@ The core (task store, runner lifecycle, wait, CLI) should not change when an int
 |---|---|---|---|
 | Data | `task`, `state`, `config`, `buildinfo`, `fsutil`, `redact`, `skill` | each other only | No integration package. `task` keeps the harness names and one data table (effort levels, whether a model is required). `skill` embeds the skill files `setup` installs. |
 | Core lifecycle | `runner`, `wait` | data, each other, `harness` (the port), `herdr`, `telegram`, `planrun`, `project` | Never names a harness. `herdr` and `telegram` are allowed as concrete clients and are the next seams. |
-| Harness port and adapters | `harness` | `task`, `fsutil` | One file per harness (`claude.go`, `codex.go`) plus `harness.go`: the `Adapter` interface, the registry and shared helpers. Never imports the core. |
+| Harness port and adapters | `harness` | `task`, `fsutil` | One file per harness (`claude.go`, `codex.go`, and `pi.go`, which registers pi and omp as two variants of one implementation) plus `harness.go`: the `Adapter` interface, the registry and shared helpers. Never imports the core. |
 | Integrations | `herdr`, `telegram`, `install`, `upgrade` | data only | Concrete clients. An interface is introduced when a second implementation arrives, not before. |
 | Workflows | `project`, `planrun` | data, `harness`, `herdr` | Built on the runner's task model; they never reach into runner internals. |
 | Composition root | `cli`, `cmd/hrk` | everything | Wires concrete clients into the core; the only place that may know every package. |
@@ -44,7 +44,7 @@ The main session (`hrk main`) always runs Claude Code and names the `claude` com
 | Decision | Adapter method |
 |---|---|
 | Launch argv, herdr kind, skill syntax, first prompt | `LaunchArgs`, `HerdrKind`, `RenderSkill`, `FirstPrompt` |
-| Per-task runner files (Claude: `claude-settings.json`, `contract.md`) | `Files`; the core writes them into the task folder with mode 0600 |
+| Per-task runner files (Claude: `claude-settings.json`, `contract.md`; pi and omp: `contract.md`, the runner extension `hrk-runner.ts`, and for omp `omp-runner.yml`) | `Files`; the core writes them into the task folder with mode 0600 |
 | Folder trust before launch | `PrepareTrust`, which returns the event to record |
 | Startup dialogs, screen reading, retries, usage limit on screen, context footer | `Dialogs`, `ProgressText`, `ShowsRetry`, `ShowsUsageLimit`, `ContextLeft`, `SelfResolvingPrompts` |
 | Reading a turn end | `ReadTurnEnd` returns a `TurnSignal`: ignore, thread, confirmed limit, limit on screen, background work, context left |

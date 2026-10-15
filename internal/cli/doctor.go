@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
+	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
@@ -77,13 +78,21 @@ func newDoctorCommand() *cobra.Command {
 			show("updates", checkUpdates(ctx))
 			show("herdr", checkHerdr(ctx))
 			integrations := herdrIntegrations(ctx)
-			for _, a := range harness.All() {
-				c := a.Checks()
-				show("herdr integration "+c.Integration, needed(checkIntegration(integrations, c.Integration), c.Required))
+			cfg, _ := loadConfig() // the kit check reports a config error
+			used := configHarnesses(cfg)
+			gate := func(a harness.Adapter, r checkResult) checkResult {
+				if a.Checks().Required {
+					return r
+				}
+				return optional(r, used[a.Harness()])
 			}
 			for _, a := range harness.All() {
 				c := a.Checks()
-				show(c.Bin, needed(checkHelp(ctx, c.Bin, c.Flags...), c.Required))
+				show("herdr integration "+c.Integration, gate(a, checkIntegration(integrations, c.Integration)))
+			}
+			for _, a := range harness.All() {
+				c := a.Checks()
+				show(c.Bin, gate(a, checkHelp(ctx, c.Bin, c.Flags...)))
 			}
 			show("git", checkHelp(ctx, "git"))
 			creds, tokenSource := checkTelegramCreds()
@@ -233,13 +242,32 @@ func checkIntegration(status map[string]string, name string) checkResult {
 	return fail(s, "herdr integration install "+name)
 }
 
-// needed turns the failure of a check for a harness the kit does not
-// require into a warning.
-func needed(r checkResult, required bool) checkResult {
-	if !required && r.level == "fail" {
+// optional turns the failure of a check for an optional harness into a
+// warning when the config does not use that harness.
+func optional(r checkResult, used bool) checkResult {
+	if !used && r.level == "fail" {
 		r.level = "warn"
+		r.detail += " (not used by your config)"
 	}
 	return r
+}
+
+// configHarnesses lists the harnesses the config's kinds and quotaFallback
+// name. A config that failed to load is the zero Config, which names none.
+func configHarnesses(cfg config.Config) map[task.Harness]bool {
+	used := map[task.Harness]bool{}
+	add := func(agent string) {
+		if spec, err := task.ParseAgentSpec(agent); err == nil {
+			used[spec.Harness] = true
+		}
+	}
+	for _, k := range cfg.Kinds {
+		add(k.Agent)
+	}
+	for _, f := range cfg.QuotaFallback {
+		add(f.Agent)
+	}
+	return used
 }
 
 // checkHelp checks that a CLI is installed and that its --help still lists

@@ -111,15 +111,23 @@ A worktree branch is named `hrk/<id>-<slug>` unless `spawn --branch NAME` names 
 
 When a runner's agent hits a usage limit, the task switches to the next agent in the config's [`quotaFallback`](config.md#keys) list. The new agent starts in the same tab and checkout, with the first prompt and a note to continue from the partial work. The event log gets an `agent-switched` event, and `events --learning` lists the agents the task went through.
 
-Claude reports the limit itself: its turn ends in a `StopFailure` hook with a rate-limit error and its limit message. With no fallback left, or none configured, that task fails with `usage limit reached for <agent>`, and its waiting dependents fail too.
+Claude reports the limit itself: its turn ends in a `StopFailure` hook with a rate-limit error and its limit message. pi and omp report it the same way, through the kit's runner extension, when their turn ends on an error that names a usage limit or quota. With no fallback left, or none configured, that task fails with `usage limit reached for <agent>`, and its waiting dependents fail too.
 
 Codex only shows the limit on screen, as its own `■ You've hit your usage limit …` error line; the same words in the conversation or in a tool's output never count. Such a line switches the agent when a fallback is left. Otherwise the task is not failed: the runner is nudged as for any unreported turn, and the main session gets `usage-limit` news saying the runner appears to be at its usage limit.
 
 ## Context handoff
 
-A runner whose agent nears its context limit continues once in a fresh session of the same task, in the same tab and checkout. For Claude Code the kit asks at the first automatic compaction; a manual `/compact` never asks. For Codex it asks at a turn end when the footer shows `contextHandoffAt` percent of the context left or less (15 by default). The runner commits or saves its work, writes `tasks/<id>/out/handoff-a<N>.md` and runs `report handoff`; the kit then quits the agent and starts attempt N with a prompt that points at the handoff. Each task hands off at most once. `contextHandoff: false` in the [config](config.md#keys) turns the requests off.
+A runner whose agent nears its context limit continues once in a fresh session of the same task, in the same tab and checkout. For Claude Code the kit asks at the first automatic compaction; a manual `/compact` never asks. For Codex it asks at a turn end when the footer shows `contextHandoffAt` percent of the context left or less (15 by default). For pi and omp it asks at either: at a turn end when the runner extension reports that much context left or less, or at the first automatic compaction. The runner commits or saves its work, writes `tasks/<id>/out/handoff-a<N>.md` and runs `report handoff`; the kit then quits the agent and starts attempt N with a prompt that points at the handoff. Each task hands off at most once. `contextHandoff: false` in the [config](config.md#keys) turns the requests off.
 
 Attempts show only from the second one on: `wait` adds `attempt 2` to a `needs-human` line, Telegram tags it `#t3a2`, and `answer t3a2` or `answer t3` reach it, while `answer t3a1` is refused once attempt 1 ended. Reports and hooks from an ended attempt are refused or ignored. The event log gets `context-low` and `handoff`, and `processes-carried` when the previous session left processes running, which the new attempt is told to stop or reuse. See [report-contract.md](report-contract.md#context-handoff).
+
+## pi and omp runners
+
+A pi or omp runner starts with three files from its task folder: `contract.md`, the report contract, passed with `--append-system-prompt` so it survives compaction; `hrk-runner.ts`, the kit's runner extension, which reports each turn end, the context left and each compaction to the kit; and, for omp only, `omp-runner.yml`, a config overlay that turns off omp's `ask` tool. The skill is sent as `/skill:<name>`, with a colon in the name turned into a dash, so `--skill ak:plan` becomes `/skill:ak-plan`.
+
+- Your own pi extensions still load in runners, next to the kit's; the kit does not turn them off.
+- omp ends the background jobs a tool call starts with `cmd &` when that shell call returns, and pi leaves them running unseen. The contract tells runners to wait for background work before reporting; a runner that does not is nudged.
+- Without its herdr integration (`herdr integration install pi` or `omp`), herdr cannot see the agent working, so stall checks go blind. `doctor` fails the check when your config uses that harness.
 
 ## Cleaning up
 

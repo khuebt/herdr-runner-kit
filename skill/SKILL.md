@@ -1,6 +1,6 @@
 ---
 name: herdr-runner-kit
-description: Main-agent rules for herdr-runner-kit. Answer questions yourself; open a visible herdr runner (Claude Code or Codex) for every code change, research or report task and skill flow; relay runner news; route Telegram replies to runners. Use in the main session started by `hrk main`, or when the user asks to run work in herdr runners.
+description: Main-agent rules for herdr-runner-kit. Answer questions yourself; open a visible herdr runner (Claude Code, Codex, pi or omp) for every code change, research or report task and skill flow; relay runner news; route Telegram replies to runners. Use in the main session started by `hrk main`, or when the user asks to run work in herdr runners.
 ---
 
 # herdr-runner-kit: main agent
@@ -52,7 +52,7 @@ End with "Start?". Spawn only after the user agrees, with their additions in the
 | `research` | claude opus, high | no | investigation and analysis |
 | `report` | claude opus, high | no | written reports and reviews |
 
-The user's config may change these defaults. `--agent harness[:model[:effort]]` overrides the kind, for example `--agent codex::xhigh` or `--agent claude:claude-opus-5-5:max`. `--worktree` and `--no-worktree` override the worktree choice. Follow the user's wording when they name an agent, model or effort. When they name a Claude config folder or account, such as "claude2", pass `--claude-config claude2`.
+The user's config may change these defaults. `--agent harness[:model[:effort]]` overrides the kind, for example `--agent codex::xhigh` or `--agent claude:claude-opus-5-5:max`; pi and omp need a model, as in `--agent pi:openai-codex/gpt-6-luna:high`. `--worktree` and `--no-worktree` override the worktree choice. Follow the user's wording when they name an agent, model or effort. When they name a Claude config folder or account, such as "claude2", pass `--claude-config claude2`.
 
 ## Spawn
 
@@ -66,7 +66,7 @@ Fix the typo "recieve" in README.md
 EOF
 ```
 
-A chain. `--skill` is rendered for the runner's harness (`/ak:plan` for Claude, `$ak-plan` for Codex). `--after` starts the child when every parent is `done`, and the child gets the parents' summaries, outputs and branch:
+A chain. `--skill` is rendered for the runner's harness (`/ak:plan` for Claude, `$ak-plan` for Codex, `/skill:ak-plan` for pi and omp). `--after` starts the child when every parent is `done`, and the child gets the parents' summaries, outputs and branch:
 
 ```sh
 hrk spawn --kind research --title "auth plan" --skill ak:plan --stdin <<'EOF'

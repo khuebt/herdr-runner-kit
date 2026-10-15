@@ -2,7 +2,7 @@
 
 Talk to one main agent and let runners do the work.
 
-herdr-runner-kit keeps your main Claude Code chat for conversation and coordination. It runs every coding, research and report task as a separate Claude Code or Codex **runner** in its own [herdr](https://herdr.dev) tab, with or without a git worktree. Runners report back to the main agent within about a second. When one needs a decision, you can answer from the main chat or from Telegram.
+herdr-runner-kit keeps your main Claude Code chat for conversation and coordination. It runs every coding, research and report task as a separate Claude Code, Codex, pi or omp **runner** in its own [herdr](https://herdr.dev) tab, with or without a git worktree. Runners report back to the main agent within about a second. When one needs a decision, you can answer from the main chat or from Telegram.
 
 > **Status:** 0.x. A minor release may change commands or file formats before 1.0; `upgrade` asks before installing one. See [versioning](docs/versioning.md).
 
@@ -25,6 +25,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 - [herdr](https://herdr.dev), with its server running (tested with 0.9.1)
 - [Claude Code](https://claude.com/claude-code) for the main session and Claude runners
 - [Codex](https://github.com/openai/codex) for Codex runners (optional)
+- [pi](https://github.com/earendil-works/pi) or [omp](https://github.com/can1357/oh-my-pi) (oh-my-pi) for pi and omp runners (optional), each with its herdr integration: `herdr integration install pi`, `herdr integration install omp`. A pi or omp agent spec must name its model, such as `pi:openai-codex/gpt-6-luna:high`; see [agent spec](docs/config.md#agent-spec)
 - git, for worktree runners
 
 ## Install

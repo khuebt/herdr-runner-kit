@@ -145,7 +145,7 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | Flag | Meaning |
 |---|---|
 | `--kind NAME` | `code`, `flow`, `fix`, `research`, `report`, or a kind from the user's config. |
-| `--agent SPEC` | `claude` or `codex`, with optional `:model` and `:effort`. |
+| `--agent SPEC` | `claude`, `codex`, `pi` or `omp`, with optional `:model` and `:effort`. `pi` and `omp` require the model, as `provider/model`: `pi:openai-codex/gpt-6-luna:high`. |
 | `--worktree`, `--no-worktree` | Override the kind's worktree choice. |
 | `--branch NAME` | Name of the new worktree branch, following the repository's convention. |
 | `--base REF` | Git ref a new worktree branch starts from. |

@@ -251,7 +251,12 @@ func (pi) SessionContext(string) string                            { return "" }
 func (pi) WorksInBackground(Screen) (bool, error)                  { return false, nil }
 
 // Checks keeps pi and omp optional, so a config without them sees warnings
-// only.
+// only. The flags are long forms: doctor matches them as substrings of
+// --help, where "-e" would match anything.
 func (p pi) Checks() Checks {
-	return Checks{Bin: p.kind, Integration: p.kind}
+	flags := []string{"--model", "--thinking", p.approve, "--append-system-prompt", "--extension"}
+	if p.overlay != "" { // omp
+		flags = []string{"--model", "--thinking", p.approve, "--append-system-prompt", "--config", "--hook"}
+	}
+	return Checks{Bin: p.kind, Flags: flags, Integration: p.kind}
 }
