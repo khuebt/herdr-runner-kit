@@ -61,7 +61,7 @@ func newUpgradeCommand() *cobra.Command {
 					return nil
 				}
 				printNotes(ctx, out, c, current, rel)
-				fmt.Fprintln(out, "run herdr-runner-kit upgrade to install it")
+				fmt.Fprintln(out, "run hrk upgrade to install it")
 				return nil
 			}
 			switch {

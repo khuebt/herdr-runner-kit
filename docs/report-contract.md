@@ -14,10 +14,10 @@ The first prompt is the rendered skill (if `--skill` was given) followed by your
 The runner reports once when it finishes, with one of the commands below. A later message from the main session (`send`) is new work: `send` to a `done` or `failed` task whose tab is still open sets it `running` again; a `stopped` task is never reopened, and the runner reports again when that work is done.
 
 ```sh
-herdr-runner-kit report done --summary "<one or two sentences>" [--decision "<question> -> <choice>"]... [--output <path>]...
-herdr-runner-kit report needs-human --question "<question, with the options and the recommended one>"... [--summary "<context>"]
-herdr-runner-kit report failed --summary "<what failed and why>"
-herdr-runner-kit report handoff --output <handoff file> --summary "<what is done and what is left>"
+hrk report done --summary "<one or two sentences>" [--decision "<question> -> <choice>"]... [--output <path>]...
+hrk report needs-human --question "<question, with the options and the recommended one>"... [--summary "<context>"]
+hrk report failed --summary "<what failed and why>"
+hrk report handoff --output <handoff file> --summary "<what is done and what is left>"
 ```
 
 `report handoff` is only for a runner the kit told that its context is nearly full; see [Context handoff](#context-handoff).
@@ -34,7 +34,7 @@ t4 needs-human · pick a store · 2 questions
   2. Which host? a) VPS (recommended) b) PaaS
 ```
 
-Telegram shows the same round with `Reply: #t4 1<option> 2<option>, such as 1a 2b`. Answer it the usual way, for example `herdr-runner-kit answer t4 "1a 2b"`.
+Telegram shows the same round with `Reply: #t4 1<option> 2<option>, such as 1a 2b`. Answer it the usual way, for example `hrk answer t4 "1a 2b"`.
 
 ### Decisions
 

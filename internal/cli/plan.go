@@ -54,8 +54,8 @@ func newPlanRunCommand() *cobra.Command {
 			"`release` when it changed files outside its scope or left the checkout dirty. Once every " +
 			"phase is done, plan-done points to a report in the plan's reports folder. Run it again " +
 			"after a phase failed or was stopped: done phases are kept and the run's checkout is reused.",
-		Example: `  herdr-runner-kit plan run plans/260101-auth --dry-run
-  herdr-runner-kit plan run plans/260101-auth/plan.md --branch feat/auth`,
+		Example: `  hrk plan run plans/260101-auth --dry-run
+  hrk plan run plans/260101-auth/plan.md --branch feat/auth`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := project.RefuseInsideRunner(os.Getenv); err != nil {

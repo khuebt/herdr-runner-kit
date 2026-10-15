@@ -5,7 +5,7 @@ herdr-runner-kit sends runner news to your Telegram chat. Your replies reach the
 ## How it works
 
 - **Sending:** when a task reports `needs-human`, fails, stalls, is held, ends turns without reporting, finishes, or a chain stops before its end, a detached process calls the Bot API `sendMessage`. `report` and `wait` never wait for the network. A failed send is recorded as a `notify-failed` event.
-- **Replying:** the main session runs the official Telegram channel plugin, which owns the bot's update polling. When your reply arrives there, the main agent passes it to `herdr-runner-kit answer --from-telegram`. The kit never polls Telegram itself, and runners have `TELEGRAM_BOT_TOKEN` cleared so they never take over the bot.
+- **Replying:** the main session runs the official Telegram channel plugin, which owns the bot's update polling. When your reply arrives there, the main agent passes it to `hrk answer --from-telegram`. The kit never polls Telegram itself, and runners have `TELEGRAM_BOT_TOKEN` cleared so they never take over the bot.
 
 ## Credentials
 
@@ -29,7 +29,7 @@ Install the plugin in the Claude config folder of your main session, then disabl
 ```sh
 CLAUDE_CONFIG_DIR=~/.claude2 claude plugin install telegram@claude-plugins-official
 CLAUDE_CONFIG_DIR=~/.claude2 claude plugin disable telegram@claude-plugins-official
-herdr-runner-kit setup --claude-config ~/.claude2
+hrk setup --claude-config ~/.claude2
 ```
 
 - The plugin's server needs [Bun](https://bun.sh).
@@ -75,9 +75,9 @@ A held-back `done` is recorded as a `notify-deferred` event. When a task later i
 ## Starting the main session
 
 ```sh
-herdr-runner-kit main          # prints the command
-herdr-runner-kit main --exec   # starts it, with the bot token from the kit's config
-CLAUDE_CONFIG_DIR=~/.claude2 herdr-runner-kit main --exec   # with the plugin in another config folder
+hrk main          # prints the command
+hrk main --exec   # starts it, with the bot token from the kit's config
+CLAUDE_CONFIG_DIR=~/.claude2 hrk main --exec   # with the plugin in another config folder
 ```
 
 The skill and the plugin come from `$CLAUDE_CONFIG_DIR`, or `~/.claude`. `main` warns when that folder has no skill. The command is `HRK_MAIN=<pid> claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels plugin:telegram@claude-plugins-official --append-system-prompt-file <claude config>/skills/herdr-runner-kit/SKILL.md`. The skill in the system prompt keeps the routing rules in force for the whole session, including after compaction.

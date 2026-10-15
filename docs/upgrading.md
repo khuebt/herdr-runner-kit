@@ -1,9 +1,9 @@
 # Upgrading
 
 ```sh
-herdr-runner-kit upgrade --check   # current and latest versions, and the release notes in between
-herdr-runner-kit upgrade           # install the latest release
-herdr-runner-kit upgrade --version v0.3.0   # install a named release, newer or older
+hrk upgrade --check   # current and latest versions, and the release notes in between
+hrk upgrade           # install the latest release
+hrk upgrade --version v0.3.0   # install a named release, newer or older
 ```
 
 `upgrade`:
@@ -36,6 +36,7 @@ An older binary reads a task that a newer one wrote, since it ignores fields it 
 
 ## Changes to know about
 
+- **The command is `hrk`.** `herdr-runner-kit` stays as an alias: `install.sh` links it to `hrk`, and an install upgraded from an older release keeps its `herdr-runner-kit` binary and gets an `hrk` link beside it from `setup`. With `HRK_NO_SETUP=1` the link waits until you run `herdr-runner-kit setup`; `doctor` names the missing link. Hooks and running runners call the binary by its full path, so nothing breaks. The repository, the skill, and the config and state folders keep the name `herdr-runner-kit`.
 - **Kept tabs close.** A runner kept with `keep`, or by a project stage, now closes `keepFor` (4 hours by default) after its task finished, and running a stage again releases the stage's earlier kept tab. Set `keepFor: 0` to keep tabs until `keep --off` or `stop`, as before.
 - **`show` prints compact text.** It no longer prints the task as JSON followed by text. Scripts that parsed it should use `show --json`, which prints the task as one JSON object; the prompt shows in the text view only with `--prompt`.
 - **The `git:` text grew.** It ends with `head <sha>`, names the untracked share under `plans/`, and for a runner in the main checkout counts `N commits since start` instead of saying "no new commits". `tab kept` became `tab kept until HH:MM`.
@@ -48,4 +49,4 @@ An older binary reads a task that a newer one wrote, since it ignores fields it 
 
 ## Update notes
 
-`herdr-runner-kit version --check` asks GitHub right away. `doctor` also notes a newer release, but asks GitHub at most once a day and caches the answer in your user cache folder (`~/.cache/herdr-runner-kit/latest.json` on Linux). `list`, `report` and the other commands never touch the network. Set `updateCheck: false` in the config to turn the `doctor` note off.
+`hrk version --check` asks GitHub right away. `doctor` also notes a newer release, but asks GitHub at most once a day and caches the answer in your user cache folder (`~/.cache/herdr-runner-kit/latest.json` on Linux). `list`, `report` and the other commands never touch the network. Set `updateCheck: false` in the config to turn the `doctor` note off.

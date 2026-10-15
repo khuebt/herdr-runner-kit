@@ -97,7 +97,7 @@ func Reclose(rec Record, name, id string, tasks []*task.Task, taken func(string)
 	}
 	m := rec.Milestones[i]
 	if m.Status != MilestoneInProgress {
-		return ChainStep{}, nil, fmt.Errorf("milestone %s is %s; only a milestone in progress is closed again (reopen a done one first with herdr-runner-kit project milestone reopen %s --reason WHY)",
+		return ChainStep{}, nil, fmt.Errorf("milestone %s is %s; only a milestone in progress is closed again (reopen a done one first with hrk project milestone reopen %s --reason WHY)",
 			id, orDash(m.Status), id)
 	}
 	for _, t := range tasks {
@@ -110,7 +110,7 @@ func Reclose(rec Record, name, id string, tasks []*task.Task, taken func(string)
 	case closer == nil:
 		return ChainStep{}, nil, fmt.Errorf("milestone %s has no close runner yet; it is spawned with the milestone's chain", id)
 	case closer.Status == task.Done && !CloseStale(m, closer):
-		return ChainStep{}, nil, fmt.Errorf("the close runner %s of %s is done; merge %s through your pull request, pull, then run herdr-runner-kit project milestone done %s",
+		return ChainStep{}, nil, fmt.Errorf("the close runner %s of %s is done; merge %s through your pull request, pull, then run hrk project milestone done %s",
 			closer.ID, id, orDash(taskBranch(closer)), id)
 	case closer.Status != task.Done && closer.Status != task.Failed && closer.Status != task.Stopped:
 		return ChainStep{}, nil, fmt.Errorf("the close runner %s of %s is %s", closer.ID, id, closer.Status)
@@ -220,14 +220,14 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 		return Finished{}, fmt.Errorf("milestone %s is done already, tagged %s", id, orDash(m.Tag))
 	case MilestoneInProgress:
 	default:
-		return Finished{}, fmt.Errorf("milestone %s is %s; start it with herdr-runner-kit project milestone start %s", id, orDash(m.Status), id)
+		return Finished{}, fmt.Errorf("milestone %s is %s; start it with hrk project milestone start %s", id, orDash(m.Status), id)
 	}
 	closer := latestTask(tasks, p.Name, CloseStage(id))
 	switch {
 	case closer == nil:
 		return Finished{}, fmt.Errorf("milestone %s has no close runner yet; its release branch comes from the close runner", id)
 	case CloseStale(m, closer):
-		return Finished{}, fmt.Errorf("milestone %s was reopened after %s was merged; prepare a new release with herdr-runner-kit project milestone close %s", id, m.Branch, id)
+		return Finished{}, fmt.Errorf("milestone %s was reopened after %s was merged; prepare a new release with hrk project milestone close %s", id, m.Branch, id)
 	case closer.Status != task.Done:
 		return Finished{}, fmt.Errorf("the close runner %s of %s is %s, not done", closer.ID, id, closer.Status)
 	case taskBranch(closer) == "":
@@ -402,7 +402,7 @@ func findMerge(ctx context.Context, root, id, branch, def, merged string, releas
 		}
 	}
 	if tip != "" && len(tipNotes) == 0 {
-		return "", "", fmt.Errorf("%s holds no %s; prepare a new release with herdr-runner-kit project milestone close %s", branch, path, id)
+		return "", "", fmt.Errorf("%s holds no %s; prepare a new release with hrk project milestone close %s", branch, path, id)
 	}
 	source := branch
 	if merged != "" {
@@ -426,11 +426,11 @@ func findMerge(ctx context.Context, root, id, branch, def, merged string, releas
 		}
 		commit = tip
 		if notes, err = git(ctx, root, "rev-parse", "--verify", "--quiet", tip+":"+path); err != nil {
-			return "", "", fmt.Errorf("%s holds no %s; prepare a new release with herdr-runner-kit project milestone close %s", branch, path, id)
+			return "", "", fmt.Errorf("%s holds no %s; prepare a new release with hrk project milestone close %s", branch, path, id)
 		}
 	}
 	if slices.Contains(released, notes) {
-		return "", "", fmt.Errorf("the release notes in %s are those of a release of %s merged before it was reopened, not a new release; prepare one with herdr-runner-kit project milestone close %s, merge it, then run done again",
+		return "", "", fmt.Errorf("the release notes in %s are those of a release of %s merged before it was reopened, not a new release; prepare one with hrk project milestone close %s, merge it, then run done again",
 			source, id, id)
 	}
 	if ancestor(ctx, root, commit, "refs/heads/"+def) {

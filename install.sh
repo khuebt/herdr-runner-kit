@@ -1,11 +1,11 @@
 #!/bin/sh
-# Install herdr-runner-kit from its GitHub release:
+# Install herdr-runner-kit (the hrk command) from its GitHub release:
 #
 #   curl -fsSL https://raw.githubusercontent.com/khuebt/herdr-runner-kit/main/install.sh | sh
 #
 # HRK_VERSION       release to install, such as v0.2.0 (default: the latest)
 # HRK_INSTALL_DIR   where the binary goes (default: ~/.local/bin)
-# HRK_NO_SETUP=1    skip `herdr-runner-kit setup` afterwards
+# HRK_NO_SETUP=1    skip `hrk setup` afterwards
 # HRK_BASE_URL      release download root, for testing against a local copy
 set -eu
 
@@ -66,13 +66,21 @@ main() {
 	fi
 	[ "$got" = "$want" ] || die "checksum mismatch for $archive; nothing was installed"
 
-	tar -xzf "$tmp/$archive" -C "$tmp" herdr-runner-kit || die "$archive holds no herdr-runner-kit"
+	tar -xzf "$tmp/$archive" -C "$tmp" || die "cannot unpack $archive"
+	# Releases from before the rename hold the binary only as herdr-runner-kit.
+	src=$tmp/hrk
+	[ -f "$src" ] || src=$tmp/herdr-runner-kit
+	[ -f "$src" ] || die "$archive holds no hrk"
 	mkdir -p "$dir"
 	# Copy beside the target, then rename over it, so a running copy keeps working.
-	cp "$tmp/herdr-runner-kit" "$dir/.herdr-runner-kit.new"
-	chmod 755 "$dir/.herdr-runner-kit.new"
+	cp "$src" "$dir/.hrk.new"
+	chmod 755 "$dir/.hrk.new"
+	mv -f "$dir/.hrk.new" "$dir/hrk"
+	# The old name stays as an alias, so scripts, hooks and runners that call
+	# it keep working; it too is swapped in by rename.
+	ln -sf hrk "$dir/.herdr-runner-kit.new"
 	mv -f "$dir/.herdr-runner-kit.new" "$dir/herdr-runner-kit"
-	echo "Installed $dir/herdr-runner-kit"
+	echo "Installed $dir/hrk (alias: herdr-runner-kit)"
 
 	case ":$PATH:" in
 	*":$dir:"*) ;;
@@ -80,7 +88,7 @@ main() {
 	esac
 
 	if [ "${HRK_NO_SETUP:-}" != 1 ]; then
-		"$dir/herdr-runner-kit" setup
+		"$dir/hrk" setup
 	fi
 }
 

@@ -7,9 +7,10 @@ before:
     - go mod tidy
 
 builds:
-  - id: herdr-runner-kit
-    main: ./cmd/herdr-runner-kit
-    binary: herdr-runner-kit
+  - &build
+    id: hrk
+    main: ./cmd/hrk
+    binary: hrk
     env:
       - CGO_ENABLED=0
     goos: [linux, darwin]
@@ -21,6 +22,11 @@ builds:
       - -X github.com/khuebt/herdr-runner-kit/internal/buildinfo.Version={{ .Version }}
       - -X github.com/khuebt/herdr-runner-kit/internal/buildinfo.Commit={{ .ShortCommit }}
       - -X github.com/khuebt/herdr-runner-kit/internal/buildinfo.Date={{ .Date }}
+  # The same binary under the old name: releases before the rename upgrade by
+  # looking for herdr-runner-kit in the archive.
+  - <<: *build
+    id: herdr-runner-kit
+    binary: herdr-runner-kit
 
 archives:
   - formats: [tar.gz]

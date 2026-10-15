@@ -127,7 +127,7 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 		return t, fmt.Errorf("write event: %w", err)
 	}
 	if err := r.StartAfter(t.ID); err != nil {
-		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: start follow-up: %v\n", t.ID, err)
+		fmt.Fprintf(os.Stderr, "hrk: %s: start follow-up: %v\n", t.ID, err)
 	}
 	return t, nil
 }

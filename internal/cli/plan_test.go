@@ -109,7 +109,7 @@ func planRunner(t *testing.T, phases map[string]string) (*runner.Runner, *planHe
 		t.Fatal(err)
 	}
 	fake := &planHerdr{t: t, worktrees: worktrees, checkout: map[string]string{}}
-	r := runner.New(store, config.Default(), "/usr/local/bin/herdr-runner-kit")
+	r := runner.New(store, config.Default(), "/usr/local/bin/hrk")
 	r.Herdr = &herdr.Client{Bin: "herdr", Exec: fake.exec}
 	env := map[string]string{"HERDR_ENV": "1", "HERDR_WORKSPACE_ID": "w1", "CLAUDE_CONFIG_DIR": t.TempDir()}
 	r.Getenv = func(k string) string { return env[k] }

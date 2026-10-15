@@ -80,7 +80,7 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		return false, fmt.Errorf("%s is %s, not waiting for an answer; use send", id, t.Status)
 	}
 	if t.Question == "" {
-		return false, fmt.Errorf("%s waits on the %s dialog in its tab; answer it there (herdr-runner-kit focus %s)", id, t.Error, id)
+		return false, fmt.Errorf("%s waits on the %s dialog in its tab; answer it there (hrk focus %s)", id, t.Error, id)
 	}
 	if err := r.errIfLost(ctx, t); err != nil {
 		return false, err

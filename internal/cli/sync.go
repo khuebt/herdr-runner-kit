@@ -41,7 +41,7 @@ func newSyncCommand() *cobra.Command {
 				for _, f := range res.Conflicts {
 					fmt.Fprintf(out, "  %s\n", f)
 				}
-				fmt.Fprintf(out, "to hand the merge to the runner, send it this (herdr-runner-kit send %s --stdin):\n%s\n",
+				fmt.Fprintf(out, "to hand the merge to the runner, send it this (hrk send %s --stdin):\n%s\n",
 					id, runner.SyncConflictNote(res.Ref, res.SHA, res.Conflicts))
 				return err
 			}
@@ -59,7 +59,7 @@ func newSyncCommand() *cobra.Command {
 				fmt.Fprintf(out, "merged %s (%s) into %s; the runner was not told\n", res.Ref, res.SHA, res.Branch)
 			}
 			if res.LocalAhead != "" {
-				fmt.Fprintf(out, "local %s has commits %s lacks; to merge them, run: herdr-runner-kit sync %s --from %s\n",
+				fmt.Fprintf(out, "local %s has commits %s lacks; to merge them, run: hrk sync %s --from %s\n",
 					res.LocalAhead, res.Ref, id, res.LocalAhead)
 			}
 			return err

@@ -34,7 +34,7 @@ Approval pack v{{.PackVersion}} for project {{.Project}}: what the stakeholders 
 {{- if .Tools.PDF}}
 3. Print it: `{{.Tools.PDF}} --headless --disable-gpu --no-pdf-header-footer --print-to-pdf="{{.Root}}/{{.ApprovalDir}}/pack-v{{.PackVersion}}/pack.pdf" "{{.Root}}/{{.ApprovalDir}}/pack-v{{.PackVersion}}/pack.html"`.
 {{- else}}
-3. No headless Chromium or Chrome was found on this machine: write pack.html, then report needs-human asking the user to install chromium (herdr-runner-kit doctor --tools checks it); once it is installed, print pack.pdf with chromium --headless --print-to-pdf before you commit.
+3. No headless Chromium or Chrome was found on this machine: write pack.html, then report needs-human asking the user to install chromium (hrk doctor --tools checks it); once it is installed, print pack.pdf with chromium --headless --print-to-pdf before you commit.
 {{- end}}
 {{- if .Docx}}
 {{- if .Tools.Soffice}}

@@ -275,7 +275,7 @@ func DecideChange(s *state.Store, name string, o ChangeDecision) (ChangeDecided,
 // reportedClass reads the class the impact runner of c reported.
 func reportedClass(s *state.Store, c Change) (string, error) {
 	if c.Task == "" {
-		return "", fmt.Errorf("%s has no impact runner; start one with: herdr-runner-kit project run change --stdin", c.ID)
+		return "", fmt.Errorf("%s has no impact runner; start one with: hrk project run change --stdin", c.ID)
 	}
 	t, err := s.Get(c.Task)
 	if err != nil {
@@ -285,7 +285,7 @@ func reportedClass(s *state.Store, c Change) (string, error) {
 		return class, nil
 	}
 	if t.Status == task.Done {
-		return "", fmt.Errorf("%s: its impact runner %s reported no class; ask it with: herdr-runner-kit send %s \"report done again with --decision 'class -> <%s>'\"",
+		return "", fmt.Errorf("%s: its impact runner %s reported no class; ask it with: hrk send %s \"report done again with --decision 'class -> <%s>'\"",
 			c.ID, t.ID, t.ID, strings.Join(Classes, "|"))
 	}
 	return "", fmt.Errorf("%s has no class yet: its impact runner %s is %s; wait for its report", c.ID, t.ID, t.Status)
@@ -325,7 +325,7 @@ func CheckReapproval(rec Record) error {
 	if !rec.Reapproval.Needed {
 		return nil
 	}
-	return fmt.Errorf("the pack needs a new approval before the next milestone (%s); run the pack stage and approve it: herdr-runner-kit project run pack --project %s",
+	return fmt.Errorf("the pack needs a new approval before the next milestone (%s); run the pack stage and approve it: hrk project run pack --project %s",
 		orDash(oneLine(rec.Reapproval.Reason)), rec.Name)
 }
 
@@ -390,7 +390,7 @@ func AddDependency(s *state.Store, name string, o DependencyOptions) (Dependency
 	var d Dependency
 	_, err := Update(s, name, func(rec *Record) error {
 		if i := slices.IndexFunc(rec.Dependencies, func(d Dependency) bool { return strings.EqualFold(d.Name, o.Name) }); i >= 0 {
-			return fmt.Errorf("%s already tracks %q; change its status with: herdr-runner-kit project dep set %s --status STATUS",
+			return fmt.Errorf("%s already tracks %q; change its status with: hrk project dep set %s --status STATUS",
 				rec.Dependencies[i].ID, rec.Dependencies[i].Name, rec.Dependencies[i].ID)
 		}
 		if o.Milestone != "" && len(rec.Milestones) > 0 && !slices.ContainsFunc(rec.Milestones, func(m Milestone) bool { return m.ID == o.Milestone }) {

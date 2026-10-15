@@ -11,7 +11,7 @@ Close of {{.Milestone}} for project {{.Project}}{{if .MilestoneTitle}} (its titl
 
 1. Run {{skill "ak:docs"}} update for what {{.Milestone}} changed, and commit the handbook files it touched.
 2. Run {{skill "ak:retro"}} {{.Started}}:<today as YYYY-MM-DD>. The date range is given, so ask the user nothing. It writes its report under plans/reports/: leave plans/ uncommitted and copy what matters into the release notes.
-3. Read the learning numbers of the project's runners since the milestone started: `herdr-runner-kit events --learning --project {{.Project}} --since "$(( ($(date +%s) - {{.StartedUnix}}) / 3600 + 1 ))h"`.
+3. Read the learning numbers of the project's runners since the milestone started: `hrk events --learning --project {{.Project}} --since "$(( ($(date +%s) - {{.StartedUnix}}) / 3600 + 1 ))h"`.
 4. Write {{.ReleaseNotesPath}}: the features delivered{{if ne .Milestone "M0"}} (from {{.PlanPath}} and the merged branches){{end}}, the change requests and backlog items below, the planned date against the actual one, the work moved to another milestone, the known debt, and the retro's highlights and learning numbers.
 5. Only when work moved to another milestone, write {{.RoadmapUpdatePath}}: one line on what moved and why, then the only fenced block tagged yaml in the file. It holds `milestones` and no other key: the whole roadmap of handbook/product/roadmap.md, each milestone with its id, title, planned date (YYYY-MM-DD) and features (id, title, dependsOn), every done milestone unchanged and {{.Milestone}} still in it. The kit imports it when the milestone is done.
 6. Commit the notes ("docs(release): {{.Milestone}} release notes").

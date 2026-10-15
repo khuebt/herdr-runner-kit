@@ -1,5 +1,6 @@
 # Build output
 /dist/
+/hrk
 /herdr-runner-kit
 
 # Test and coverage output

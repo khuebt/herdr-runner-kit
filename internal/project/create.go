@@ -112,7 +112,7 @@ func Create(ctx context.Context, s *state.Store, ws Workspaces, o CreateOptions)
 	}
 	rec := NewRecord(p.name)
 	rec.ReferenceRepo = p.reference
-	rec.Decisions = []Decision{{At: stamp(time.Now()), Text: "project created (herdr-runner-kit new)"}}
+	rec.Decisions = []Decision{{At: stamp(time.Now()), Text: "project created (hrk new)"}}
 	rec.Pending = 1
 	if err := Save(s, rec); err != nil {
 		return Created{}, errors.Join(err, s.ForgetProject(p.name))
@@ -161,7 +161,7 @@ func Create(ctx context.Context, s *state.Store, ws Workspaces, o CreateOptions)
 			GitignorePath, GitignorePath, ignoreLine)
 	}
 	if err := s.CommitProject(p.name); err != nil {
-		c.RegistryErr = fmt.Sprintf("%s; register it with: herdr-runner-kit project forget %s --yes && herdr-runner-kit project register %s",
+		c.RegistryErr = fmt.Sprintf("%s; register it with: hrk project forget %s --yes && hrk project register %s",
 			err, p.name, shellCommand([]string{p.path}))
 	}
 	return c, nil
@@ -291,7 +291,7 @@ func checkFolder(path string, allowNonEmpty bool) (bool, error) {
 		return false, fmt.Errorf("%s exists and is not a folder", path)
 	}
 	if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
-		return false, fmt.Errorf("%s is already a git repository; use herdr-runner-kit project register", path)
+		return false, fmt.Errorf("%s is already a git repository; use hrk project register", path)
 	}
 	entries, err := os.ReadDir(path)
 	if err != nil {

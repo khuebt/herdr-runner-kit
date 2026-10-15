@@ -50,7 +50,7 @@ func (r *Runner) startDetachedNotify(ev state.Event) {
 	cmd := exec.Command(r.Bin, "__notify", string(data))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: start notify: %v\n", ev.Task, err)
+		fmt.Fprintf(os.Stderr, "hrk: %s: start notify: %v\n", ev.Task, err)
 		return
 	}
 	_ = cmd.Process.Release()

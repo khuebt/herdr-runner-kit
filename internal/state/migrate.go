@@ -140,7 +140,7 @@ func prepareMigration(dir string, from int) error {
 	}
 	if len(live) > 0 {
 		return fmt.Errorf("state schema %d needs a migration, but runners are still working (%s); "+
-			"reinstall the previous release (herdr-runner-kit upgrade --version vX.Y.Z, or install.sh with HRK_VERSION=vX.Y.Z), "+
+			"reinstall the previous release (hrk upgrade --version vX.Y.Z, or install.sh with HRK_VERSION=vX.Y.Z), "+
 			"finish or stop them, then upgrade again",
 			from, strings.Join(live, ", "))
 	}

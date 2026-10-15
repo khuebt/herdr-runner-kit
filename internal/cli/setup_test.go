@@ -112,3 +112,44 @@ func TestUninstallPurgeNeedsConfirmation(t *testing.T) {
 		}
 	}
 }
+
+func TestLinkShortName(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	old := filepath.Join(dir, "herdr-runner-kit")
+	if got, err := linkShortName(old); err != nil || got != filepath.Join(dir, "hrk") {
+		t.Fatalf("link: %q %v", got, err)
+	}
+	if target, _ := os.Readlink(filepath.Join(dir, "hrk")); target != "herdr-runner-kit" {
+		t.Fatalf("hrk points at %q", target)
+	}
+	if got, err := linkShortName(old); err != nil || got != "" {
+		t.Fatalf("second link: %q %v", got, err)
+	}
+	if got, err := linkShortName(filepath.Join(dir, "hrk")); err != nil || got != "" {
+		t.Fatalf("new name: %q %v", got, err)
+	}
+}
+
+func TestLinkShortNameBesideTheSymlinkOnPath(t *testing.T) {
+	onPath := t.TempDir()
+	// ownBinary resolves symlinks, as in macOS's /var -> /private/var.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "herdr-runner-kit")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(bin, filepath.Join(onPath, "herdr-runner-kit")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", onPath)
+	if got, err := linkShortName(bin); err != nil || got != filepath.Join(onPath, "hrk") {
+		t.Fatalf("link: %q %v", got, err)
+	}
+	if r, err := filepath.EvalSymlinks(filepath.Join(onPath, "hrk")); err != nil || r != bin {
+		t.Fatalf("hrk leads to %q %v", r, err)
+	}
+}

@@ -83,8 +83,8 @@ func newAnswerCommand() *cobra.Command {
 			"text releases it with that note. An id may name the runner's attempt, such as " +
 			"t3a2; an answer for an attempt that ended is refused. Pass the reply with --stdin " +
 			"and a quoted heredoc, never inside a shell string.",
-		Example: `  herdr-runner-kit answer t3 "Use option A"
-  herdr-runner-kit answer --from-telegram --stdin <<'EOF'
+		Example: `  hrk answer t3 "Use option A"
+  hrk answer --from-telegram --stdin <<'EOF'
   #t3 dùng phương án A
   EOF`,
 		RunE: func(cmd *cobra.Command, args []string) error {

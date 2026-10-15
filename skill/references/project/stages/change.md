@@ -17,5 +17,5 @@ Change request {{.Change}} for project {{.Project}}. The user's request is in th
 3. Write {{.ChangePath}} with front matter `id: {{.Change}}` and `class: <class>`, then: what changes and why; the spec sections it touches; the milestones, features, branches and unfinished tasks it affects; the cost; two or three options; your recommendation. The milestone in progress keeps its scope unless the user marks the change blocking, so say whether it blocks that milestone.
 4. Commit only that file ("docs(change): {{.Change}} impact") and report done with it as --output and with --decision "class -> <tweak|within-milestone|scope>". Change no spec, roadmap or code yet: the user decides now, next milestone, backlog or reject first. The decision, or a revision request, arrives in this session; then do what it says.
 
-Unfinished tasks of the project, as `herdr-runner-kit list` shows them:
+Unfinished tasks of the project, as `hrk list` shows them:
 {{.Tasks}}

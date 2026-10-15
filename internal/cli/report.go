@@ -27,12 +27,12 @@ func newReportCommand() *cobra.Command {
 			"comes from $HRK_TASK, which spawn sets in the runner's tab. handoff is " +
 			"only for a runner the kit told that its context is nearly full: the task " +
 			"continues once in a fresh session that reads the handoff file first.",
-		Example: `  herdr-runner-kit report done --summary "Login fixed; tests pass" --output out/notes.md
-  herdr-runner-kit report done --summary "Export added" --decision "CSV or JSON? -> CSV"
-  herdr-runner-kit report needs-human --question "Drop the legacy endpoint? (recommended: yes)"
-  herdr-runner-kit report needs-human --question "Which database? a) Postgres (recommended) b) SQLite" --question "Host? a) VPS (recommended) b) PaaS"
-  herdr-runner-kit report failed --summary "Build needs Go 1.27; only 1.25 is installed"
-  herdr-runner-kit report handoff --output out/handoff-a2.md --summary "Parser done; exporter left"`,
+		Example: `  hrk report done --summary "Login fixed; tests pass" --output out/notes.md
+  hrk report done --summary "Export added" --decision "CSV or JSON? -> CSV"
+  hrk report needs-human --question "Drop the legacy endpoint? (recommended: yes)"
+  hrk report needs-human --question "Which database? a) Postgres (recommended) b) SQLite" --question "Host? a) VPS (recommended) b) PaaS"
+  hrk report failed --summary "Build needs Go 1.27; only 1.25 is installed"
+  hrk report handoff --output out/handoff-a2.md --summary "Parser done; exporter left"`,
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: []string{"done", "needs-human", "failed", "handoff"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -140,12 +140,12 @@ func newTurnEndCommand() *cobra.Command {
 			}
 			r, err := openRunner()
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "herdr-runner-kit __turn-end:", err)
+				fmt.Fprintln(cmd.ErrOrStderr(), "hrk __turn-end:", err)
 				return nil
 			}
 			block, err := r.TurnEnd(cmd.Context(), id, task.Harness(h), payload)
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "herdr-runner-kit __turn-end:", err)
+				fmt.Fprintln(cmd.ErrOrStderr(), "hrk __turn-end:", err)
 			}
 			if block != "" && task.Harness(h) == task.Claude {
 				fmt.Fprintln(cmd.OutOrStdout(), harness.ClaudeBlock(block))
@@ -174,12 +174,12 @@ func newContextCommand() *cobra.Command {
 			}
 			r, err := openRunner()
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "herdr-runner-kit __context:", err)
+				fmt.Fprintln(cmd.ErrOrStderr(), "hrk __context:", err)
 				return nil
 			}
 			out, err := r.ContextHook(cmd.Context(), id, payload)
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "herdr-runner-kit __context:", err)
+				fmt.Fprintln(cmd.ErrOrStderr(), "hrk __context:", err)
 			}
 			if out != "" {
 				fmt.Fprintln(cmd.OutOrStdout(), out)

@@ -8,7 +8,7 @@ import (
 // NewRootCommand builds the command tree.
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "herdr-runner-kit",
+		Use:   "hrk",
 		Short: "Run every coding, research and report task as a visible herdr runner",
 		Long: "herdr-runner-kit opens Claude Code and Codex runners in herdr tabs, " +
 			"reports their results to the main agent as events, and routes human " +

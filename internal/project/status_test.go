@@ -37,7 +37,7 @@ func TestStatusReadsOnlyItsProjectTasks(t *testing.T) {
 		"runners:\n  t2 running · stage spec · write spec\n",
 		"waiting on you:\n  t4 needs-human 12m0s · review · Q: Ship it?\n  t6 held 1h0m0s · gated\n",
 		"records not yet committed: 2\n",
-		`next: answer t4: herdr-runner-kit answer t4 "<answer>" (1 more waiting)` + "\n",
+		`next: answer t4: hrk answer t4 "<answer>" (1 more waiting)` + "\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("status lacks %q:\n%s", want, got)
@@ -93,42 +93,42 @@ func TestStatusNextStep(t *testing.T) {
 		missing bool
 		want    string
 	}{
-		{"no record", nil, nil, false, "herdr-runner-kit project forget demo-app && herdr-runner-kit project register '/work/demo app' --name demo-app"},
+		{"no record", nil, nil, false, "hrk project forget demo-app && hrk project register '/work/demo app' --name demo-app"},
 		{"folder gone", &fresh, held, true, "the folder /work/demo app is gone"},
-		{"held", &fresh, held, false, "herdr-runner-kit release t2"},
-		{"dialog", &fresh, dialog, false, "herdr-runner-kit focus t3"},
+		{"held", &fresh, held, false, "hrk release t2"},
+		{"dialog", &fresh, dialog, false, "hrk focus t3"},
 		{"graduated", &graduated, nil, false, "spawn a runner for the next piece of work"},
 		{"runners", &fresh, running, false, "wait for the 1 runner(s) at work"},
-		{"discovery", &fresh, nil, false, "start discovery from the brief in " + BriefDir + ": herdr-runner-kit project run intake --project demo-app"},
-		{"after intake", &fresh, []*task.Task{intake}, false, "write the spec from the brief summary: herdr-runner-kit project run spec --project demo-app"},
-		{"spec done", &fresh, []*task.Task{intake, specDone}, false, "spec done: ask the user to approve it, then record the outcome: herdr-runner-kit project approve spec --project demo-app --by NAME"},
-		{"spec failed", &fresh, []*task.Task{stage("spec", task.Failed, before)}, false, "run it again: herdr-runner-kit project run spec --project demo-app"},
-		{"spec changes not sent", &specChanges, []*task.Task{specDone}, false, "revise the spec with the feedback: herdr-runner-kit project run spec --project demo-app --stdin"},
+		{"discovery", &fresh, nil, false, "start discovery from the brief in " + BriefDir + ": hrk project run intake --project demo-app"},
+		{"after intake", &fresh, []*task.Task{intake}, false, "write the spec from the brief summary: hrk project run spec --project demo-app"},
+		{"spec done", &fresh, []*task.Task{intake, specDone}, false, "spec done: ask the user to approve it, then record the outcome: hrk project approve spec --project demo-app --by NAME"},
+		{"spec failed", &fresh, []*task.Task{stage("spec", task.Failed, before)}, false, "run it again: hrk project run spec --project demo-app"},
+		{"spec changes not sent", &specChanges, []*task.Task{specDone}, false, "revise the spec with the feedback: hrk project run spec --project demo-app --stdin"},
 		{"spec revised", &specChanges, []*task.Task{stage("spec", task.Done, after)}, false, "spec done: ask the user to approve it"},
-		{"after the spec", &approved, []*task.Task{specDone}, false, "run the next discovery stage: herdr-runner-kit project run ux --project demo-app"},
+		{"after the spec", &approved, []*task.Task{specDone}, false, "run the next discovery stage: hrk project run ux --project demo-app"},
 		{"after ux", &approved, []*task.Task{stage("ux", task.Done, after)}, false, "project run design --project demo-app"},
 		{"later stages done", &approved, []*task.Task{
 			stage("ux", task.Done, after), stage("design", task.Done, after),
 			stage("architecture", task.Done, after), stage("roadmap", task.Done, after),
-		}, false, "assemble the stakeholder approval pack: herdr-runner-kit project run pack --project demo-app"},
+		}, false, "assemble the stakeholder approval pack: hrk project run pack --project demo-app"},
 		{
 			"pack done", &approved,
 			[]*task.Task{stage("pack", task.Done, after)},
 			false,
-			"pack done: share pack.html / pack.pdf from " + ApprovalDir + "/ with the stakeholders, then record the outcome: herdr-runner-kit project approve pack --project demo-app --by NAME",
+			"pack done: share pack.html / pack.pdf from " + ApprovalDir + "/ with the stakeholders, then record the outcome: hrk project approve pack --project demo-app --by NAME",
 		},
-		{"pack changes not sent", &packChanges, []*task.Task{stage("pack", task.Done, before)}, false, "revise the pack with the feedback: herdr-runner-kit project run pack --project demo-app --stdin"},
+		{"pack changes not sent", &packChanges, []*task.Task{stage("pack", task.Done, before)}, false, "revise the pack with the feedback: hrk project run pack --project demo-app --stdin"},
 		{"pack approved", &packed, nil, false, "spawn a runner for the next piece of work"},
-		{"pack waived", &waived, []*task.Task{specDone}, false, "start the scaffold milestone M0: herdr-runner-kit project milestone start M0 --project demo-app"},
-		{"waived, scaffold done", &scaffolded, nil, false, "M0 is done and there is no roadmap yet: write the roadmap proposal: herdr-runner-kit project run roadmap --project demo-app"},
-		{"waived, roadmap written", &scaffolded, []*task.Task{stage("roadmap", task.Done, after)}, false, "imports the committed roadmap proposal first: herdr-runner-kit project milestone start M1 --project demo-app"},
-		{"waived, re-approval", &waivedCR, nil, false, "the pack needs a new approval before the next milestone starts: herdr-runner-kit project run pack --project demo-app"},
-		{"held for a dependency", &packed, reasoned, false, "release t2 once this is settled: needs D1; then: herdr-runner-kit release t2"},
+		{"pack waived", &waived, []*task.Task{specDone}, false, "start the scaffold milestone M0: hrk project milestone start M0 --project demo-app"},
+		{"waived, scaffold done", &scaffolded, nil, false, "M0 is done and there is no roadmap yet: write the roadmap proposal: hrk project run roadmap --project demo-app"},
+		{"waived, roadmap written", &scaffolded, []*task.Task{stage("roadmap", task.Done, after)}, false, "imports the committed roadmap proposal first: hrk project milestone start M1 --project demo-app"},
+		{"waived, re-approval", &waivedCR, nil, false, "the pack needs a new approval before the next milestone starts: hrk project run pack --project demo-app"},
+		{"held for a dependency", &packed, reasoned, false, "release t2 once this is settled: needs D1; then: hrk release t2"},
 		{
 			"change assessed", &assessed,
 			[]*task.Task{impact},
 			false,
-			"CR-1's impact is in " + ChangesDir + "/CR-1-x.md: ask the user, then record the decision: herdr-runner-kit project cr decide 1 <now|next|backlog|reject> --project demo-app",
+			"CR-1's impact is in " + ChangesDir + "/CR-1-x.md: ask the user, then record the decision: hrk project cr decide 1 <now|next|backlog|reject> --project demo-app",
 		},
 		{"change being assessed", &assessed, []*task.Task{{ID: "t8", Project: "demo-app", Status: task.Running}}, false, "wait for the 1 runner(s) at work"},
 	} {
@@ -195,7 +195,7 @@ func TestStatusOfAnUnfinishedSetup(t *testing.T) {
 	rec := NewRecord("demo-app")
 	r := Status(&rec, state.Project{Name: "demo-app", Path: "/work/demo-app", Reserved: true}, nil, time.Now())
 	got := r.Text()
-	if !strings.Contains(got, "setup: not finished\n") || !strings.Contains(got, "next: wait for herdr-runner-kit new to finish; if it was interrupted, drop the project with: herdr-runner-kit project forget demo-app") {
+	if !strings.Contains(got, "setup: not finished\n") || !strings.Contains(got, "next: wait for hrk new to finish; if it was interrupted, drop the project with: hrk project forget demo-app") {
 		t.Errorf("status:\n%s", got)
 	}
 }
@@ -233,21 +233,21 @@ func TestStatusMilestoneSteps(t *testing.T) {
 		planErr    string
 		want       string
 	}{
-		{"start M0", record(MilestonePlanned, MilestonePlanned, false), nil, nil, "", "start M0 Scaffold: herdr-runner-kit project milestone start M0 --project demo-app"},
-		{"re-approval", record(MilestoneDone, MilestonePlanned, true), nil, nil, "", "the pack needs a new approval before M1 starts: herdr-runner-kit project run pack --project demo-app"},
+		{"start M0", record(MilestonePlanned, MilestonePlanned, false), nil, nil, "", "start M0 Scaffold: hrk project milestone start M0 --project demo-app"},
+		{"re-approval", record(MilestoneDone, MilestonePlanned, true), nil, nil, "", "the pack needs a new approval before M1 starts: hrk project run pack --project demo-app"},
 		{"no runner", record(MilestoneInProgress, MilestonePlanned, false), nil, nil, "", "M0 is in progress without a runner"},
-		{"scaffold failed", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Failed)}, nil, "", "M0's runner t1 failed; run it again: herdr-runner-kit project milestone start M0"},
+		{"scaffold failed", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Failed)}, nil, "", "M0's runner t1 failed; run it again: hrk project milestone start M0"},
 		{"scaffold done", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Done)}, nil, "", "M0's scaffold is done in t1: review feat/M0-scaffold"},
 		{"start M1", record(MilestoneDone, MilestonePlanned, false), nil, nil, "", "milestone start M1"},
 		{"unanswered", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan}, []string{"Sort order?"}, "", "the plan of M1 leaves 1 open question(s) unanswered; ask t3"},
 		{"bad plan", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan}, nil, "no yaml block", "the plan of M1 cannot be chained (no yaml block); ask t3"},
-		{"chain", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan}, nil, "", "plan of M1 done: read its decisions in handbook/product/milestones/M1/plan.md, then chain its features: herdr-runner-kit project milestone chain M1 --project demo-app"},
-		{"node failed", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/F2", task.Failed)}, nil, "", "t5 of M1/F2 failed; fix the cause, then run the chain again: herdr-runner-kit project milestone chain M1"},
+		{"chain", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan}, nil, "", "plan of M1 done: read its decisions in handbook/product/milestones/M1/plan.md, then chain its features: hrk project milestone chain M1 --project demo-app"},
+		{"node failed", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/F2", task.Failed)}, nil, "", "t5 of M1/F2 failed; fix the cause, then run the chain again: hrk project milestone chain M1"},
 		{"nodes done", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done)}, nil, "", "every feature runner of M1 is done"},
-		{"M0 release ready", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Done), tk("t2", "M0/close", task.Done)}, nil, "", "the release of M0 is ready on release/M0: merge it into the default branch through your pull request, pull, then: herdr-runner-kit project milestone done M0 --project demo-app"},
-		{"M0 close failed", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Done), tk("t2", "M0/close", task.Failed)}, nil, "", "the close runner t2 of M0 failed; fix the cause, then run it again: herdr-runner-kit project milestone close M0"},
+		{"M0 release ready", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Done), tk("t2", "M0/close", task.Done)}, nil, "", "the release of M0 is ready on release/M0: merge it into the default branch through your pull request, pull, then: hrk project milestone done M0 --project demo-app"},
+		{"M0 close failed", record(MilestoneInProgress, MilestonePlanned, false), []*task.Task{tk("t1", "M0/scaffold", task.Done), tk("t2", "M0/close", task.Failed)}, nil, "", "the close runner t2 of M0 failed; fix the cause, then run it again: hrk project milestone close M0"},
 		{"release ready", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/close", task.Done)}, nil, "", "milestone done M1"},
-		{"reopened", reopened(record(MilestoneDone, MilestoneInProgress, false)), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/close", task.Done)}, nil, "", "M1 was reopened after release/M1 was merged; once the fixes are on the branch the release came from, prepare a new release: herdr-runner-kit project milestone close M1"},
+		{"reopened", reopened(record(MilestoneDone, MilestoneInProgress, false)), []*task.Task{plan, tk("t4", "M1/F1", task.Done), tk("t5", "M1/close", task.Done)}, nil, "", "M1 was reopened after release/M1 was merged; once the fixes are on the branch the release came from, prepare a new release: hrk project milestone close M1"},
 		{"node failed before close", record(MilestoneDone, MilestoneInProgress, false), []*task.Task{plan, tk("t4", "M1/F1", task.Failed), tk("t5", "M1/close", task.Failed)}, nil, "", "t4 of M1/F1 failed; fix the cause, then run the chain again"},
 	} {
 		r := Status(c.rec, reg, c.tasks, time.Now())

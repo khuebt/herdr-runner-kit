@@ -1,4 +1,4 @@
-// Command herdr-runner-kit runs coding, research and report tasks as herdr runners.
+// Command hrk runs coding, research and report tasks as herdr runners.
 package main
 
 import (
@@ -10,7 +10,7 @@ import (
 
 func main() {
 	if err := cli.NewRootCommand().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "herdr-runner-kit:", err)
+		fmt.Fprintln(os.Stderr, "hrk:", err)
 		os.Exit(1)
 	}
 }

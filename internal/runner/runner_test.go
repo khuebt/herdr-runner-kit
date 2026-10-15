@@ -116,7 +116,7 @@ func newTestRunner(t *testing.T) (*Runner, *fakeHerdr, env) {
 		Store:         store,
 		Config:        config.Default(),
 		Herdr:         &herdr.Client{Bin: "herdr", Exec: fake.exec},
-		Bin:           "/usr/local/bin/herdr-runner-kit",
+		Bin:           "/usr/local/bin/hrk",
 		Getenv:        e.get,
 		StartLauncher: func(string) (int, error) { return 4242, nil },
 		StartAfter:    func(string) error { return nil },
@@ -427,7 +427,7 @@ func TestLaunchClaudeTab(t *testing.T) {
 		t.Errorf("agent prompt = %q", prompt)
 	}
 	contract, _ := os.ReadFile(filepath.Join(r.Store.TaskDir("t1"), "contract.md"))
-	if !strings.Contains(string(contract), "/usr/local/bin/herdr-runner-kit report done") {
+	if !strings.Contains(string(contract), "/usr/local/bin/hrk report done") {
 		t.Errorf("contract = %s", contract)
 	}
 
@@ -466,7 +466,7 @@ func TestLaunchCodexWorktree(t *testing.T) {
 		t.Errorf("pane run = %q", run)
 	}
 	start := strings.Join(fake.call("agent", "start"), " ")
-	if !strings.Contains(start, "--kind codex --pane w2:p1") || !strings.Contains(start, `notify=["/usr/local/bin/herdr-runner-kit","__turn-end","--harness","codex"]`) {
+	if !strings.Contains(start, "--kind codex --pane w2:p1") || !strings.Contains(start, `notify=["/usr/local/bin/hrk","__turn-end","--harness","codex"]`) {
 		t.Errorf("agent start = %q", start)
 	}
 	if keys := fake.call("agent", "send-keys"); !slices.Equal(keys, []string{"agent", "send-keys", "w2:p1", "esc"}) {
@@ -1400,7 +1400,7 @@ func TestSpawnProjectTaskOwner(t *testing.T) {
 	}
 	t.Chdir(plainDir(t))
 	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "x", Project: "demo-app"}); err == nil ||
-		!strings.Contains(err.Error(), "herdr-runner-kit project forget demo-app") {
+		!strings.Contains(err.Error(), "hrk project forget demo-app") {
 		t.Fatalf("spawned into a project still being set up, or gave no fix: %v", err)
 	}
 	if err := r.Store.CommitProject("demo-app"); err != nil {

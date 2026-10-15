@@ -307,12 +307,12 @@ func (r Report) Next() string {
 	rec := r.Record
 	switch {
 	case r.Reserved:
-		return fmt.Sprintf("wait for herdr-runner-kit new to finish; if it was interrupted, drop the project with: herdr-runner-kit project forget %s, then run new again", r.Name)
+		return fmt.Sprintf("wait for hrk new to finish; if it was interrupted, drop the project with: hrk project forget %s, then run new again", r.Name)
 	case rec == nil:
-		return fmt.Sprintf("the kit has no record of %s; import it again with: herdr-runner-kit project forget %s && herdr-runner-kit project register %s --name %s",
+		return fmt.Sprintf("the kit has no record of %s; import it again with: hrk project forget %s && hrk project register %s --name %s",
 			r.Name, r.Name, shellCommand([]string{r.Path}), r.Name)
 	case r.PathMissing:
-		return fmt.Sprintf("the folder %s is gone; move it back, or drop the project with: herdr-runner-kit project forget %s", r.Path, r.Name)
+		return fmt.Sprintf("the folder %s is gone; move it back, or drop the project with: hrk project forget %s", r.Path, r.Name)
 	case len(r.Waiting) > 0:
 		t := r.Waiting[0]
 		more := ""
@@ -321,19 +321,19 @@ func (r Report) Next() string {
 		}
 		switch {
 		case t.Status == task.Held && t.HoldReason != "":
-			return fmt.Sprintf("release %s once this is settled: %s; then: herdr-runner-kit release %s%s", t.ID, oneLine(t.HoldReason), t.ID, more)
+			return fmt.Sprintf("release %s once this is settled: %s; then: hrk release %s%s", t.ID, oneLine(t.HoldReason), t.ID, more)
 		case t.Status == task.Held:
-			return fmt.Sprintf("release %s when it may start: herdr-runner-kit release %s%s", t.ID, t.ID, more)
+			return fmt.Sprintf("release %s when it may start: hrk release %s%s", t.ID, t.ID, more)
 		case t.Question != "":
-			return fmt.Sprintf("answer %s: herdr-runner-kit answer %s \"<answer>\"%s", t.ID, t.ID, more)
+			return fmt.Sprintf("answer %s: hrk answer %s \"<answer>\"%s", t.ID, t.ID, more)
 		default:
-			return fmt.Sprintf("answer the dialog of %s in its tab: herdr-runner-kit focus %s%s", t.ID, t.ID, more)
+			return fmt.Sprintf("answer the dialog of %s in its tab: hrk focus %s%s", t.ID, t.ID, more)
 		}
 	case r.Decide != nil:
 		return fmt.Sprintf("%s's impact is in %s: ask the user, then record the decision: %s",
 			r.Decide.ID, orDash(r.Decide.Path), r.command("cr decide "+strings.TrimPrefix(r.Decide.ID, "CR-")+" <now|next|backlog|reject>", ""))
 	case len(r.Runners) > 0:
-		return fmt.Sprintf("wait for the %d runner(s) at work: herdr-runner-kit wait", len(r.Runners))
+		return fmt.Sprintf("wait for the %d runner(s) at work: hrk wait", len(r.Runners))
 	case rec.Gates.Spec.Status != GateApproved:
 		return r.specNext()
 	case rec.Gates.Pack.Status != GateApproved && !rec.Gates.Pack.Waived:
@@ -342,7 +342,7 @@ func (r Report) Next() string {
 	if next := r.milestoneNext(); next != "" {
 		return next
 	}
-	return fmt.Sprintf("spawn a runner for the next piece of work: herdr-runner-kit spawn --project %s --stdin", r.Name)
+	return fmt.Sprintf("spawn a runner for the next piece of work: hrk spawn --project %s --stdin", r.Name)
 }
 
 // milestoneNext is the next step once the pack is approved or waived, or
@@ -379,10 +379,10 @@ func (r Report) milestoneNext() string {
 		return fmt.Sprintf("%s's scaffold is done in %s: review %s", m.ID, first.ID, branch)
 	case m.ID == ScaffoldMilestone:
 	case r.PlanErr != "":
-		return fmt.Sprintf("the plan of %s cannot be chained (%s); ask %s to fix it: herdr-runner-kit send %s \"<what to fix>\"",
+		return fmt.Sprintf("the plan of %s cannot be chained (%s); ask %s to fix it: hrk send %s \"<what to fix>\"",
 			m.ID, oneLine(r.PlanErr), first.ID, first.ID)
 	case len(r.Unanswered) > 0:
-		return fmt.Sprintf("the plan of %s leaves %d open question(s) unanswered; ask %s to answer each with the recommended option: herdr-runner-kit send %s \"answer every open question in %s with its recommended option, commit and report again\"",
+		return fmt.Sprintf("the plan of %s leaves %d open question(s) unanswered; ask %s to answer each with the recommended option: hrk send %s \"answer every open question in %s with its recommended option, commit and report again\"",
 			m.ID, len(r.Unanswered), first.ID, first.ID, MilestonePlanPath(m.ID))
 	case len(r.Nodes) == 0:
 		return fmt.Sprintf("plan of %s done: read its decisions in %s, then chain its features: %s",
@@ -504,7 +504,7 @@ func (r Report) done(stage string) bool {
 
 // command spells a project subcommand for this project.
 func (r Report) command(sub, extra string) string {
-	c := "herdr-runner-kit project " + sub + " --project " + r.Name
+	c := "hrk project " + sub + " --project " + r.Name
 	if extra != "" {
 		c += " " + extra
 	}

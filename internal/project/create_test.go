@@ -104,7 +104,7 @@ func TestCreateFreshProject(t *testing.T) {
 	}
 	rec, err := Load(s, "demo-app")
 	if err != nil || rec.Pending != 0 || rec.Type != "unknown" || rec.Track != "standard" ||
-		len(rec.Decisions) != 1 || rec.Decisions[0].Text != "project created (herdr-runner-kit new)" {
+		len(rec.Decisions) != 1 || rec.Decisions[0].Text != "project created (hrk new)" {
 		t.Errorf("record %+v %v", rec, err)
 	}
 	committed, ok, err := committedSnapshot(context.Background(), path)

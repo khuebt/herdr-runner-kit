@@ -3,14 +3,15 @@
 ## setup
 
 ```sh
-herdr-runner-kit setup
-herdr-runner-kit setup --claude-config ~/.claude --claude-config ~/.claude2
+hrk setup
+hrk setup --claude-config ~/.claude --claude-config ~/.claude2
 ```
 
 `setup` makes the machine ready and prints each change. A second run prints `no changes`. It:
 
 - writes `~/.config/herdr-runner-kit/config.yaml` with only `schemaVersion` when there is no config yet;
 - creates the state folder;
+- when the binary still has its old name `herdr-runner-kit`, as after an upgrade from before the rename, adds an `hrk` link beside the `herdr-runner-kit` on your `PATH`;
 - installs the main-agent skill into `<claude config>/skills/herdr-runner-kit/` (`SKILL.md` and `references/commands.md`);
 - adds the auto re-arm Stop hook to `<claude config>/settings.json`;
 - when Telegram credentials are configured, writes the Telegram plugin's `channels/telegram/access.json` with your chat on an allowlist, if the plugin has no access list yet.
@@ -23,7 +24,7 @@ Each installed file carries a marker line with the version that wrote it and a h
 
 ### The auto re-arm hook
 
-The skill tells the main agent to keep `herdr-runner-kit wait` running in the background. Models forget, so `setup` also installs a Claude Code `Stop` hook with `asyncRewake`. After every main-agent turn it runs `wait` in the background. When news arrives, it wakes the agent with the news lines. When another `wait` is already watching, it exits without a word. When nothing is running, it exits too, unless a finished runner of this session is still open: then one hook per main session stays until that runner is 30 minutes past its finish, closes it as `gc` would, and checks again; hooks of later turns leave. While tasks run, `wait` itself closes them. Runners finished while no main session runs stay open until the next `gc`.
+The skill tells the main agent to keep `hrk wait` running in the background. Models forget, so `setup` also installs a Claude Code `Stop` hook with `asyncRewake`. After every main-agent turn it runs `wait` in the background. When news arrives, it wakes the agent with the news lines. When another `wait` is already watching, it exits without a word. When nothing is running, it exits too, unless a finished runner of this session is still open: then one hook per main session stays until that runner is 30 minutes past its finish, closes it as `gc` would, and checks again; hooks of later turns leave. While tasks run, `wait` itself closes them. Runners finished while no main session runs stay open until the next `gc`.
 
 - It runs only in the session started by `main --exec`, which sets `HRK_MAIN` to that session's process id. Other Claude sessions, and runners (which have `HRK_TASK` set), skip it, so none of them can take news meant for the main agent. The command `main` prints sets `HRK_MAIN=1`. The hook then runs too, but cannot tell when that session ends.
 - It stops when the main session's process is gone, or when Claude stops the hook's shell, so a leftover hook does not keep holding the news cursor. A `claude` started from inside the main session inherits `HRK_MAIN`, so its own hook also runs; avoid long nested sessions there.
@@ -34,7 +35,7 @@ The skill tells the main agent to keep `herdr-runner-kit wait` running in the ba
 ## doctor
 
 ```sh
-herdr-runner-kit doctor [--claude-config DIR]…
+hrk doctor [--claude-config DIR]…
 ```
 
 `doctor` changes nothing. It prints `ok`, `warn` or `fail` for each check, with the fix for each problem, and exits 1 when a check fails:
@@ -55,8 +56,8 @@ herdr-runner-kit doctor [--claude-config DIR]…
 ## uninstall
 
 ```sh
-herdr-runner-kit uninstall [--claude-config DIR]…
-herdr-runner-kit uninstall --purge
+hrk uninstall [--claude-config DIR]…
+hrk uninstall --purge
 ```
 
-`uninstall` removes the skill files that still match what setup wrote, and the auto re-arm hook. Files you edited are kept and listed. `--purge` also deletes the kit's config folder and state folder after you confirm; `--yes` skips the question. The binary itself and the Telegram plugin's files are left in place.
+`uninstall` removes the skill files that still match what setup wrote, and the auto re-arm hook. Files you edited are kept and listed. `--purge` also deletes the kit's config folder and state folder after you confirm; `--yes` skips the question. The `hrk` binary, its `herdr-runner-kit` alias and the Telegram plugin's files are left in place.

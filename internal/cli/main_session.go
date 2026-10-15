@@ -55,7 +55,7 @@ func newMainCommand() *cobra.Command {
 			if _, err := os.Stat(skillFile); err == nil {
 				argv = append(argv, "--append-system-prompt-file", skillFile)
 			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(), "note: no skill at %s, so the session starts without the routing rules; run herdr-runner-kit setup, or set CLAUDE_CONFIG_DIR\n", skillFile)
+				fmt.Fprintf(cmd.ErrOrStderr(), "note: no skill at %s, so the session starts without the routing rules; run hrk setup, or set CLAUDE_CONFIG_DIR\n", skillFile)
 			}
 			if !run {
 				shown := slices.Clone(argv)

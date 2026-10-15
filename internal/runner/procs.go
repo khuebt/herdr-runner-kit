@@ -177,9 +177,11 @@ func (r *Runner) markedProcs(table []proc, t *task.Task, shell int) []proc {
 	}
 	marks := [][]byte{[]byte("HRK_TASK=" + t.ID), []byte("HRK_STATE_DIR=" + r.Store.Dir())}
 	var out []proc
-	kit := filepath.Base(r.Bin)
+	// The kit's own calls, under either name: runners started before the
+	// rename call it as herdr-runner-kit.
+	kit := map[string]bool{filepath.Base(r.Bin): true, "hrk": true, "herdr-runner-kit": true}
 	for _, p := range table {
-		if inTree[p.PID] || filepath.Base(strings.Fields(p.Command + " x")[0]) == kit {
+		if inTree[p.PID] || kit[filepath.Base(strings.Fields(p.Command + " x")[0])] {
 			continue
 		}
 		env, err := r.ProcEnv(p.PID)
