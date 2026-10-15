@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.8.0...v0.9.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* close kept runners on time, quieter stalls, squash-aware cleanup and compact show ([#32](https://github.com/khuebt/herdr-runner-kit/issues/32))
+
+### Features
+
+* close kept runners on time, quieter stalls, squash-aware cleanup and compact show ([#32](https://github.com/khuebt/herdr-runner-kit/issues/32)) ([841acaa](https://github.com/khuebt/herdr-runner-kit/commit/841acaa18b7d253ec61c80d6b6f2c8cb9ea3cff1))
+* hand a runner near its context limit to a fresh session once ([#35](https://github.com/khuebt/herdr-runner-kit/issues/35)) ([99be511](https://github.com/khuebt/herdr-runner-kit/commit/99be511150a7735fa93fb9dc35c9d990f2bf428c))
+* run an AgentKit plan one fresh runner per phase ([#34](https://github.com/khuebt/herdr-runner-kit/issues/34)) ([390bbed](https://github.com/khuebt/herdr-runner-kit/commit/390bbedd1a40def0923de70693541e0b2f333354))
+
 ## [0.8.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.7.2...v0.8.0) (2026-10-14)
 
 
