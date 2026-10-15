@@ -77,11 +77,14 @@ func newDoctorCommand() *cobra.Command {
 			show("updates", checkUpdates(ctx))
 			show("herdr", checkHerdr(ctx))
 			integrations := herdrIntegrations(ctx)
-			for _, name := range []string{"claude", "codex"} {
-				show("herdr integration "+name, checkIntegration(integrations, name))
+			for _, a := range harness.All() {
+				c := a.Checks()
+				show("herdr integration "+c.Integration, needed(checkIntegration(integrations, c.Integration), c.Required))
 			}
-			show("claude", checkHelp(ctx, "claude", "--dangerously-skip-permissions", "--settings", "--model", "--effort"))
-			show("codex", checkHelp(ctx, "codex", "--dangerously-bypass-approvals-and-sandbox", "--model", "--config"))
+			for _, a := range harness.All() {
+				c := a.Checks()
+				show(c.Bin, needed(checkHelp(ctx, c.Bin, c.Flags...), c.Required))
+			}
 			show("git", checkHelp(ctx, "git"))
 			creds, tokenSource := checkTelegramCreds()
 			show("telegram credentials", creds)
@@ -228,6 +231,15 @@ func checkIntegration(status map[string]string, name string) checkResult {
 		s = "unknown"
 	}
 	return fail(s, "herdr integration install "+name)
+}
+
+// needed turns the failure of a check for a harness the kit does not
+// require into a warning.
+func needed(r checkResult, required bool) checkResult {
+	if !required && r.level == "fail" {
+		r.level = "warn"
+	}
+	return r
 }
 
 // checkHelp checks that a CLI is installed and that its --help still lists

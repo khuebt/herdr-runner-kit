@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
-	"syscall"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -120,22 +118,12 @@ func newAfterCommand() *cobra.Command {
 func newTurnEndCommand() *cobra.Command {
 	var h string
 	cmd := &cobra.Command{
-		Use:    "__turn-end [codex-notify-json]",
+		Use:    "__turn-end [notify-json]",
 		Hidden: true,
 		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var payload []byte
-			if task.Harness(h) == task.Codex {
-				if len(args) == 0 {
-					return nil
-				}
-				payload = []byte(args[0])
-				callUserCodexNotify(args[0])
-			} else {
-				payload, _ = io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1<<20))
-			}
-			id := os.Getenv("HRK_TASK")
-			if id == "" {
+			adapter, payload, ok := hookInput(cmd, "__turn-end", h, args)
+			if !ok {
 				return nil
 			}
 			r, err := openRunner()
@@ -143,33 +131,33 @@ func newTurnEndCommand() *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), "hrk __turn-end:", err)
 				return nil
 			}
-			block, err := r.TurnEnd(cmd.Context(), id, task.Harness(h), payload)
+			block, err := r.TurnEnd(cmd.Context(), os.Getenv("HRK_TASK"), adapter.Harness(), payload)
 			if err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "hrk __turn-end:", err)
 			}
-			if block != "" && task.Harness(h) == task.Claude {
-				fmt.Fprintln(cmd.OutOrStdout(), harness.ClaudeBlock(block))
+			if reply := adapter.HookReply(block); reply != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), reply)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&h, "harness", "claude", "claude or codex")
+	cmd.Flags().StringVar(&h, "harness", "claude", harnessFlagUsage())
 	return cmd
 }
 
-// newContextCommand is the Claude runners' PreCompact and
-// SessionStart(compact) hook. Like the turn-end hook it never fails: errors
-// go to stderr, and it prints nothing unless it asks for a handoff.
+// newContextCommand is the runners' compaction hook, fed Claude-shaped
+// PreCompact and SessionStart(compact) inputs. Like the turn-end hook it
+// never fails: errors go to stderr, and it prints nothing unless it asks for
+// a handoff and the agent takes added context.
 func newContextCommand() *cobra.Command {
 	var h string
 	cmd := &cobra.Command{
 		Use:    "__context",
 		Hidden: true,
 		Args:   cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			payload, _ := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1<<20))
-			id := os.Getenv("HRK_TASK")
-			if id == "" || task.Harness(h) != task.Claude {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			adapter, payload, ok := hookInput(cmd, "__context", h, args)
+			if !ok {
 				return nil
 			}
 			r, err := openRunner()
@@ -177,7 +165,7 @@ func newContextCommand() *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), "hrk __context:", err)
 				return nil
 			}
-			out, err := r.ContextHook(cmd.Context(), id, payload)
+			out, err := r.ContextHook(cmd.Context(), os.Getenv("HRK_TASK"), adapter.Harness(), payload)
 			if err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "hrk __context:", err)
 			}
@@ -187,24 +175,33 @@ func newContextCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&h, "harness", "claude", "claude")
+	cmd.Flags().StringVar(&h, "harness", "claude", harnessFlagUsage())
 	return cmd
 }
 
-// callUserCodexNotify runs the notify command from the user's config.toml,
-// detached, with the same argument Codex passed.
-func callUserCodexNotify(arg string) {
-	path, err := harness.CodexConfigPath()
+// hookInput reads a hook's input through the adapter of harness h. ok is
+// false when there is nothing to handle: no payload, or no runner task.
+func hookInput(cmd *cobra.Command, name, h string, args []string) (harness.Adapter, []byte, bool) {
+	adapter, err := harness.For(task.Harness(h))
 	if err != nil {
-		return
+		fmt.Fprintln(cmd.ErrOrStderr(), "hrk "+name+":", err)
+		return nil, nil, false
 	}
-	argv, err := harness.CodexUserNotify(path)
-	if err != nil || len(argv) == 0 {
-		return
+	payload, err := adapter.HookPayload(args, cmd.InOrStdin())
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "hrk "+name+":", err)
+		return nil, nil, false
 	}
-	c := exec.Command(argv[0], append(argv[1:], arg)...)
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if c.Start() == nil {
-		_ = c.Process.Release()
+	if payload == nil || os.Getenv("HRK_TASK") == "" {
+		return nil, nil, false
 	}
+	return adapter, payload, true
+}
+
+func harnessFlagUsage() string {
+	names := make([]string, 0, len(task.Harnesses()))
+	for _, h := range task.Harnesses() {
+		names = append(names, string(h))
+	}
+	return "the runner's harness: " + strings.Join(names, ", ")
 }

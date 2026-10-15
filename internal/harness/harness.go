@@ -13,6 +13,8 @@ package harness
 
 import (
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -25,14 +27,82 @@ type LaunchOptions struct {
 	// Bin is the absolute path of the herdr-runner-kit binary, called by the
 	// turn-end hook.
 	Bin string
-	// SettingsPath is the per-task Claude settings file holding the turn-end
-	// hooks.
-	SettingsPath string
-	// ContractPath is a file holding the report contract. Claude appends it
-	// to its system prompt, which survives compaction. Codex receives the
-	// contract in its first prompt instead. A file keeps the long text out of
-	// the shell line herdr types into the pane.
-	ContractPath string
+	// Dir is the task folder holding the files Files returned; empty when
+	// none were written.
+	Dir string
+}
+
+// FilesInput are the inputs to an adapter's per-task runner files.
+type FilesInput struct {
+	Bin      string // absolute path of the kit binary the hooks call
+	Contract string // the report contract text
+}
+
+// File is one per-task runner file, written into the task folder with mode
+// 0600.
+type File struct {
+	Name string
+	Data []byte
+}
+
+// TrustInput says where a runner starts, for an adapter's trust
+// preparation.
+type TrustInput struct {
+	Cwd        string // the folder spawn ran in
+	RepoRoot   string // its repository root, or empty outside one
+	RunnerPath string // the folder the agent starts in: the worktree or Cwd
+	// ClaudeConfigDir is the task's Claude config folder; empty is Claude's
+	// default.
+	ClaudeConfigDir string
+}
+
+// TrustResult is the event the launcher records after trust preparation;
+// an empty Event records none.
+type TrustResult struct {
+	Event  string
+	Detail string
+}
+
+// Screen reads the last lines of the runner's pane.
+type Screen func(lines int) (string, error)
+
+// TurnInput is what a turn-end hook gave the kit.
+type TurnInput struct {
+	Payload []byte
+	Screen  Screen
+}
+
+// TurnSignal is an adapter's reading of one turn end. The runner acts on it
+// in a fixed order: a confirmed limit, an ignored turn, the thread, a limit
+// on screen, low context, background work, and only then the nudge.
+type TurnSignal struct {
+	// Ignore says the hook is not the end of one of the runner's own turns,
+	// or ended it with nothing the kit can act on.
+	Ignore bool
+	// Thread is the agent's conversation thread. The first one seen is the
+	// runner's; turns of any other thread are ignored.
+	Thread string
+	// LimitConfirmed says the agent itself ended the turn on a usage limit.
+	LimitConfirmed bool
+	// LimitOnScreen says the agent's own usage-limit line shows.
+	LimitOnScreen bool
+	// Background says the agent ended its turn with background work still
+	// running, so it wakes on its own later.
+	Background bool
+	// ContextLeft is the percent of its context the agent has left, valid
+	// when ContextKnown.
+	ContextLeft  int
+	ContextKnown bool
+}
+
+// Checks is what doctor checks for one harness.
+type Checks struct {
+	Bin         string   // the agent's command
+	Flags       []string // flags its --help must still list
+	Integration string   // the herdr integration that reports its state
+	// Required makes a missing binary or integration a failure rather than a
+	// warning.
+	Required bool
 }
 
 // DialogAction says how the launcher handles a startup dialog.
@@ -89,17 +159,56 @@ type Adapter interface {
 	// footer says is left, in percent. ok is false when the screen shows
 	// none, or the agent tells the kit through hooks instead.
 	ContextLeft(screen string) (pct int, ok bool)
+	// Files returns the per-task runner files LaunchArgs refers to.
+	Files(FilesInput) ([]File, error)
+	// PrepareTrust makes sure the agent trusts the folder spawn ran in, so
+	// the runner starts without a trust dialog.
+	PrepareTrust(TrustInput) (TrustResult, error)
+	// ReadTurnEnd reads a turn-end hook's payload and, when it needs to, the
+	// screen.
+	ReadTurnEnd(TurnInput) (TurnSignal, error)
+	// NudgeInHook reports whether the turn-end hook's reply carries the
+	// nudge; otherwise the kit types it into the pane.
+	NudgeInHook() bool
+	// HookPayload reads a hook's input from its arguments or stdin. nil
+	// means there is nothing to handle.
+	HookPayload(args []string, stdin io.Reader) ([]byte, error)
+	// HookReply is what the turn-end hook prints for the nudge block, or
+	// "" for nothing.
+	HookReply(block string) string
+	// SessionContext is what the compaction hook prints to add request to
+	// the model's context, or "" when the agent takes none.
+	SessionContext(request string) string
+	// WorksInBackground reports whether the agent's screen shows background
+	// work still running. It returns screen's error when it cannot tell.
+	WorksInBackground(screen Screen) (bool, error)
+	// Checks lists what doctor checks.
+	Checks() Checks
 }
+
+// adapters holds every harness's adapter, in task.Harnesses order.
+var adapters = []Adapter{claude{}, codex{}}
+
+// All returns every adapter, in task.Harnesses order.
+func All() []Adapter { return slices.Clone(adapters) }
 
 // For returns the adapter for harness h.
 func For(h task.Harness) (Adapter, error) {
-	switch h {
-	case task.Claude:
-		return claude{}, nil
-	case task.Codex:
-		return codex{}, nil
+	for _, a := range adapters {
+		if a.Harness() == h {
+			return a, nil
+		}
 	}
 	return nil, fmt.Errorf("unsupported harness %q", h)
+}
+
+// readStdin reads a hook input from stdin, up to 1 MiB.
+func readStdin(stdin io.Reader) ([]byte, error) {
+	data, _ := io.ReadAll(io.LimitReader(stdin, 1<<20))
+	if data == nil {
+		data = []byte{}
+	}
+	return data, nil
 }
 
 // DetectDialog returns the first known dialog whose text is on screen.

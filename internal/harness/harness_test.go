@@ -26,24 +26,23 @@ func spec(t *testing.T, s string) task.AgentSpec {
 
 func TestClaudeLaunchArgs(t *testing.T) {
 	tests := []struct {
-		agent    string
-		settings string
-		contract string // contract file path
-		want     []string
+		agent string
+		dir   string // task folder holding the runner files
+		want  []string
 	}{
-		{"claude", "", "", []string{"--dangerously-skip-permissions"}},
-		{"claude:claude-opus-5-5", "", "", []string{"--dangerously-skip-permissions", "--model", "claude-opus-5-5"}},
-		{"claude::max", "", "", []string{"--dangerously-skip-permissions", "--effort", "max"}},
+		{"claude", "", []string{"--dangerously-skip-permissions"}},
+		{"claude:claude-opus-5-5", "", []string{"--dangerously-skip-permissions", "--model", "claude-opus-5-5"}},
+		{"claude::max", "", []string{"--dangerously-skip-permissions", "--effort", "max"}},
 		{
-			"claude:claude-sonnet-5-5:medium", "/s/t3/settings.json", "/s/t3/contract.md",
+			"claude:claude-sonnet-5-5:medium", "/s/t3",
 			[]string{
 				"--dangerously-skip-permissions", "--model", "claude-sonnet-5-5", "--effort", "medium",
-				"--settings", "/s/t3/settings.json", "--append-system-prompt-file", "/s/t3/contract.md",
+				"--settings", "/s/t3/claude-settings.json", "--append-system-prompt-file", "/s/t3/contract.md",
 			},
 		},
 	}
 	for _, tt := range tests {
-		got := claude{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), SettingsPath: tt.settings, ContractPath: tt.contract})
+		got := claude{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Dir: tt.dir})
 		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
 		}
@@ -68,7 +67,7 @@ func TestCodexLaunchArgs(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		got := codex{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Bin: tt.bin, ContractPath: "/ignored"})
+		got := codex{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Bin: tt.bin, Dir: "/ignored"})
 		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
 		}
@@ -535,5 +534,67 @@ func TestContextLeft(t *testing.T) {
 	}
 	if _, ok := (claude{}).ContextLeft("› x\n  Context 5% left\n"); ok {
 		t.Error("Claude's footer was read")
+	}
+}
+
+func TestRegistryMatchesTheHarnessTable(t *testing.T) {
+	var got []task.Harness
+	for _, a := range All() {
+		got = append(got, a.Harness())
+	}
+	if want := task.Harnesses(); !reflect.DeepEqual(got, want) {
+		t.Errorf("adapters = %q, task.Harnesses() = %q", got, want)
+	}
+}
+
+// screenOf returns a Screen that shows text, or fails when text is empty.
+func screenOf(text string) Screen {
+	return func(int) (string, error) {
+		if text == "" {
+			return "", errors.New("no pane")
+		}
+		return text, nil
+	}
+}
+
+func TestReadTurnEnd(t *testing.T) {
+	const codexTurn = `{"type":"agent-turn-complete","thread-id":"th1","input-messages":["go on"]}`
+	tests := []struct {
+		name    string
+		a       Adapter
+		payload string
+		screen  string // fixture name, or "" for an unreadable pane
+		want    TurnSignal
+	}{
+		{"claude limit", claude{}, readFixture(t, "stop-failure-claude.json"), "", TurnSignal{LimitConfirmed: true}},
+		{"claude other failure", claude{}, `{"hook_event_name":"StopFailure","error":"server_error"}`, "", TurnSignal{Ignore: true}},
+		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true}},
+		{"claude all finished", claude{}, readFixture(t, "stop-background-none-claude.json"), "background-agents-claude-2.txt", TurnSignal{}},
+		{"claude mode line", claude{}, `{"hook_event_name":"Stop"}`, "background-agents-claude-2.txt", TurnSignal{Background: true}},
+		{"claude no list, no pane", claude{}, `{"hook_event_name":"Stop"}`, "", TurnSignal{}},
+		{"codex title turn", codex{}, `{"type":"agent-turn-complete","input-messages":["Generate a concise, single-line task title for this"]}`, "", TurnSignal{Ignore: true}},
+		{"codex other event", codex{}, `{"type":"approval-requested"}`, "", TurnSignal{Ignore: true}},
+		{"codex low context", codex{}, codexTurn, "codex-context-low.txt", TurnSignal{Thread: "th1", ContextLeft: 13, ContextKnown: true}},
+		{"codex limit", codex{}, codexTurn, "usage-limit-codex.txt", TurnSignal{Thread: "th1", LimitOnScreen: true}},
+		{"codex no pane", codex{}, codexTurn, "", TurnSignal{Thread: "th1"}},
+	}
+	for _, tt := range tests {
+		screen := ""
+		if tt.screen != "" {
+			screen = readFixture(t, tt.screen)
+		}
+		got, err := tt.a.ReadTurnEnd(TurnInput{Payload: []byte(tt.payload), Screen: screenOf(screen)})
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if tt.name == "codex limit" {
+			got.ContextLeft, got.ContextKnown = 0, false // the capture's footer is not under test here
+		}
+		if got != tt.want {
+			t.Errorf("%s: signal = %+v, want %+v", tt.name, got, tt.want)
+		}
+	}
+	if _, err := (codex{}).ReadTurnEnd(TurnInput{Payload: []byte("{"), Screen: screenOf("")}); err == nil {
+		t.Error("codex: a malformed notify payload was accepted")
 	}
 }

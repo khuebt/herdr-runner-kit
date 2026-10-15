@@ -15,11 +15,52 @@ const (
 	Codex  Harness = "codex"
 )
 
-// Effort levels each harness accepts, taken from `claude --help` and the Codex
+// harnessInfo is what the agent spec needs to know about one harness.
+type harnessInfo struct {
+	efforts    []string // the effort levels it accepts
+	needsModel bool     // a spec must name the model
+}
+
+// harnesses lists every supported harness in the order the kit shows them.
+// Effort levels come from `claude --help` and the Codex
 // model_reasoning_effort setting.
-var effortLevels = map[Harness][]string{
-	Claude: {"low", "medium", "high", "xhigh", "max"},
-	Codex:  {"minimal", "low", "medium", "high", "xhigh"},
+var harnesses = []struct {
+	name Harness
+	harnessInfo
+}{
+	{Claude, harnessInfo{efforts: []string{"low", "medium", "high", "xhigh", "max"}}},
+	{Codex, harnessInfo{efforts: []string{"minimal", "low", "medium", "high", "xhigh"}}},
+}
+
+// Harnesses returns the supported harnesses in order.
+func Harnesses() []Harness {
+	out := make([]Harness, len(harnesses))
+	for i, h := range harnesses {
+		out[i] = h.name
+	}
+	return out
+}
+
+func infoOf(h Harness) (harnessInfo, bool) {
+	for _, e := range harnesses {
+		if e.name == h {
+			return e.harnessInfo, true
+		}
+	}
+	return harnessInfo{}, false
+}
+
+// harnessChoice lists the harnesses as "a, b or c".
+func harnessChoice() string {
+	names := make([]string, len(harnesses))
+	for i, h := range harnesses {
+		names[i] = string(h.name)
+	}
+	last := len(names) - 1
+	if last == 0 {
+		return names[0]
+	}
+	return strings.Join(names[:last], ", ") + " or " + names[last]
 }
 
 // AgentSpec selects the harness, model and effort of a runner. An empty model
@@ -44,16 +85,19 @@ func ParseAgentSpec(s string) (AgentSpec, error) {
 	if len(parts) > 2 {
 		spec.Effort = parts[2]
 	}
-	levels, ok := effortLevels[spec.Harness]
+	info, ok := infoOf(spec.Harness)
 	if !ok {
-		return AgentSpec{}, fmt.Errorf("invalid agent %q: harness must be claude or codex", s)
+		return AgentSpec{}, fmt.Errorf("invalid agent %q: harness must be %s", s, harnessChoice())
+	}
+	if info.needsModel && spec.Model == "" {
+		return AgentSpec{}, fmt.Errorf("invalid agent %q: %s needs a model: %s:<model>[:effort]", s, spec.Harness, spec.Harness)
 	}
 	if strings.ContainsAny(spec.Model, " \t\n") {
 		return AgentSpec{}, fmt.Errorf("invalid agent %q: model must not contain spaces", s)
 	}
-	if spec.Effort != "" && !slices.Contains(levels, spec.Effort) {
+	if spec.Effort != "" && !slices.Contains(info.efforts, spec.Effort) {
 		return AgentSpec{}, fmt.Errorf("invalid agent %q: %s effort must be one of %s",
-			s, spec.Harness, strings.Join(levels, ", "))
+			s, spec.Harness, strings.Join(info.efforts, ", "))
 	}
 	return spec, nil
 }

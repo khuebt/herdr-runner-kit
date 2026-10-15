@@ -5,8 +5,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
+
+func claudeAdapter(t *testing.T) harness.Adapter {
+	t.Helper()
+	a, err := harness.For(task.Claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
 
 // claudeTurnEnd ends one turn of a fresh Claude runner whose pane shows
 // screen, and returns the nudge, empty when there is none.
@@ -28,7 +38,7 @@ func TestTurnEndTrustsTheStopInputOverTheModeLine(t *testing.T) {
 	// Right after the launch the mode line draws no count for the agents.
 	early := harnessFixture(t, "background-agents-claude-1.txt")
 	shells := harnessFixture(t, "background-agents-claude-2.txt")
-	if hasBackgroundWork(early) {
+	if busy, _ := claudeAdapter(t).WorksInBackground(func(int) (string, error) { return early, nil }); busy {
 		t.Fatal("the early screen shows a count; the fixture no longer shows the miss")
 	}
 	if block := claudeTurnEnd(t, running, early); block != "" {

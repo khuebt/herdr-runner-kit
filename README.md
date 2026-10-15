@@ -95,6 +95,7 @@ With a bot configured, the kit sends runner news (questions, failures, held task
 - [Configuration](docs/config.md)
 - [Telegram](docs/telegram.md)
 - [Versioning and releases](docs/versioning.md)
+- [Architecture](docs/architecture.md), for contributors
 - [Contributing](CONTRIBUTING.md)
 
 ## License

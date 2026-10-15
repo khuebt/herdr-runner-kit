@@ -183,16 +183,17 @@ func (r *Runner) agentIdle(ctx context.Context, t *task.Task) error {
 	case a.Status == "working" || a.Status == "blocked":
 		return fmt.Errorf("%s's agent is busy; sync it once it is idle", t.ID)
 	}
-	if spec, err := task.ParseAgentSpec(t.Agent); err != nil || spec.Harness != task.Claude {
+	adapter, ok := adapterOf(t)
+	if !ok {
 		return nil
 	}
-	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 8)
+	busy, err := adapter.WorksInBackground(r.screen(ctx, t))
 	switch {
 	case isGone(err):
 		return nil
 	case err != nil:
 		return fmt.Errorf("%s: cannot read its pane to check for background work, so it was not synced: %w", t.ID, err)
-	case hasBackgroundWork(screen):
+	case busy:
 		return fmt.Errorf("%s's agent still runs background work; sync it once that ends", t.ID)
 	}
 	return nil
