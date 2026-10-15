@@ -219,12 +219,18 @@ type piTurn struct {
 }
 
 // piLimitPhrases mark a usage-limit error: pi-ai's own ChatGPT message
-// starts "You have hit your", and omp treats the rest as limit errors too.
-var piLimitPhrases = []string{"usage limit", "You have hit your", "quota", "exhausted", "out of credits"}
+// starts "You have hit your". piMaybeLimitPhrases also name a provider's
+// rate limit, such as a 429 RESOURCE_EXHAUSTED that pi gave up retrying, so
+// they only suggest a limit: a fallback takes over if one is left, and the
+// task is never failed on them.
+var (
+	piLimitPhrases      = []string{"usage limit", "You have hit your", "out of credits", "insufficient quota", "insufficient_quota"}
+	piMaybeLimitPhrases = []string{"quota", "exhausted"}
+)
 
 // ReadTurnEnd reads the extension's turn end. An aborted run is the user's
 // Esc; an error naming a usage limit is the agent's own, so it confirms the
-// limit.
+// limit, and one that only may be a limit counts as a limit on screen.
 func (pi) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 	var t piTurn
 	if err := json.Unmarshal(in.Payload, &t); err != nil {
@@ -233,10 +239,11 @@ func (pi) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 	if t.Aborted {
 		return TurnSignal{Ignore: true}, nil
 	}
-	if containsAny(Normalize(t.ErrorMessage), piLimitPhrases) {
+	msg := Normalize(t.ErrorMessage)
+	if containsAny(msg, piLimitPhrases) {
 		return TurnSignal{LimitConfirmed: true}, nil
 	}
-	var sig TurnSignal
+	sig := TurnSignal{LimitOnScreen: containsAny(msg, piMaybeLimitPhrases)}
 	if p := t.Context.Percent; p != nil {
 		sig.ContextLeft, sig.ContextKnown = 100-int(math.Round(*p)), true
 	}

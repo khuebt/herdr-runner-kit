@@ -197,6 +197,7 @@ func TestPiReadTurnEnd(t *testing.T) {
 		{"turnend-pi-error.json", TurnSignal{ContextLeft: 94, ContextKnown: true}},
 		{"turnend-pi-usage-limit.json", TurnSignal{LimitConfirmed: true}},
 		{"turnend-pi-context-high.json", TurnSignal{ContextLeft: 10, ContextKnown: true}},
+		{"turnend-pi-rate-limit.json", TurnSignal{LimitOnScreen: true, ContextLeft: 88, ContextKnown: true}},
 		{"turnend-omp-completed.json", TurnSignal{ContextLeft: 90, ContextKnown: true}},
 	}
 	for _, a := range []Adapter{piAgent, ompAgent} {
@@ -207,10 +208,16 @@ func TestPiReadTurnEnd(t *testing.T) {
 			}
 		}
 	}
-	for _, msg := range []string{"Your QUOTA is exhausted", "out of credits", "Usage\nlimit reached"} {
+	for msg, want := range map[string]TurnSignal{
+		"out of credits":           {LimitConfirmed: true},
+		"Usage\nlimit reached":     {LimitConfirmed: true},
+		"insufficient_quota":       {LimitConfirmed: true},
+		"Your QUOTA is exhausted":  {LimitOnScreen: true},
+		"connection reset by peer": {},
+	} {
 		payload, _ := json.Marshal(map[string]any{"event": "agent_end", "errorMessage": msg})
-		if got, _ := ompAgent.ReadTurnEnd(TurnInput{Payload: payload}); !got.LimitConfirmed {
-			t.Errorf("%q is not a usage limit", msg)
+		if got, _ := ompAgent.ReadTurnEnd(TurnInput{Payload: payload}); got != want {
+			t.Errorf("%q = %+v, want %+v", msg, got, want)
 		}
 	}
 	// Right after a compaction the agent knows no percent.
