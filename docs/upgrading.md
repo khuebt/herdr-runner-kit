@@ -26,13 +26,13 @@ When a release changes the state schema, the new binary migrates the state the f
 
 An upgrade within the same schema needs no migration and is always allowed.
 
-Do not go back to a release with report contract 1 while runners started by a contract 2 binary are open: the older binary keeps only the last question of a round and rejects `--decision`. See [report-contract.md](report-contract.md#compatibility).
+Do not go back to a release with report contract 2 while a runner that handed off (attempt 2 or later) is open: the older binary rejects `report handoff` and drops the task's `attempt`, so a report from the ended session would count again. Let those runners finish, or stop them, first. Do not go back to a release with report contract 1 while runners started by a contract 2 binary are open: the older binary keeps only the last question of a round and rejects `--decision`. See [report-contract.md](report-contract.md#compatibility).
 
 A project record written by this release uses `manifestVersion: 2`, in the kit's state and in a project's committed `handbook/product/project.md`. Version 2 adds a gate outcome's `content` (the git object id of the approved spec or pack), a change request's `path`, and a milestone's `released` and `roadmapUpdate` (the git blob ids of the release notes and roadmap update each `milestone done` found). An older binary that reads only version 1 refuses such a record with "upgrade herdr-runner-kit" rather than an unknown field. Version 1 records are read as before and written back as version 2 at their next change. An older release cannot drive a project once its record is version 2, so do not go back to one while you drive projects. The id of a change request's impact runner stays in the kit's state and is never committed.
 
-An older binary refuses a config key it does not know. Before going back to a release older than a key you set, such as `quotaFallback`, `keepFor` or `stallAfter`, remove that key from the config.
+An older binary refuses a config key it does not know. Before going back to a release older than a key you set, such as `quotaFallback`, `keepFor`, `stallAfter`, `contextHandoff` or `contextHandoffAt`, remove that key from the config.
 
-An older binary reads a task that a newer one wrote, since it ignores fields it does not know, but drops those fields when it rewrites the task: for example `roundHead` and the `git` fields `head`, `sinceStart` and `untrackedPlans`, and the plan run fields `plan`, `phase`, `checkoutOf`, `phaseStart` and `phaseCheck`. Finish or stop plan runs before going back to a release without `plan run`: an older binary would launch a waiting phase in the main checkout instead of the run's worktree. The per-task `progress.json` that the stall check writes is ignored by older binaries.
+An older binary reads a task that a newer one wrote, since it ignores fields it does not know, but drops those fields when it rewrites the task: for example `roundHead` and the `git` fields `head`, `sinceStart` and `untrackedPlans`, the plan run fields `plan`, `phase`, `checkoutOf`, `phaseStart` and `phaseCheck`, and the handoff fields `attempt` and `handoffs`. Finish or stop plan runs before going back to a release without `plan run`: an older binary would launch a waiting phase in the main checkout instead of the run's worktree. The per-task `progress.json` that the stall check and the context hooks write is ignored by older binaries. Runners started by an older binary have no compaction hooks in their settings, so they are never asked to hand off; they compact as before.
 
 ## Changes to know about
 
@@ -43,6 +43,7 @@ An older binary reads a task that a newer one wrote, since it ignores fields it 
 - **New news.** `processes-left` names processes a closed runner left running. A task whose herdr pane is gone after a restart now fails with `runner lost: herdr pane gone`.
 - **Cleanup.** Squash- and rebase-merged branches count as merged, and `cleanup` without `--owner` includes project tasks.
 - **Projects.** `project run pack --after …` waits for `release` unless `--gate auto`.
+- **Context handoff.** A runner near its context limit is asked to hand off once to a fresh session of its task: Claude runners at their first automatic compaction, Codex runners at a turn end with `contextHandoffAt` percent (15) of the context left or less. Set `contextHandoff: false` to keep the old behaviour. The report contract is now version 3, with `report handoff` and `HRK_ATTEMPT`; Telegram tags and `needs-human` lines name the attempt from the second one on, such as `#t3a2`.
 - **Plan runs.** `plan run <plan>` runs an AgentKit plan one runner per phase on one branch, and `wait` wakes for the new `plan-done` news. It writes the frontmatter `status:` lines of `plan.md` and the phase files.
 
 ## Update notes

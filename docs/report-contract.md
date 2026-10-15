@@ -1,6 +1,6 @@
 # Report contract
 
-Every runner gets a short contract that tells it how to report back to the main session. The contract is versioned by `contractVersion` (see [versioning.md](versioning.md)). This page describes version 2.
+Every runner gets a short contract that tells it how to report back to the main session. The contract is versioned by `contractVersion` (see [versioning.md](versioning.md)). This page describes version 3.
 
 ## How the runner gets it
 
@@ -17,7 +17,10 @@ The runner reports once when it finishes, with one of the commands below. A late
 herdr-runner-kit report done --summary "<one or two sentences>" [--decision "<question> -> <choice>"]... [--output <path>]...
 herdr-runner-kit report needs-human --question "<question, with the options and the recommended one>"... [--summary "<context>"]
 herdr-runner-kit report failed --summary "<what failed and why>"
+herdr-runner-kit report handoff --output <handoff file> --summary "<what is done and what is left>"
 ```
+
+`report handoff` is only for a runner the kit told that its context is nearly full; see [Context handoff](#context-handoff).
 
 The command path is the absolute path of the binary that spawned the runner. `report` also records a local git snapshot of the task's checkout, capped at 2 seconds and never fetching, which `wait` shows as `git:` on the news line. For a runner in its own worktree the snapshot also lists, as `stacked:`, up to 10 local branches its branch builds on: merged into it but not yet into the default branch.
 
@@ -49,6 +52,7 @@ Rules the runner follows:
 - Every open question it settles itself with the recommended option is passed to `done` as `--decision`.
 - It never asks for, types or echoes a secret value in a question, summary or file; it asks where the secret is stored instead. `report` hides anything that looks like a secret (token-like strings, values of `password=`-style keys, credentials in URLs) in its summary, questions and decisions before it stores them or sends them to Telegram, and the `answered` event of `answer` and the `sent` event of `send` do the same.
 - Background shells and subagents finish before `done` is reported.
+- Only when the kit says its context is nearly full, it commits or saves its work at a stable point, writes a handoff under `tasks/<id>/out/` naming what is done, what is left, the checks it ran and any background process it started (command and pid), then runs `report handoff` and stops.
 - It does not run `rm -r` on directories, alone or inside compound commands, because Claude Code stops on a safety prompt for it; scratch output goes into a new folder under `tasks/<id>/out/` instead.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Files under `plans/` and agent folders (`.claude/`, `.codex/`, `.agents/`) are never committed. The runner never pushes and never opens a pull request.
 - It commits on the branch it starts on, and never creates, switches or deletes branches. If its prompt names another branch, it stays on its own and says so in its summary.
@@ -63,6 +67,28 @@ Rules the runner follows:
 
 The notes are neither events nor stored.
 
+## Context handoff
+
+A long runner degrades once its agent compacts its context. The kit lets each task continue once in a fresh session instead:
+
+1. **The kit asks.** For Claude Code, the trigger is the first automatic compaction of the session: the kit's `PreCompact` hook sees `trigger: auto`, and the `SessionStart` hook that follows with `source: compact` adds the request to the model's context and queues it in the runner's tab as a message. A manual `/compact` never asks, and neither does an automatic compaction that Claude announced and then replaced with a manual one. For Codex, a turn that ends with its footer showing `contextHandoffAt` percent of the context left or less (15 by default) gets the request instead of the usual nudge, and does not count as an unreported turn. The footer reads `N% context left`, or `Context N% left` or `Context N% used` from a status line with `context-remaining` or `context-used`; a footer cut by the pane width, or without the item, never asks. Each attempt is asked once, and a runner that was asked and ends its turn without handing off gets the request again as its nudge.
+2. **The runner hands off.** The request names the file, `tasks/<id>/out/handoff-a<N>.md` with `N` the next attempt, and the exact `report handoff` command. `report handoff` needs `--summary` and exactly one `--output`, an existing file, and is accepted only while the task is `running`.
+3. **The kit starts the next attempt.** The task's `attempt` goes up by one and the file is added to its `handoffs`. A detached launcher quits the agent with Ctrl+C, the way a quota switch does, and starts the same agent in the same tab and checkout. The new session's first prompt is the task's prompt followed by `This is attempt N of task tN. The previous session neared its context limit and wrote a handoff: <file>. Read it first, check git status and git log, continue only the unfinished work, rerun only the checks it affects, then report.` Processes the previous session left running are listed after it (`Still running from the previous session: …`) and in a `processes-carried` event; the kit never stops them.
+
+Each task hands off at most once. A second `report handoff` is refused with `tN already used its one context replacement; keep working in this session (it compacts on its own), or report failed or needs-human`, and later automatic compactions are only recorded.
+
+The event log gets `context-low` when the kit asks, or when an automatic compaction asks nothing (with the reason, such as `contextHandoff is off`), and `handoff` when the next attempt starts. `contextHandoff: false` turns the requests off (see [config.md](config.md#keys)).
+
+### Attempts
+
+From the second attempt on, the launcher sets `HRK_ATTEMPT=<n>` in the runner's environment. `report` and the turn-end and context hooks compare it with the task's attempt, where an empty value means 1:
+
+- a report from an ended attempt is refused: `tN is on attempt 2; a report from attempt 1 is ignored`;
+- its turn ends and compaction hooks are ignored;
+- a manual `report --task` names no attempt and is never refused for it.
+
+News of a later attempt names it: `wait` adds `attempt 2` to a `needs-human` line, Telegram tags it `#t3a2`, and `answer t3a2` or a `#t3a2` reply reaches it. An answer for an attempt that ended, such as `#t3a1`, is refused with `that question was for attempt 1 of t3, which ended`. A bare `t3` always goes to the current attempt. A quota switch keeps the attempt.
+
 ## A runner that forgets to report
 
 Each runner's turn-end hook (Claude's Stop hook, Codex's `notify`) checks whether the task reported. Claude's `StopFailure` hook, for a turn that ended in an API error, only looks for a usage limit (see [commands.md](commands.md#usage-limits)):
@@ -75,6 +101,6 @@ A Claude turn that ends while background shells or agents still run is not count
 
 ## Compatibility
 
-Within one major product version the contract only grows. A runner started by an older binary can still report after an upgrade: a version 2 binary accepts every version 1 report, and a version 1 report (one `--question`, or `done` without `--decision`) writes the same task and event as before. The new task fields `decisions` and `git.stacked`, and the event field `decisions`, appear only when set. The `rm` rule and the report notes change no command or flag, so the contract stays at version 2.
+Within one major product version the contract only grows. A runner started by an older binary can still report after an upgrade: a version 3 binary accepts every version 1 and 2 report, and such a report writes the same task and event as before. Version 3 adds `report handoff` and `HRK_ATTEMPT`; the task fields `attempt` and `handoffs`, and the event field `attempt`, appear only after a handoff. Version 2 added `--decision` and question rounds, with the task fields `decisions` and `git.stacked` and the event field `decisions`.
 
-Going back is not safe while version 2 runners are open: a version 1 binary keeps only the last `--question` of a round and rejects `--decision` as an unknown flag.
+Going back is not safe while runners of a newer contract are open: a version 2 binary rejects `report handoff`, and drops a task's `attempt` when it rewrites the task, so the attempt checks stop; a version 1 binary keeps only the last `--question` of a round and rejects `--decision` as an unknown flag.

@@ -22,14 +22,14 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 |---|---|
 | `spawn [flags] -- <prompt>` (alias `run`) | Records a task and returns at once. A detached launcher opens the runner in a new herdr tab, or a new worktree workspace, and sends the first prompt. |
 | `wait` | Blocks until one of your tasks has news, prints one line per event and exits. Run it in the background and rerun it after each wake. |
-| `answer <id> <text>` | Answers a runner that reported `needs-human`. It continues in the same session. |
+| `answer <id> <text>` | Answers a runner that reported `needs-human`. It continues in the same session. The id may name the runner's attempt, such as `t3a2`; an answer for an attempt that ended is refused. See [Context handoff](#context-handoff). |
 | `answer --from-telegram --stdin` | Routes a Telegram reply by its `#id` tag, or to the only waiting task. See [telegram.md](telegram.md). |
 | `main [--exec]` | Prints, or runs, the command that starts the main session with the skill and the Telegram channel. |
 | `send <id> <text>` | Types a new prompt into a live runner. A `done` or `failed` task whose tab is still open becomes `running` again, and its next report wakes `wait`. A `stopped` task refuses it. |
 | `release <id> [--note TEXT]` | Opens a held task's human gate and starts it. |
 | `plan run <plan.md\|dir> [--dry-run] [--parallel N] [--branch NAME]` | Runs an AgentKit plan one fresh runner per phase, in waves on one branch. See [Plans](#plans). |
-| `list [--all]` | Your tasks and every project's, or every owner's with `--all`: stored status, herdr's live state, the TAB column (`open` with when `gc` closes it, `kept until HH:MM`, `kept`, `closed`, or `-` before a tab exists), AGE since the spawn and LAST, the age of the task's latest event. |
-| `show <id> [--prompt] [--events N]` | One task as compact text: status, kind, agent, title, project and stage, times and tab, worktree, the `git:` line, error, summary (whole), decisions, question, outputs, the last 5 events and the output folder. Other fields are cut to 400 characters. The prompt and the inputs from `--after` tasks show only with `--prompt`. |
+| `list [--all]` | Your tasks and every project's, or every owner's with `--all`: stored status, herdr's live state, the TAB column (`open` with when `gc` closes it, `kept until HH:MM`, `kept`, `closed`, or `-` before a tab exists), AGE since the spawn and LAST, the age of the task's latest event, followed by the runner's compactions, such as `2m, 3 compactions`. |
+| `show <id> [--prompt] [--events N]` | One task as compact text: status, kind, agent, title, project and stage, times and tab, `context:` (the attempt after a handoff, and the compactions), worktree, the `git:` line, error, summary (whole), decisions, question, outputs, the last 5 events and the output folder. Other fields are cut to 400 characters. The prompt and the inputs from `--after` tasks show only with `--prompt`. |
 | `show <id> --json [--events N]` | The task as one JSON object and nothing else, for scripts. With `--events` it prints `{"task": …, "events": […]}`. Parse this, never the text view. |
 | `peek <id> [--lines N]` | The last lines of the runner's visible pane (default 30, at most 200), with anything that looks like a secret hidden. It only reads, and refuses a task whose tab is closed. |
 | `events [--since 1h] [--task ID] [--follow] [--timings]` | The event log, or the measured latencies per task. |
@@ -115,6 +115,12 @@ Claude reports the limit itself: its turn ends in a `StopFailure` hook with a ra
 
 Codex only shows the limit on screen, as its own `■ You've hit your usage limit …` error line; the same words in the conversation or in a tool's output never count. Such a line switches the agent when a fallback is left. Otherwise the task is not failed: the runner is nudged as for any unreported turn, and the main session gets `usage-limit` news saying the runner appears to be at its usage limit.
 
+## Context handoff
+
+A runner whose agent nears its context limit continues once in a fresh session of the same task, in the same tab and checkout. For Claude Code the kit asks at the first automatic compaction; a manual `/compact` never asks. For Codex it asks at a turn end when the footer shows `contextHandoffAt` percent of the context left or less (15 by default). The runner commits or saves its work, writes `tasks/<id>/out/handoff-a<N>.md` and runs `report handoff`; the kit then quits the agent and starts attempt N with a prompt that points at the handoff. Each task hands off at most once. `contextHandoff: false` in the [config](config.md#keys) turns the requests off.
+
+Attempts show only from the second one on: `wait` adds `attempt 2` to a `needs-human` line, Telegram tags it `#t3a2`, and `answer t3a2` or `answer t3` reach it, while `answer t3a1` is refused once attempt 1 ended. Reports and hooks from an ended attempt are refused or ignored. The event log gets `context-low` and `handoff`, and `processes-carried` when the previous session left processes running, which the new attempt is told to stop or reuse. See [report-contract.md](report-contract.md#context-handoff).
+
 ## Cleaning up
 
 Finished runners close on their own (see `gc`), but their worktrees and branches stay until you remove them. `cleanup` without `--yes` only reports, however old a worktree is:
@@ -136,7 +142,7 @@ While `wait` runs, it fetches origin at most every 10 minutes and reports each n
 
 The main agent runs `wait` in the background. In the session `main --exec` starts, the auto re-arm hook that `setup` installs also runs it after every turn, so no news is missed when the agent forgets to rerun it.
 
-`wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped`, `turn-ended-unreported`, `usage-limit`, `cleanable`, `processes-left` and `plan-done`. Other events, such as `started`, `blocked`, `unstalled`, `nudged`, `interrupted`, `closed`, `process-check-skipped`, `notify-deferred`, `phase-accepted` and `plan-status-failed`, only move its cursor.
+`wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped`, `turn-ended-unreported`, `usage-limit`, `cleanable`, `processes-left` and `plan-done`. Other events, such as `started`, `blocked`, `unstalled`, `nudged`, `interrupted`, `closed`, `process-check-skipped`, `notify-deferred`, `phase-accepted`, `plan-status-failed`, `context-low`, `handoff` and `processes-carried`, only move its cursor.
 
 ```
 t3 done · fix login · git: on hrk/t3-fix-login, 1 commit, no upstream · tab closes 15:42 · Login fixed; tests pass · out: /…/tasks/t3/out/notes.md
@@ -145,6 +151,7 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 
 - A `done` or `failed` line carries `git:`, the state of the task's checkout when the runner reported: its worktree, or `repo state` for a task without one. It counts uncommitted and untracked files, naming the share under `plans/` (`1536 untracked (1530 under plans/)`), and commits not pushed, behind, diverged from the upstream, or with no upstream, and ends with `head <sha>`, the short sha of HEAD. For a task without a worktree it counts the commits made since the round began (the launch, or the latest `send` or `answer`): `2 commits since start, head abc1234`, so a runner that commits on the default branch itself is never reported as "no new commits".
 - A `done` line says `tab closes HH:MM` when `gc` will close the runner, `tab kept until HH:MM` after `keep`, or `tab kept` with `keepFor: 0`.
+- A `needs-human` line of a runner on its second attempt or later says so, as `attempt 2` after the title; answer it as usual. See [Context handoff](#context-handoff).
 - A `done` line lists the runner's own decisions as `decided: …` right after the title, and a round of questions spans a header and one numbered line per question. See [report-contract.md](report-contract.md#question-rounds).
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.

@@ -18,6 +18,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 - **Discovery stops at your gates.** `project run` starts each discovery stage, from the brief to a stakeholder approval pack. Later stages wait until you approve the spec, the pack's outcome is recorded as yours, and later changes go through change requests you decide.
 - **Milestones end in your merge.** After the pack, `project milestone start` plans each milestone and `chain` runs its features, integration and a close runner that prepares `release/<M>`. You merge that branch through a pull request; `milestone done` sees the merge and tags it locally. `project graduate` later moves the discovery folder out of the tree. The kit never merges into the default branch or pushes.
 - **Usage limits need not stop a runner.** With a [`quotaFallback`](docs/config.md#keys) list, a runner whose agent hits its usage limit continues on the next agent in the same tab and checkout.
+- **Long runners get a fresh context once.** When a runner's agent nears its context limit, it writes a handoff and the same task continues in a fresh session in the same tab and checkout. See [context handoff](docs/commands.md#context-handoff).
 
 ## Requirements
 
