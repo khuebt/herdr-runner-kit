@@ -54,6 +54,7 @@ type progressState struct {
 	Began       time.Time `json:"began,omitzero"`
 	Samples     int       `json:"samples"`
 	Step        int       `json:"step"`
+	StepAt      time.Time `json:"stepAt,omitzero"` // when the last step was taken
 	RetrySince  time.Time `json:"retrySince,omitzero"`
 	RetryNoted  bool      `json:"retryNoted,omitempty"`
 }
@@ -132,13 +133,18 @@ func (r *Runner) checkProgress(ctx context.Context, t *task.Task, now time.Time)
 		return
 	}
 	st.RetrySince, st.RetryNoted = time.Time{}, false
-	if st.Step < stepStalled && st.Samples >= minSamples && now.Sub(st.Since) >= stallAfter {
-		if st.Step == stepNone {
-			st.Began = st.Since
+	if st.Samples >= minSamples && now.Sub(st.Since) >= stallAfter {
+		// A reply to a step, such as the agent saying what it waits for,
+		// does not undo it, but work for a whole stallAfter after it does:
+		// this is a new stall, which starts with a nudge again.
+		if st.Step == stepNone || st.Since.Sub(st.StepAt) >= stallAfter {
+			st.Step, st.Began = stepNone, st.Since
 		}
-		st.Step++
-		r.climb(ctx, t, st.Step, now.Sub(st.Began))
-		st.Since, st.Samples = now, 0
+		if st.Step < stepStalled {
+			st.Step++
+			r.climb(ctx, t, st.Step, now.Sub(st.Began))
+			st.Since, st.Samples, st.StepAt = now, 0, now
+		}
 	}
 	r.saveProgress(t.ID, st)
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -36,6 +37,14 @@ func (r *Runner) WatchAgent(ctx context.Context, id string) {
 		}
 		until := []string{"blocked"}
 		if t.Stalled {
+			if deadline, ok := r.selfResolveDeadline(t); ok {
+				// A prompt the agent answers itself, seen by this wait or an
+				// earlier one: news only once it outlasts its timeout.
+				if err := r.awaitSelfResolve(ctx, t, deadline); isGone(err) && !r.agentGone(ctx, t) {
+					return
+				}
+				continue
+			}
 			until = []string{"working", "idle", "done"}
 		}
 		timeout := time.Hour
@@ -47,14 +56,10 @@ func (r *Runner) WatchAgent(ctx context.Context, id string) {
 		case ctx.Err() != nil:
 			return
 		case isGone(err):
-			if cur, err := r.Store.Get(id); err == nil && cur.Status == task.Starting {
-				continue // the agent was quit for a fallback
+			if !r.agentGone(ctx, t) {
+				return
 			}
-			if r.switchable(t) && r.usageLimited(ctx, t) && r.switchAgent(t, false) == nil {
-				continue
-			}
-			r.fail(id, r.goneReason(ctx, t))
-			return
+			continue
 		case err != nil:
 			// herdr was briefly unavailable, or the wait timed out.
 			if !sleepCtx(ctx, time.Second) {
@@ -73,14 +78,28 @@ func (r *Runner) WatchAgent(ctx context.Context, id string) {
 	}
 }
 
+// agentGone handles a runner whose agent herdr no longer has, and reports
+// whether to keep watching: a fallback is taking over the pane. Otherwise
+// the task fails.
+func (r *Runner) agentGone(ctx context.Context, t *task.Task) bool {
+	if cur, err := r.Store.Get(t.ID); err == nil && cur.Status == task.Starting {
+		return true // the agent was quit for a fallback
+	}
+	if r.switchable(t) && r.usageLimited(ctx, t) && r.switchAgent(t, false) == nil {
+		return true
+	}
+	r.fail(t.ID, r.goneReason(ctx, t))
+	return false
+}
+
 // selfResolveGrace is how long past its own timeout a self-resolving prompt
 // may stay before it is news. A variable so tests can shorten it.
 var selfResolveGrace = 30 * time.Second
 
 // onBlocked handles an agent that blocked on a prompt. A prompt the agent
-// answers itself is recorded as progress, and becomes stalled news only when
-// it outlasts its timeout; any other prompt is stalled news at once. Both
-// carry the prompt's text.
+// answers itself is recorded as the progress event blocked, which WatchAgent
+// turns into stalled news only when it outlasts its timeout; any other
+// prompt is stalled news at once. Both carry the prompt's text.
 func (r *Runner) onBlocked(ctx context.Context, t *task.Task) {
 	screen, _ := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
 	adapter, ok := adapterOf(t)
@@ -93,21 +112,58 @@ func (r *Runner) onBlocked(ctx context.Context, t *task.Task) {
 		return
 	}
 	note := fmt.Sprintf("%s prompt; auto-denies in %d min", p.Name, int(p.Timeout.Round(time.Minute).Minutes()))
-	if !r.markStalled(t.ID, "blocked", note) {
-		return // another watcher saw it first
+	r.markStalled(t.ID, "blocked", note)
+}
+
+// selfResolveDeadline returns when a stalled task's self-resolving prompt
+// becomes news: its blocked event plus the longest timeout of the agent's
+// self-resolving prompts and selfResolveGrace. ok is false when the task's
+// latest block is already news, or its agent has no such prompts.
+func (r *Runner) selfResolveDeadline(t *task.Task) (time.Time, bool) {
+	adapter, ok := adapterOf(t)
+	if !ok {
+		return time.Time{}, false
 	}
-	status, err := r.Herdr.AgentWait(ctx, t.Herdr.PaneID, p.Timeout+selfResolveGrace, "working", "idle", "done")
-	switch {
-	case ctx.Err() != nil || isGone(err):
-		return
-	case err == nil && status != "blocked":
-		r.unstall(t.ID)
-		return
+	var timeout time.Duration
+	for _, p := range adapter.SelfResolvingPrompts() {
+		timeout = max(timeout, p.Timeout)
 	}
-	screen, _ = r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
-	if cur, err := r.Store.Get(t.ID); err == nil && cur.Stalled && !cur.Status.Terminal() {
+	ev, ok := r.lastBlock(t.ID)
+	if !ok || timeout == 0 || ev.Type != "blocked" {
+		return time.Time{}, false
+	}
+	return ev.TS.Add(timeout + selfResolveGrace), true
+}
+
+// awaitSelfResolve waits until deadline for a blocked agent to move on, and
+// clears the block when it does. A herdr error only retries; once the
+// deadline passed with the agent still blocked, the block becomes stalled
+// news with the prompt's text, once. It returns herdr's error when the agent
+// is gone.
+func (r *Runner) awaitSelfResolve(ctx context.Context, t *task.Task, deadline time.Time) error {
+wait:
+	for remaining := time.Until(deadline); remaining > 0; remaining = time.Until(deadline) {
+		status, err := r.Herdr.AgentWait(ctx, t.Herdr.PaneID, remaining, "working", "idle", "done")
+		switch {
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case isGone(err):
+			return err
+		case err == nil && status != "blocked":
+			r.unstall(t.ID)
+			return nil
+		case herdr.HasCode(err, herdr.CodeTimeout):
+			break wait
+		case !sleepCtx(ctx, time.Second):
+			return ctx.Err()
+		}
+	}
+	screen, _ := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
+	cur, err := r.Store.Get(t.ID)
+	if ev, ok := r.lastBlock(t.ID); err == nil && ok && ev.Type == "blocked" && cur.Stalled && !cur.Status.Terminal() {
 		r.emit(cur, "stalled", blockedSummary(screen), "")
 	}
+	return nil
 }
 
 // markStalled marks the task blocked and emits typ with summary. It reports
@@ -143,25 +199,25 @@ func (r *Runner) unstall(id string) {
 		return
 	}
 	summary := "unblocked"
-	if since, ok := r.blockedSince(id); ok {
-		summary += " after " + shortSpan(time.Since(since))
+	if ev, ok := r.lastBlock(id); ok {
+		summary += " after " + shortSpan(time.Since(ev.TS))
 	}
 	r.emit(t, "unstalled", summary, "")
 }
 
-// blockedSince returns when the task's latest block began: its last stalled
-// or blocked event.
-func (r *Runner) blockedSince(id string) (time.Time, bool) {
+// lastBlock returns the event that began the task's latest block, or made
+// it news: its last stalled or blocked event.
+func (r *Runner) lastBlock(id string) (state.Event, bool) {
 	all, _, err := r.Store.ReadEventsSince(0)
 	if err != nil {
-		return time.Time{}, false
+		return state.Event{}, false
 	}
 	for i := len(all) - 1; i >= 0; i-- {
 		if ev := all[i]; ev.Task == id && (ev.Type == "stalled" || ev.Type == "blocked") {
-			return ev.TS, true
+			return ev, true
 		}
 	}
-	return time.Time{}, false
+	return state.Event{}, false
 }
 
 // shortSpan prints a duration as 45s or 2m01s.

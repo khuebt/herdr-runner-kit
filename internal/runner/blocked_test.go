@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -101,7 +103,7 @@ func TestSelfResolvingPromptThatStaysIsNews(t *testing.T) {
 		!strings.Contains(stalled[0].Summary, "Do you want to proceed? / ❯ 1. Yes / 2. No / Esc to cancel · Tab to amend") {
 		t.Fatalf("stalled = %+v", stalled)
 	}
-	if waitedFor != "120000" {
+	if ms, err := strconv.Atoi(waitedFor); err != nil || ms < 119000 || ms > 120000 {
 		t.Errorf("waited %s ms for the prompt to clear", waitedFor)
 	}
 	if ev := events(t, r, tk.ID); !slices.Contains(ev, "unstalled") {
@@ -118,5 +120,36 @@ func TestOtherPromptIsNewsAtOnce(t *testing.T) {
 	}
 	if unstalled := eventsOf(t, r, tk.ID, "unstalled"); len(unstalled) != 1 {
 		t.Errorf("unstalled = %+v", unstalled)
+	}
+}
+
+func TestSelfResolvingPromptIsNewsForALaterWait(t *testing.T) {
+	// The wait that saw the prompt ended; a later one finds the task still
+	// blocked past the prompt's timeout.
+	r, tk := blockedRunner(t, harnessFixture(t, "rm-safety-prompt-claude.txt"), status("working"))
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.Stalled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.Append(state.Event{TS: time.Now().Add(-3 * time.Minute), Task: tk.ID, Owner: tk.Owner, Type: "blocked", Summary: "Claude's safety prompt; auto-denies in 2 min"}); err != nil {
+		t.Fatal(err)
+	}
+	r.WatchAgent(context.Background(), tk.ID)
+	if stalled := eventsOf(t, r, tk.ID, "stalled"); len(stalled) != 1 || !strings.Contains(stalled[0].Summary, "Do you want to proceed?") {
+		t.Fatalf("stalled = %+v", stalled)
+	}
+	if unstalled := eventsOf(t, r, tk.ID, "unstalled"); len(unstalled) != 1 {
+		t.Errorf("unstalled = %+v", unstalled)
+	}
+}
+
+func TestSelfResolvingPromptRidesOutAHerdrError(t *testing.T) {
+	r, tk := blockedRunner(t, harnessFixture(t, "rm-safety-prompt-claude.txt"),
+		status("blocked"), herdrErr("server_unavailable"), status("working"))
+	r.WatchAgent(context.Background(), tk.ID)
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "stalled") || !slices.Contains(ev, "unstalled") {
+		t.Errorf("events = %v", ev)
 	}
 }

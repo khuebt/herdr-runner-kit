@@ -185,3 +185,29 @@ func TestStallAfterZeroStartsNoSampler(t *testing.T) {
 		t.Errorf("stallAfter 0 sampled: ctx %v, agent get %d", ctx.Err(), fake.count("agent", "get"))
 	}
 }
+
+func TestStallLadderAfterRecoveredWork(t *testing.T) {
+	// A reply to the nudge does not undo it: the next stall interrupts.
+	r, fake, tk, shown := stallRunner(t, "● Working\n")
+	start := time.Now()
+	sampleEvery(t, r, tk.ID, start, 0, 10)
+	shown.Store("● Working\n● I am waiting for the build.\n")
+	sampleEvery(t, r, tk.ID, start, 11, 21)
+	if fake.count("agent", "send-keys", tk.Herdr.PaneID, "esc") != 1 {
+		t.Fatalf("a reply to the nudge undid it: prompts %q", kitPrompts(fake))
+	}
+
+	// Work for a whole stallAfter after the nudge makes the next stall a
+	// new one: it is nudged first, and measured from the last progress.
+	r, fake, tk, shown = stallRunner(t, "● Working\n")
+	sampleEvery(t, r, tk.ID, start, 0, 10)
+	for m := 11; m <= 30; m++ {
+		shown.Store(fmt.Sprintf("● step %d\n", m))
+		sampleEvery(t, r, tk.ID, start, m, m)
+	}
+	sampleEvery(t, r, tk.ID, start, 31, 40)
+	p := kitPrompts(fake)
+	if fake.count("agent", "send-keys") != 0 || len(p) != 2 || !strings.HasPrefix(p[1], "No visible progress for 10 minutes.") {
+		t.Errorf("after recovered work: prompts %q, keys %d", p, fake.count("agent", "send-keys"))
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -391,16 +392,21 @@ type backstop struct {
 	watched map[string]bool
 	sampled map[string]bool
 	lostAt  time.Time // last check for lost runners
+	// checking is set while a check for lost runners runs.
+	checking atomic.Bool
 }
 
 func (b *backstop) scan(ctx context.Context, tasks []*task.Task) {
-	if time.Since(b.lostAt) >= lostEvery {
-		// Before the watchers start, so a runner lost while no wait ran,
-		// such as across a restart, fails with that reason.
+	if time.Since(b.lostAt) >= lostEvery && b.checking.CompareAndSwap(false, true) {
+		// In the background, so a slow herdr never delays news; one check
+		// at a time.
 		b.lostAt = time.Now()
-		for _, t := range tasks {
-			b.r.CheckLost(ctx, t)
-		}
+		go func() {
+			defer b.checking.Store(false)
+			for _, t := range tasks {
+				b.r.CheckLost(ctx, t)
+			}
+		}()
 	}
 	for _, t := range tasks {
 		switch t.Status {
