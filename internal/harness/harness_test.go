@@ -82,19 +82,19 @@ func TestPiLaunchArgs(t *testing.T) {
 		want  []string
 	}{
 		{piAgent, "pi:openai-codex/gpt-6-luna", []string{
-			"--model", "openai-codex/gpt-6-luna",
+			"--model", "openai-codex/gpt-6-luna", "--approve",
 			"--append-system-prompt", "/s/t3/contract.md", "-e", "/s/t3/hrk-runner.ts",
 		}},
 		{piAgent, "pi:openai-codex/gpt-6-luna:high", []string{
-			"--model", "openai-codex/gpt-6-luna", "--thinking", "high",
+			"--model", "openai-codex/gpt-6-luna", "--thinking", "high", "--approve",
 			"--append-system-prompt", "/s/t3/contract.md", "-e", "/s/t3/hrk-runner.ts",
 		}},
 		{ompAgent, "omp:openai-codex/gpt-6-luna", []string{
-			"--model", "openai-codex/gpt-6-luna",
+			"--model", "openai-codex/gpt-6-luna", "--auto-approve", "--config", "/s/t3/omp-runner.yml",
 			"--append-system-prompt", "/s/t3/contract.md", "--hook", "/s/t3/hrk-runner.ts",
 		}},
 		{ompAgent, "omp:openai-codex/gpt-6-luna:auto", []string{
-			"--model", "openai-codex/gpt-6-luna", "--thinking", "auto",
+			"--model", "openai-codex/gpt-6-luna", "--thinking", "auto", "--auto-approve", "--config", "/s/t3/omp-runner.yml",
 			"--append-system-prompt", "/s/t3/contract.md", "--hook", "/s/t3/hrk-runner.ts",
 		}},
 	}
@@ -112,7 +112,7 @@ func TestPiFiles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(files) != 2 || files[0].Name != "contract.md" || string(files[0].Data) != "CONTRACT\n" || files[1].Name != "hrk-runner.ts" {
+		if len(files) < 2 || files[0].Name != "contract.md" || string(files[0].Data) != "CONTRACT\n" || files[1].Name != "hrk-runner.ts" {
 			t.Fatalf("%s: files = %q", a.Harness(), files)
 		}
 		ext := string(files[1].Data)
@@ -128,6 +128,44 @@ func TestPiFiles(t *testing.T) {
 	}
 	if _, err := piAgent.Files(FilesInput{Bin: "hrk"}); err == nil {
 		t.Error("a relative binary was accepted")
+	}
+	pf, _ := piAgent.Files(FilesInput{Bin: "/b/hrk"})
+	of, _ := ompAgent.Files(FilesInput{Bin: "/b/hrk"})
+	if len(pf) != 2 || len(of) != 3 || of[2].Name != "omp-runner.yml" || string(of[2].Data) != "ask:\n  enabled: false\n" {
+		t.Errorf("pi files = %q, omp files = %q", pf, of)
+	}
+}
+
+func TestPiDialogs(t *testing.T) {
+	d, ok := DetectDialog(piAgent, readFixture(t, "project-trust-pi.txt"))
+	if !ok || d.Name != "pi-project-trust" || d.Action != NeedsHuman {
+		t.Errorf("trust capture: got %+v, %v", d, ok)
+	}
+	for _, name := range []string{"working-pi-1.txt", "working-pi-2.txt", "working-pi-3.txt", "longcmd-pi-1.txt", "longcmd-omp-1.txt", "async-job-omp-1.txt"} {
+		for _, a := range []Adapter{piAgent, ompAgent} {
+			if d, ok := DetectDialog(a, readFixture(t, name)); ok {
+				t.Errorf("%s on %s: found %s", a.Harness(), name, d.Name)
+			}
+		}
+	}
+	if ompAgent.Dialogs() != nil {
+		t.Errorf("omp dialogs = %+v", ompAgent.Dialogs())
+	}
+}
+
+func TestPiPrepareTrustWritesNothing(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		res, err := a.PrepareTrust(TrustInput{Cwd: cwd, RunnerPath: cwd})
+		if err != nil || res != (TrustResult{}) {
+			t.Errorf("%s: %+v, %v", a.Harness(), res, err)
+		}
+	}
+	for _, dir := range []string{home, cwd} {
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("%s has %d entries", dir, len(entries))
+		}
 	}
 }
 

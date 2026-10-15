@@ -663,6 +663,56 @@ func TestLaunchNeverPromptsIntoADialog(t *testing.T) {
 	}
 }
 
+func TestLaunchPiWaitsForHumanAtTrustDialog(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	// pi draws its trust dialog while herdr reports it idle and ready.
+	fake.on("agent start", ok(`{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}`))
+	trust := fixture(t, "project-trust-pi.txt")
+	var mu sync.Mutex
+	answered := false
+	fake.on("pane read", func([]string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if answered {
+			return "", nil
+		}
+		return trust, nil
+	})
+	var statusDuringWait task.Status
+	fake.on("agent wait", func(args []string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if slices.Contains(args, "idle") && !answered {
+			got, _ := r.Store.Get("t1")
+			statusDuringWait = got.Status
+			answered = true
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Agent: piAgents[task.Pi], Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if statusDuringWait != task.NeedsHuman {
+		t.Errorf("status while waiting = %s, want needs-human", statusDuringWait)
+	}
+	if fake.count("agent", "send-keys") != 0 {
+		t.Error("pressed keys on a trust dialog")
+	}
+	if start := strings.Join(fake.call("agent", "start"), " "); !strings.Contains(start, "--kind pi") || !strings.Contains(start, " --approve ") {
+		t.Errorf("agent start = %q", start)
+	}
+	all, _, _ := r.Store.ReadEventsSince(0)
+	for _, ev := range all {
+		if ev.Type == "needs-human" && ev.Summary != "pi-project-trust" {
+			t.Errorf("needs-human for %q, want pi-project-trust", ev.Summary)
+		}
+	}
+	if ev := events(t, r, tk.ID); !slices.Equal(ev, []string{"spawned", "needs-human", "started", "prompted"}) {
+		t.Errorf("events = %v", ev)
+	}
+}
+
 func TestLaunchFailsWhenAgentExitsAtDialog(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))

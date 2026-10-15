@@ -19,7 +19,10 @@ import (
 type pi struct {
 	harness  task.Harness
 	kind     string // the value for `herdr agent start --kind`
+	approve  string // the flag that skips trust and approval prompts for the run
+	overlay  string // a config overlay in the task folder, passed with --config
 	extFlag  string // the flag that loads the runner extension
+	dialogs  []Dialog
 	limit    limitLine
 	progress func(screen string) string
 }
@@ -27,11 +30,13 @@ type pi struct {
 // The registered variants.
 var (
 	piAgent = pi{
-		harness: task.Pi, kind: "pi", extFlag: "-e", progress: piProgress,
+		harness: task.Pi, kind: "pi", approve: "--approve", extFlag: "-e",
+		dialogs: []Dialog{piProjectTrust}, progress: piProgress,
 		limit: limitLine{marker: "Error:", indent: 1, afterBlank: true, phrases: piLimitPhrases},
 	}
 	ompAgent = pi{
-		harness: task.Omp, kind: "omp", extFlag: "--hook", progress: ompProgress,
+		harness: task.Omp, kind: "omp", approve: "--auto-approve",
+		overlay: ompOverlayFile, extFlag: "--hook", progress: ompProgress,
 		limit: limitLine{marker: "✘", indent: 1, phrases: piLimitPhrases},
 	}
 )
@@ -40,13 +45,23 @@ var (
 const (
 	piContractFile  = "contract.md"
 	piExtensionFile = "hrk-runner.ts" // reports turn ends and compactions
+	ompOverlayFile  = "omp-runner.yml"
 )
+
+// ompOverlay turns off omp's ask tool, which waits for an answer forever.
+const ompOverlay = "ask:\n  enabled: false\n"
+
+// piProjectTrust is the dialog pi 1.2.0 shows in a folder with project
+// settings, extensions or skills. --approve skips it, so it shows only if
+// that flag stops working; herdr then reports the agent idle.
+var piProjectTrust = Dialog{Name: "pi-project-trust", Match: "Trust project folder?", Action: NeedsHuman}
 
 func (p pi) Harness() task.Harness { return p.harness }
 func (p pi) HerdrKind() string     { return p.kind }
 
-// LaunchArgs passes the contract as an appended system prompt, which
-// survives compaction, and loads the runner extension from the task folder.
+// LaunchArgs skips trust and approval prompts for the run, passes the
+// contract as an appended system prompt, which survives compaction, and
+// loads the runner extension and omp's config overlay from the task folder.
 func (p pi) LaunchArgs(o LaunchOptions) []string {
 	var args []string
 	if o.Spec.Model != "" {
@@ -55,7 +70,11 @@ func (p pi) LaunchArgs(o LaunchOptions) []string {
 	if o.Spec.Effort != "" {
 		args = append(args, "--thinking", o.Spec.Effort)
 	}
+	args = append(args, p.approve)
 	if o.Dir != "" {
+		if p.overlay != "" {
+			args = append(args, "--config", filepath.Join(o.Dir, p.overlay))
+		}
 		args = append(args, "--append-system-prompt", filepath.Join(o.Dir, piContractFile),
 			p.extFlag, filepath.Join(o.Dir, piExtensionFile))
 	}
@@ -95,13 +114,17 @@ func (p pi) Files(in FilesInput) ([]File, error) {
 	bin, _ := json.Marshal(in.Bin)
 	h, _ := json.Marshal(string(p.harness))
 	ext := strings.NewReplacer(piBinPlaceholder, string(bin), piHarnessPlaceholder, string(h)).Replace(piExtension)
-	return []File{
+	files := []File{
 		{Name: piContractFile, Data: []byte(in.Contract + "\n")},
 		{Name: piExtensionFile, Data: []byte(ext)},
-	}, nil
+	}
+	if p.overlay != "" {
+		files = append(files, File{Name: p.overlay, Data: []byte(ompOverlay)})
+	}
+	return files, nil
 }
 
-func (pi) Dialogs() []Dialog { return nil }
+func (p pi) Dialogs() []Dialog { return p.dialogs }
 
 // ShowsUsageLimit reads the error a turn ends with. pi 1.2.0 draws it as a
 // message of its own, " Error: <message>" under a blank line; omp 18.2.10
@@ -178,8 +201,9 @@ func ompProgress(screen string) string {
 // ContextLeft is unknown: the runner extension reports context on turn end.
 func (pi) ContextLeft(string) (int, bool) { return 0, false }
 
-// PrepareTrust writes nothing: trust is granted per run by launch flags,
-// which persist nothing.
+// PrepareTrust writes nothing: pi's --approve and omp's --auto-approve
+// cover trust for the run and save nothing, so no file under ~/.pi or ~/.omp
+// is touched. omp has no trust dialog.
 func (pi) PrepareTrust(TrustInput) (TrustResult, error) { return TrustResult{}, nil }
 
 // piTurn is the part of the extension's turn-end payload the kit acts on;
