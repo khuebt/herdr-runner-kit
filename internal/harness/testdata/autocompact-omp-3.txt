@@ -1,0 +1,14 @@
+
+────────────────────────────── 📷 remote-compacted · 27K→28K ⚠ · ctrl+o ───────────────────────────────
+
+ Warning: compaction: Compaction freed too little context to make progress — pausing automatic
+ maintenance to avoid a compaction loop. The most recent turn alone is too large to reduce further;
+ clear large tool output or switch to a larger-context model.
+
+ 647
+
+ 2026-10-16 02:28:12  ⤵ 980  ⤴ 5  💾 26K  ⏱ 2.4s  ⚡ 1.9/s
+
+                                                                              Find the Last Line Number
+ π > ⬢ GPT-6-Luna · ◔ low > 📁 ~/work/probe-repo > ⑂ master ?3 > S0.00 ▶╎┃10%─272K─
+╰─

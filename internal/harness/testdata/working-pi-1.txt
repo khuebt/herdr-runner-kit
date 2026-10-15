@@ -1,0 +1,30 @@
+codebase-design, computer-use, design-taste-frontend, design-taste-frontend-v1, diagnosing-bugs,
+domain-modeling, full-output-enforcement, git-guardrails-claude-code, gpt-taste, grill-me,
+grill-with-docs, grilling, handoff, high-end-visual-design, image-to-code, imagegen-frontend-mobile,
+imagegen-frontend-web, implement, implement-spec, improve-codebase-architecture,
+industrial-brutalist-ui, loop-me, migrate-to-shoehorn, minimalist-ui, no-mistakes, orca-cli,
+orchestration, prototype, redesign-existing-projects, resolving-merge-conflicts, scaffold-exercises,
+setup-matt-pocock-skills, setup-pre-commit, setup-ts-deep-modules, stitch-design-taste, tdd, teach,
+think-coach-hn, to-questionnaire, to-spec, to-tickets, triage, wait-what, wayfinder, wizard,
+writing-beats, writing-for-agents, writing-fragments, writing-shape
+
+[Extensions]
+  csd-runner-heartbeat.ts, herdr-agent-state.ts, orca-agent-status.ts, orca-prefill.ts,
+orca-titlebar-spinner.ts, probe-ext.ts
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 1.3.0 is available. Run pi update
+ Changelog: https://pi.dev/changelog
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+ Run the shell command: echo "task=HRK_TASK ompcode =OMPCODE" and then reply with one short line.
+
+
+── ⠇ Working ──────────────────────────────────────────────────────────────────────────────────────────
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+~/work/probe-repo (master)
+$0.000 (sub) 5.6%/272k (auto)                                           (openai-codex) gpt-6-luna • low

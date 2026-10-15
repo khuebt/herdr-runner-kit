@@ -577,6 +577,54 @@ func TestShowsUsageLimit(t *testing.T) {
 	}
 }
 
+// The pi and omp limit screens are the captured 401 screens with the error
+// replaced by pi-ai's own ChatGPT limit message, from
+// openai-codex-responses.js: no live limit was seen.
+func TestPiShowsUsageLimit(t *testing.T) {
+	if !piAgent.ShowsUsageLimit(readFixture(t, "usage-limit-pi.txt")) {
+		t.Error("pi usage-limit screen not detected")
+	}
+	if !ompAgent.ShowsUsageLimit(readFixture(t, "usage-limit-omp.txt")) {
+		t.Error("omp usage-limit screen not detected")
+	}
+	if piAgent.ShowsUsageLimit(readFixture(t, "usage-limit-omp.txt")) || ompAgent.ShowsUsageLimit(readFixture(t, "usage-limit-pi.txt")) {
+		t.Error("one agent's limit line matched the other agent")
+	}
+	limit := "You have hit your ChatGPT usage limit (plus plan). Try again in ~12 min."
+	// A 401 is no limit, and the sentence in assistant text is not the
+	// agent's error line.
+	for name, screen := range map[string]string{
+		"provider-error-pi.txt":  readFixture(t, "provider-error-pi.txt"),
+		"provider-error-omp.txt": readFixture(t, "provider-error-omp.txt"),
+		"pi assistant text":      strings.Replace(readFixture(t, "compacted-pi.txt"), " 2300\n", " "+limit+"\n", 1),
+		"omp assistant text":     strings.Replace(readFixture(t, "async-job-omp-5.txt"), " Background job completed: bgjob-finished.", " "+limit, 1),
+	} {
+		if !strings.Contains(screen, "usage limit") && !strings.HasPrefix(name, "provider-error") {
+			t.Fatalf("%s: the limit sentence was not placed", name)
+		}
+		if piAgent.ShowsUsageLimit(screen) || ompAgent.ShowsUsageLimit(screen) {
+			t.Errorf("%s: detected a usage limit", name)
+		}
+	}
+}
+
+func TestPiContextLeftIsUnknown(t *testing.T) {
+	pis, _ := filepath.Glob("testdata/*-pi*.txt")
+	omps, _ := filepath.Glob("testdata/*-omp*.txt")
+	names := append(pis, omps...)
+	if len(pis) == 0 || len(omps) == 0 {
+		t.Fatal("no pi or omp captures")
+	}
+	for _, name := range names {
+		screen := readFixture(t, filepath.Base(name))
+		for _, a := range []Adapter{piAgent, ompAgent} {
+			if got, ok := a.ContextLeft(screen); ok || got != 0 {
+				t.Errorf("%s: %s read %d%% left", name, a.Harness(), got)
+			}
+		}
+	}
+}
+
 func TestClaudeUsageLimit(t *testing.T) {
 	payload := readFixture(t, "stop-failure-claude.json")
 	msg, stopFailure := ClaudeUsageLimit([]byte(payload))

@@ -1,0 +1,18 @@
+ wait for it; end your turn right after starting it with one short line.
+
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ $ sleep 15; echo bgjob-finished                                                                     │
+├─── Output ──────────────────────────────────────────────────────────────────────────────────────────┤
+│ ⟦Backgrounded: bg_2 | Timeout: 30s⟧                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ 2026-10-16 02:27:05  ⤵ 1.1K  ⤴ 49  💾 26K  ⏱ 1.4s  ⚡ 29.3/s
+
+ Started in the background.
+
+ 2026-10-16 02:27:07  ⤵ 247  ⤴ 9  💾 27K  ⏱ 1.1s  ⚡ 7.2/s
+
+                                                                List Available Tool Names Without Tools
+ ⠇ 3s > ⬢ GPT-6-Luna · ◔ low > 📁 ~/work/probe-repo > ⑂ master ?1 > S0.00 ▶─10%╎┃272K─
+╰─

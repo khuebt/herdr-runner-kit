@@ -118,3 +118,88 @@ func TestClaudeBackgroundWork(t *testing.T) {
 		}
 	}
 }
+
+func TestPiProgressText(t *testing.T) {
+	progress := func(a Adapter, name string) string { return a.ProgressText(readFixture(t, name)) }
+	// The model ran its command between these two frames.
+	if progress(piAgent, "working-pi-1.txt") == progress(piAgent, "working-pi-2.txt") {
+		t.Error("pi: a command that started is not progress")
+	}
+	working := readFixture(t, "working-pi-3.txt")
+	spun := strings.Replace(working, "── ⠦ Working", "── ⠙ Working", 1)
+	if spun == working {
+		t.Fatal("the fixture no longer holds the spinner")
+	}
+	if a, b := piAgent.ProgressText(working), piAgent.ProgressText(spun); a != b {
+		t.Errorf("pi: a spinner frame looks like progress:\n%s\n---\n%s", a, b)
+	}
+	// Only the running command's "Elapsed" counter changed.
+	first, second := progress(piAgent, "longcmd-pi-1.txt"), progress(piAgent, "longcmd-pi-2.txt")
+	if first != second {
+		t.Errorf("pi: a running command looks like progress:\n%s\n---\n%s", first, second)
+	}
+	if !strings.Contains(second, "$ sleep 12; echo slept") {
+		t.Errorf("pi progress text lost the conversation:\n%s", second)
+	}
+	for _, name := range []string{"longcmd-pi-2.txt", "compacting-pi.txt", "working-pi-3.txt"} {
+		got := progress(piAgent, name)
+		for _, gone := range []string{"Working", "Compacting context", "probe-repo (master)", "gpt-6-luna"} {
+			if strings.Contains(got, gone) {
+				t.Errorf("%s: progress text keeps %q:\n%s", name, gone, got)
+			}
+		}
+	}
+	if progress(piAgent, "compacting-pi.txt") == progress(piAgent, "compacted-pi.txt") {
+		t.Error("pi: a finished compaction is not progress")
+	}
+}
+
+func TestOmpProgressText(t *testing.T) {
+	progress := func(name string) string { return ompAgent.ProgressText(readFixture(t, name)) }
+	// Only the band's spinner and elapsed time changed.
+	first, second := progress("longcmd-omp-1.txt"), progress("longcmd-omp-2.txt")
+	if first != second {
+		t.Errorf("omp: a running command looks like progress:\n%s\n---\n%s", first, second)
+	}
+	for _, kept := range []string{"$ sleep 12; echo slept", "⤵ 28K"} {
+		if !strings.Contains(second, kept) {
+			t.Errorf("omp progress text lost %q:\n%s", kept, second)
+		}
+	}
+	if second == progress("longcmd-omp-6.txt") {
+		t.Error("omp: command output is not progress")
+	}
+	if progress("async-job-omp-1.txt") == progress("async-job-omp-5.txt") {
+		t.Error("omp: a finished background job is not progress")
+	}
+	for _, name := range []string{"longcmd-omp-2.txt", "autocompact-omp-1.txt", "autocompact-omp-3.txt"} {
+		got := progress(name)
+		for _, gone := range []string{"⎋", "Running requested shell commands", "Auto server compaction", "GPT-6-Luna"} {
+			if strings.Contains(got, gone) {
+				t.Errorf("%s: progress text keeps %q:\n%s", name, gone, got)
+			}
+		}
+	}
+}
+
+func TestPiShowsRetry(t *testing.T) {
+	piRetrying := strings.Replace(readFixture(t, "longcmd-pi-2.txt"), "── ⠹ Working", "── ⠹ Retrying (1/3) in 2s... (esc to cancel)", 1)
+	ompRetrying := strings.Replace(readFixture(t, "longcmd-omp-2.txt"), "\n ⠦ 4s >", "\n ⠦ Retrying (1/3) in 2s… (esc to cancel)\n ⠦ 4s >", 1)
+	for name, c := range map[string]struct {
+		a      Adapter
+		screen string
+	}{"pi": {piAgent, piRetrying}, "omp": {ompAgent, ompRetrying}} {
+		if !c.a.ShowsRetry(c.screen) {
+			t.Errorf("%s retry line not detected", name)
+		}
+		if strings.Contains(c.a.ProgressText(c.screen), "Retrying") {
+			t.Errorf("%s progress text keeps the retry line", name)
+		}
+	}
+	for _, name := range []string{"working-pi-1.txt", "working-pi-2.txt", "working-pi-3.txt", "longcmd-omp-1.txt", "longcmd-omp-2.txt", "longcmd-omp-6.txt"} {
+		screen := readFixture(t, name)
+		if piAgent.ShowsRetry(screen) || ompAgent.ShowsRetry(screen) {
+			t.Errorf("%s: detected a retry", name)
+		}
+	}
+}

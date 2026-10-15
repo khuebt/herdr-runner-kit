@@ -1,0 +1,16 @@
+
+
+ Run exactly this shell command in the foreground: sleep 12; echo slept. Then start this in the
+ background and do not wait for it: (sleep 30; date > bg-omp.txt) >/dev/null 2>&1 & . Reply with one
+ short line.
+
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ $ sleep 12; echo slept                                                                              │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ 2026-10-16 02:24:27  ⤵ 28K  ⤴ 46  ⏱ 1.4s  ⚡ 27.8/s
+
+  ⎋ Running requested shell commands                         Run Foreground Sleep, Then Background Date
+ ⠼ 2s > ⬢ GPT-6-Luna · ◔ low > 📁 ~/work/probe-repo > ⑂ master ?1 > S0.00 ▶─10%╎┃272K─
+╰─
