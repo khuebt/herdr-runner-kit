@@ -23,6 +23,16 @@ func TestParseAgentSpec(t *testing.T) {
 		{in: "", wantErr: true},
 		{in: "claude:a:b:c", wantErr: true},
 		{in: "claude:bad model", wantErr: true},
+		{in: "pi:openai-codex/gpt-6-luna", want: AgentSpec{Harness: Pi, Model: "openai-codex/gpt-6-luna"}},
+		{in: "pi:openai-codex/gpt-6-luna:high", want: AgentSpec{Harness: Pi, Model: "openai-codex/gpt-6-luna", Effort: "high"}},
+		{in: "omp:openai-codex/gpt-6-luna:max", want: AgentSpec{Harness: Omp, Model: "openai-codex/gpt-6-luna", Effort: "max"}},
+		{in: "omp:openai-codex/gpt-6-luna:auto", want: AgentSpec{Harness: Omp, Model: "openai-codex/gpt-6-luna", Effort: "auto"}},
+		{in: "pi", wantErr: true},
+		{in: "omp", wantErr: true},
+		{in: "pi::high", wantErr: true},
+		{in: "omp:", wantErr: true},
+		{in: "pi:openai-codex/gpt-6-luna:auto", wantErr: true},
+		{in: "omp:openai-codex/gpt 6", wantErr: true},
 	}
 	for _, tt := range tests {
 		got, err := ParseAgentSpec(tt.in)
@@ -38,8 +48,23 @@ func TestParseAgentSpec(t *testing.T) {
 	}
 }
 
+func TestModelRequiredError(t *testing.T) {
+	_, err := ParseAgentSpec("pi")
+	want := `invalid agent "pi": pi needs a model, such as pi:openai-codex/gpt-6-luna[:effort]`
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %s", err, want)
+	}
+	if _, err := ParseAgentSpec("gemini"); err == nil || !strings.Contains(err.Error(), "claude, codex, pi or omp") {
+		t.Errorf("unknown harness error = %v", err)
+	}
+}
+
 func TestAgentSpecStringRoundTrip(t *testing.T) {
-	for _, s := range []string{"codex", "claude:claude-opus-5-5", "claude:claude-opus-5-5:high", "claude::max"} {
+	for _, s := range []string{
+		"codex", "claude:claude-opus-5-5", "claude:claude-opus-5-5:high", "claude::max",
+		"pi:openai-codex/gpt-6-luna", "pi:openai-codex/gpt-6-luna:high",
+		"omp:openai-codex/gpt-6-luna:max", "omp:openai-codex/gpt-6-luna:auto",
+	} {
 		spec, err := ParseAgentSpec(s)
 		if err != nil {
 			t.Fatal(err)

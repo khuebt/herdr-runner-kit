@@ -13,6 +13,8 @@ type Harness string
 const (
 	Claude Harness = "claude"
 	Codex  Harness = "codex"
+	Pi     Harness = "pi"
+	Omp    Harness = "omp" // oh-my-pi
 )
 
 // harnessInfo is what the agent spec needs to know about one harness.
@@ -22,14 +24,17 @@ type harnessInfo struct {
 }
 
 // harnesses lists every supported harness in the order the kit shows them.
-// Effort levels come from `claude --help` and the Codex
-// model_reasoning_effort setting.
+// Effort levels come from `claude --help`, the Codex model_reasoning_effort
+// setting and the --thinking levels of pi and omp. pi and omp need a model,
+// because without one omp picks whichever provider it finds first.
 var harnesses = []struct {
 	name Harness
 	harnessInfo
 }{
 	{Claude, harnessInfo{efforts: []string{"low", "medium", "high", "xhigh", "max"}}},
 	{Codex, harnessInfo{efforts: []string{"minimal", "low", "medium", "high", "xhigh"}}},
+	{Pi, harnessInfo{efforts: []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}, needsModel: true}},
+	{Omp, harnessInfo{efforts: []string{"off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"}, needsModel: true}},
 }
 
 // Harnesses returns the supported harnesses in order.
@@ -72,7 +77,8 @@ type AgentSpec struct {
 }
 
 // ParseAgentSpec parses "harness[:model[:effort]]", such as "codex",
-// "claude:claude-opus-5-5:high" or "claude::max".
+// "claude:claude-opus-5-5:high", "claude::max" or
+// "pi:openai-codex/gpt-6-luna:high".
 func ParseAgentSpec(s string) (AgentSpec, error) {
 	parts := strings.Split(strings.TrimSpace(s), ":")
 	if len(parts) > 3 {
@@ -90,7 +96,7 @@ func ParseAgentSpec(s string) (AgentSpec, error) {
 		return AgentSpec{}, fmt.Errorf("invalid agent %q: harness must be %s", s, harnessChoice())
 	}
 	if info.needsModel && spec.Model == "" {
-		return AgentSpec{}, fmt.Errorf("invalid agent %q: %s needs a model: %s:<model>[:effort]", s, spec.Harness, spec.Harness)
+		return AgentSpec{}, fmt.Errorf("invalid agent %q: %s needs a model, such as %s:openai-codex/gpt-6-luna[:effort]", s, spec.Harness, spec.Harness)
 	}
 	if strings.ContainsAny(spec.Model, " \t\n") {
 		return AgentSpec{}, fmt.Errorf("invalid agent %q: model must not contain spaces", s)

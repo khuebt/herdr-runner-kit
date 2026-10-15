@@ -187,7 +187,7 @@ type Adapter interface {
 }
 
 // adapters holds every harness's adapter, in task.Harnesses order.
-var adapters = []Adapter{claude{}, codex{}}
+var adapters = []Adapter{claude{}, codex{}, piAgent, ompAgent}
 
 // All returns every adapter, in task.Harnesses order.
 func All() []Adapter { return slices.Clone(adapters) }

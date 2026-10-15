@@ -74,6 +74,47 @@ func TestCodexLaunchArgs(t *testing.T) {
 	}
 }
 
+func TestPiLaunchArgs(t *testing.T) {
+	tests := []struct {
+		a     Adapter
+		agent string
+		want  []string
+	}{
+		{piAgent, "pi:openai-codex/gpt-6-luna", []string{
+			"--model", "openai-codex/gpt-6-luna",
+			"--append-system-prompt", "/s/t3/contract.md", "-e", "/s/t3/hrk-runner.ts",
+		}},
+		{piAgent, "pi:openai-codex/gpt-6-luna:high", []string{
+			"--model", "openai-codex/gpt-6-luna", "--thinking", "high",
+			"--append-system-prompt", "/s/t3/contract.md", "-e", "/s/t3/hrk-runner.ts",
+		}},
+		{ompAgent, "omp:openai-codex/gpt-6-luna", []string{
+			"--model", "openai-codex/gpt-6-luna",
+			"--append-system-prompt", "/s/t3/contract.md", "--hook", "/s/t3/hrk-runner.ts",
+		}},
+		{ompAgent, "omp:openai-codex/gpt-6-luna:auto", []string{
+			"--model", "openai-codex/gpt-6-luna", "--thinking", "auto",
+			"--append-system-prompt", "/s/t3/contract.md", "--hook", "/s/t3/hrk-runner.ts",
+		}},
+	}
+	for _, tt := range tests {
+		got := tt.a.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Bin: "/usr/local/bin/hrk", Dir: "/s/t3"})
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
+		}
+	}
+}
+
+func TestPiFiles(t *testing.T) {
+	files, err := piAgent.Files(FilesInput{Bin: "/usr/local/bin/hrk", Contract: "CONTRACT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []File{{Name: "contract.md", Data: []byte("CONTRACT\n")}}; !reflect.DeepEqual(files, want) {
+		t.Errorf("files = %q", files)
+	}
+}
+
 func TestLaunchArgsNeverContainThePrompt(t *testing.T) {
 	for _, h := range []task.Harness{task.Claude, task.Codex} {
 		a, err := For(h)
@@ -117,6 +158,14 @@ func TestRenderSkill(t *testing.T) {
 		{task.Codex, "superpowers:brainstorming", "$superpowers-brainstorming"},
 		{task.Codex, "", ""},
 		{task.Claude, "  ", ""},
+		{task.Pi, "ak:plan", "/skill:ak-plan"},
+		{task.Pi, "/ak:plan", "/skill:ak-plan"},
+		{task.Pi, "$ak-plan", "/skill:ak-plan"},
+		{task.Pi, "", ""},
+		{task.Omp, "ak:plan", "/skill:ak-plan"},
+		{task.Omp, "/ak:plan", "/skill:ak-plan"},
+		{task.Omp, "$ak-plan", "/skill:ak-plan"},
+		{task.Omp, "", ""},
 	}
 	for _, tt := range tests {
 		a, _ := For(tt.h)
@@ -132,6 +181,11 @@ func TestFirstPrompt(t *testing.T) {
 	}
 	if got := (codex{}).FirstPrompt("ak:cook", "plans/x/plan.md", "CONTRACT"); got != "$ak-cook plans/x/plan.md\n\nCONTRACT" {
 		t.Errorf("codex = %q", got)
+	}
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		if got := a.FirstPrompt("ak:cook", "plans/x/plan.md", "CONTRACT"); got != "/skill:ak-cook plans/x/plan.md" {
+			t.Errorf("%s = %q", a.Harness(), got)
+		}
 	}
 	if got := (codex{}).FirstPrompt("", "fix the login bug", ""); got != "fix the login bug" {
 		t.Errorf("raw prompt = %q", got)
