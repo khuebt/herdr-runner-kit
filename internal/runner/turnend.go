@@ -61,6 +61,11 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if err != nil {
 		return "", err
 	}
+	// A session that handed off may end a turn before the launcher quits
+	// it; only the current session's turns count.
+	if r.callerAttempt() != task.AttemptOf(t) {
+		return "", nil
+	}
 	if h == task.Claude {
 		if message, stopFailure := harness.ClaudeUsageLimit(payload); stopFailure {
 			// Any other API failure ends the turn with nothing the kit can
@@ -86,6 +91,13 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 			return "", err
 		}
 	}
+	if h == task.Codex && !limited {
+		// A runner near its context limit is asked to hand off instead of
+		// being nudged, and the turn does not count as unreported.
+		if asked, err := r.codexContextLow(ctx, t); asked || err != nil {
+			return "", err
+		}
+	}
 	if h == task.Claude && r.claudeWorksInBackground(ctx, t, payload) {
 		return "", nil
 	}
@@ -105,6 +117,9 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	switch t.Unreported {
 	case 1:
 		nudge := r.nudgeText()
+		if r.handoffPending(t) {
+			nudge = r.handoffRequest(t)
+		}
 		if h == task.Codex {
 			if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, nudge); err != nil {
 				return "", fmt.Errorf("nudge: %w", err)

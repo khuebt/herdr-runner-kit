@@ -27,7 +27,7 @@ func TestVersionText(t *testing.T) {
 	if !strings.HasPrefix(got, "herdr-runner-kit dev ") {
 		t.Fatalf("unexpected version line: %q", got)
 	}
-	if !strings.Contains(got, "schema v1, contract v2") {
+	if !strings.Contains(got, "schema v1, contract v3") {
 		t.Fatalf("version line lacks schema and contract: %q", got)
 	}
 }

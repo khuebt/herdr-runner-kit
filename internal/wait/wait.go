@@ -320,6 +320,9 @@ func Line(ev state.Event, t *task.Task, keepFor time.Duration) string {
 	if t != nil && t.Title != "" {
 		parts = append(parts, t.Title)
 	}
+	if ev.Type == "needs-human" && ev.Attempt > 1 {
+		parts = append(parts, fmt.Sprintf("attempt %d", ev.Attempt))
+	}
 	if round := task.QuestionRound(ev.Question); round != nil {
 		lines := []string{oneLine(append(parts, fmt.Sprintf("%d questions", len(round))))}
 		for i, q := range round {

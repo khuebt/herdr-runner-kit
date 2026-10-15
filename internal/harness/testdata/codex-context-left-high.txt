@@ -1,0 +1,14 @@
+  >_ OpenAI Codex (v0.162.1)
+     ~/Work/demo
+  permissions: YOLO mode
+
+› Say hello in one short sentence. Do not run any commands.
+
+• Hello! How can I help today?
+
+  Worked for 17s • 9:28 AM
+
+› Ask Codex to do anything
+
+  Context 56% left · GPT-6-Luna medium · ~/Work/demo
+  ? for shortcuts                                                             ⚠ 2 warnings · f2 to view

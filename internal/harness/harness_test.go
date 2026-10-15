@@ -224,6 +224,24 @@ func TestClaudeSettings(t *testing.T) {
 			t.Errorf("hook = %+v", h)
 		}
 	}
+	var compact struct {
+		Hooks struct {
+			PreCompact, SessionStart []struct {
+				Matcher string
+				Hooks   []struct{ Type, Command string }
+			}
+		}
+	}
+	if err := json.Unmarshal(data, &compact); err != nil {
+		t.Fatal(err)
+	}
+	pre, start := compact.Hooks.PreCompact, compact.Hooks.SessionStart
+	if len(pre) != 1 || pre[0].Matcher != "" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Command != "/home/u/bin/herdr-runner-kit __context --harness claude" {
+		t.Errorf("PreCompact hooks = %s", data)
+	}
+	if len(start) != 1 || start[0].Matcher != "compact" || len(start[0].Hooks) != 1 || start[0].Hooks[0].Command != "/home/u/bin/herdr-runner-kit __context --harness claude" {
+		t.Errorf("SessionStart hooks = %s", data)
+	}
 	data, _ = ClaudeSettings("/opt/it's here/hrk")
 	if !strings.Contains(string(data), `'/opt/it'\\''s here/hrk' __turn-end`) {
 		t.Errorf("unsafe quoting: %s", data)
@@ -461,5 +479,61 @@ func TestClaudeUsageLimit(t *testing.T) {
 	}
 	if msg, _ := ClaudeUsageLimit([]byte(`{"hook_event_name":"StopFailure","error":"billing_error","last_assistant_message":"You're out of extra usage · resets 3pm"}`)); msg == "" {
 		t.Error("out of extra usage not detected")
+	}
+}
+
+func TestParseClaudeCompaction(t *testing.T) {
+	for name, want := range map[string]ClaudeCompaction{
+		"precompact-auto.json":      {Event: "PreCompact", Trigger: "auto"},
+		"precompact-manual.json":    {Event: "PreCompact", Trigger: "manual"},
+		"sessionstart-compact.json": {Event: "SessionStart", Source: "compact"},
+	} {
+		got, err := ParseClaudeCompaction([]byte(readFixture(t, name)))
+		if err != nil || got != want {
+			t.Errorf("%s = %+v, %v", name, got, err)
+		}
+	}
+	if _, err := ParseClaudeCompaction([]byte("not json")); err == nil {
+		t.Error("bad input parsed")
+	}
+}
+
+func TestClaudeSessionContext(t *testing.T) {
+	var out struct {
+		HookSpecificOutput struct{ HookEventName, AdditionalContext string }
+	}
+	if err := json.Unmarshal([]byte(ClaudeSessionContext("hand off \"now\"")), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.HookSpecificOutput.HookEventName != "SessionStart" || out.HookSpecificOutput.AdditionalContext != `hand off "now"` {
+		t.Errorf("output = %+v", out)
+	}
+}
+
+func TestContextLeft(t *testing.T) {
+	c := codex{}
+	for name, want := range map[string]int{
+		"codex-context-high.txt":      56,
+		"codex-context-low.txt":       13,
+		"codex-context-left-high.txt": 56,
+		"codex-context-left-low.txt":  13,
+		"usage-limit-codex.txt":       100,
+	} {
+		if got, ok := c.ContextLeft(readFixture(t, name)); !ok || got != want {
+			t.Errorf("%s = %d, %v; want %d", name, got, ok, want)
+		}
+	}
+	for name, screen := range map[string]string{
+		"conversation text":     "• Context 5% left on the other box\n\n› Ask Codex to do anything\n\n  GPT-6-Luna medium · ~/Work\n",
+		"usage limits only":     "› Ask Codex to do anything\n\n  gpt-6 · 5h 3% left · weekly 4% left\n",
+		"no input line":         "  Context 5% left · gpt-6\n",
+		"cut by the pane width": "› Ask Codex to do anything\n\n  GPT-6-Luna medium · /tmp/a/very/long/path/that/hides/the/cont…\n",
+	} {
+		if got, ok := c.ContextLeft(screen); ok {
+			t.Errorf("%s: read %d%% left", name, got)
+		}
+	}
+	if _, ok := (claude{}).ContextLeft("› x\n  Context 5% left\n"); ok {
+		t.Error("Claude's footer was read")
 	}
 }

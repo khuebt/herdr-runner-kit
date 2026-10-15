@@ -31,6 +31,7 @@ quotaFallback:            # tried in order when a runner hits a usage limit
   - agent: codex
 keepFor: 2h               # kept tabs close 2 hours after the task finished
 stallAfter: 15m           # nudge an agent that shows no progress for 15 minutes
+contextHandoffAt: 20      # ask a Codex runner to hand off at 20% context left
 ```
 
 ## Keys
@@ -50,6 +51,8 @@ stallAfter: 15m           # nudge an agent that shows no progress for 15 minutes
 | `quotaFallback` | none | Agents a runner switches to, in order, when its agent hits a usage limit. Each entry has an `agent` spec and, for a Claude agent only, an optional `claudeConfig` folder, as a path or a name such as `claude2`; without it the runner keeps its own. An entry that is the current agent, already hit its limit on the task, or names a missing folder is skipped. With none left, a limit Claude reports fails the task, and a limit only seen on a Codex screen becomes `usage-limit` news instead. See [commands.md](commands.md#usage-limits). |
 | `keepFor` | `4h` | How long a kept runner's tab stays open after its task finished, as a duration such as `4h` or `90m`. `gc`, and `wait` while it runs, then close it once its agent is idle. `0` keeps it until `keep --off` or `stop`, as before this key existed. See [commands.md](commands.md#closing-runners). |
 | `stallAfter` | `10m` | How long a `working` agent may show no visible progress before the kit nudges it, then interrupts it, then reports it `stalled` with the runner left open. `0` turns the check off; otherwise at least `2m`. See [commands.md](commands.md#what-wait-reports). |
+| `contextHandoff` | `true` | Lets the kit ask a runner near its context limit to hand off once to a fresh session of its task: a Claude runner at its first automatic compaction, a Codex runner at a turn end with little context left. `false` leaves runners to compact on their own. See [commands.md](commands.md#context-handoff). |
+| `contextHandoffAt` | `15` | For Codex runners: the context left, in percent of the window as Codex's footer shows it, at or below which a turn end asks for the handoff. From 5 to 50. |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.

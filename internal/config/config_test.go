@@ -100,6 +100,16 @@ func TestParseKeepFor(t *testing.T) {
 	}
 }
 
+func TestParseContextHandoff(t *testing.T) {
+	if cfg := Default(); !cfg.ContextHandoff || cfg.ContextHandoffAt != 15 {
+		t.Errorf("default contextHandoff = %v at %d", cfg.ContextHandoff, cfg.ContextHandoffAt)
+	}
+	cfg, err := Parse([]byte("contextHandoff: false\ncontextHandoffAt: 20\n"))
+	if err != nil || cfg.ContextHandoff || cfg.ContextHandoffAt != 20 {
+		t.Errorf("Parse = %v at %d, %v", cfg.ContextHandoff, cfg.ContextHandoffAt, err)
+	}
+}
+
 func TestParseStallAfter(t *testing.T) {
 	if cfg := Default(); cfg.StallAfter != 10*time.Minute {
 		t.Errorf("default stallAfter = %s", cfg.StallAfter)
@@ -138,6 +148,8 @@ func TestParseErrors(t *testing.T) {
 		{"keepFor: -1h\n", "keepFor must not be negative"},
 		{"stallAfter: 90s\n", "stallAfter must be 0 (off) or at least 2m0s"},
 		{"stallAfter: often\n", "stallAfter"},
+		{"contextHandoffAt: 4\n", "contextHandoffAt must be from 5 to 50"},
+		{"contextHandoffAt: 51\n", "contextHandoffAt must be from 5 to 50"},
 	}
 	for _, tt := range tests {
 		_, err := Parse([]byte(tt.yaml))

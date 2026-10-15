@@ -297,6 +297,9 @@ func newListCommand() *cobra.Command {
 				if at, ok := last[t.ID]; ok {
 					lastAge = age(at)
 				}
+				if note := compactionNote(r.Compactions(t.ID)); note != "" {
+					lastAge += ", " + note
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Kind, t.Agent, t.Status, state,
 					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), lastAge, t.Title)
 			}
@@ -458,7 +461,7 @@ func newShowCommand() *cobra.Command {
 					Events []state.Event `json:"events"`
 				}{t, mine})
 			}
-			_, err = fmt.Fprint(out, showText(t, mine, r.Store.TaskDir(id), r.Config.KeepFor, withPrompt))
+			_, err = fmt.Fprint(out, showText(t, mine, r.Store.TaskDir(id), r.Config.KeepFor, r.Compactions(id), withPrompt))
 			return err
 		},
 	}
@@ -472,8 +475,9 @@ func newShowCommand() *cobra.Command {
 // summary is printed whole.
 const maxShowField = 400
 
-// showText is the compact view of a task that show prints.
-func showText(t *task.Task, events []state.Event, dir string, keepFor time.Duration, withPrompt bool) string {
+// showText is the compact view of a task that show prints. compactions is
+// how many times its runner's sessions compacted their context.
+func showText(t *task.Task, events []state.Event, dir string, keepFor time.Duration, compactions int, withPrompt bool) string {
 	var b strings.Builder
 	field := func(name, value string) {
 		if value != "" {
@@ -506,6 +510,7 @@ func showText(t *task.Task, events []state.Event, dir string, keepFor time.Durat
 		when += " · tab " + tab
 	}
 	field("time", when)
+	field("context", contextNote(t, compactions))
 	if w := t.Worktree; w != nil && w.Path != "" {
 		where := w.Path + " on " + w.Branch
 		if w.Removed {
@@ -548,6 +553,31 @@ func showText(t *task.Task, events []state.Event, dir string, keepFor time.Durat
 	}
 	fmt.Fprintf(&b, "output: %s/out\nlaunch log: %s/launch.log\n", dir, dir)
 	return b.String()
+}
+
+// contextNote says how a runner's context fared: its attempt past the
+// first, and its compactions. It is empty for a runner that has neither.
+func contextNote(t *task.Task, compactions int) string {
+	var parts []string
+	if n := task.AttemptOf(t); n > 1 {
+		parts = append(parts, fmt.Sprintf("attempt %d (handed off from %s)", n, strings.Join(t.Handoffs, ", ")))
+	}
+	if note := compactionNote(compactions); note != "" {
+		parts = append(parts, note)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// compactionNote counts a runner's compactions, such as "3 compactions",
+// and is empty for none.
+func compactionNote(n int) string {
+	switch {
+	case n == 1:
+		return "1 compaction"
+	case n > 1:
+		return fmt.Sprintf("%d compactions", n)
+	}
+	return ""
 }
 
 // truncate cuts s to at most n characters, marking a cut with an ellipsis.

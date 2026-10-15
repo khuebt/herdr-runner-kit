@@ -35,6 +35,9 @@ type Event struct {
 	// Git describes the task's checkout when its runner reported, so a
 	// line shows the state of that report, not a later one.
 	Git string `json:"git,omitempty"`
+	// Attempt is the task's agent session when it is past the first, so
+	// news and replies name the session they belong to.
+	Attempt int `json:"attempt,omitempty"`
 }
 
 // EventsPath returns the path of the global event log.

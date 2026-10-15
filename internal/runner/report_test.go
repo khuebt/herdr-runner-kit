@@ -457,7 +457,7 @@ func TestContractRules(t *testing.T) {
 	if !strings.HasSuffix(c, "\n- Write report summaries and questions in Vietnamese.") {
 		t.Errorf("contract lacks the language rule:\n%s", c)
 	}
-	if !strings.Contains(c, "report contract v2)") {
+	if !strings.Contains(c, "report contract v3)") {
 		t.Errorf("contract version changed:\n%s", c)
 	}
 }

@@ -112,6 +112,7 @@ func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting, co
 		next = agentKey(agent, dir)
 		t.FallbackFrom = append(t.FallbackFrom, prev)
 		t.Agent, t.ClaudeConfigDir = agent, dir
+		t.Relaunched = task.RelaunchUsageLimit
 		// A new agent starts a new Codex thread and a fresh turn count.
 		t.CodexThread, t.Unreported, t.Stalled, t.Question, t.Error = "", 0, false, "", ""
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
@@ -134,6 +135,9 @@ func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting, co
 	case err != nil:
 		return nil, err
 	}
+	// The fallback is a fresh session: a handoff request the previous one
+	// got does not apply to it.
+	r.clearHandoffAsk(nt.ID)
 	r.emit(nt, "agent-switched", prev+" -> "+next, "")
 	return nt, nil
 }
@@ -153,6 +157,13 @@ func (r *Runner) switchAgent(t *task.Task, confirmed bool) error {
 	if err != nil {
 		return err
 	}
+	return r.relaunch(nt)
+}
+
+// relaunch hands nt, which a switch or a handoff just moved back to
+// starting, to a detached launcher that quits the agent in its pane and
+// starts the next session there.
+func (r *Runner) relaunch(nt *task.Task) error {
 	pid, err := r.StartLauncher(nt.ID)
 	if err != nil {
 		r.fail(nt.ID, "start launcher: "+err.Error())
@@ -167,14 +178,24 @@ func (r *Runner) switchAgent(t *task.Task, confirmed bool) error {
 	return err
 }
 
-// clearPane quits the agent in a switched runner's pane and sets the
-// environment the next agent needs, such as its Claude config folder.
-func (r *Runner) clearPane(ctx context.Context, t *task.Task) error {
+// clearPane quits the agent in a relaunched runner's pane and sets the
+// environment the next agent needs, such as its Claude config folder and
+// its attempt. It returns the processes of the previous session that still
+// run after the quit, which it never signals.
+func (r *Runner) clearPane(ctx context.Context, t *task.Task) ([]proc, error) {
+	before, _ := r.snapshotProcs(ctx, t)
 	quitCtx, cancel := context.WithTimeout(ctx, quitBudget)
 	err := r.quitAgent(quitCtx, t.Herdr.PaneID)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("quit the agent that hit its usage limit: %w", err)
+		return nil, fmt.Errorf("quit the previous agent session: %w", err)
 	}
-	return r.exportEnv(ctx, t.Herdr.PaneID, t, true)
+	if err := r.exportEnv(ctx, t.Herdr.PaneID, t, true); err != nil {
+		return nil, err
+	}
+	left := r.waitSurvivors(ctx, t, before)
+	if len(left) > 0 {
+		r.emit(t, "processes-carried", fmt.Sprintf("%d of the previous session's processes still run; the next session was told to stop or reuse them: %s", len(left), procList(left)), "")
+	}
+	return left, nil
 }

@@ -483,7 +483,7 @@ func (r *Runner) startDetached(id, verb, logName string) (int, error) {
 // emit appends an event for t. Event loss is reported but never fatal,
 // because the task file already holds the state.
 func (r *Runner) emit(t *task.Task, typ, summary, question string) {
-	ev := state.Event{Task: t.ID, Owner: t.Owner, Type: typ, Status: t.Status, Summary: summary, Question: question}
+	ev := state.Event{Task: t.ID, Owner: t.Owner, Type: typ, Status: t.Status, Summary: summary, Question: question, Attempt: eventAttempt(t)}
 	if err := r.record(ev); err != nil {
 		fmt.Fprintf(os.Stderr, "herdr-runner-kit: %s: write event: %v\n", t.ID, err)
 	}

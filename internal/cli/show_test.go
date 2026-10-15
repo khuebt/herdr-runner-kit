@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -117,5 +118,27 @@ func TestListHasLastEventAge(t *testing.T) {
 	// The title has two words, so LAST is the third field from the end.
 	if f := strings.Fields(lines[1]); !regexp.MustCompile(`^\d+s$`).MatchString(f[len(f)-3]) {
 		t.Errorf("LAST = %q in %q", f[len(f)-3], lines[1])
+	}
+}
+
+func TestShowAndListCountCompactions(t *testing.T) {
+	store, tk := stateWithTask(t)
+	t.Chdir(t.TempDir())
+	if _, err := store.Update(tk.ID, func(t *task.Task) error {
+		t.Attempt, t.Handoffs = 2, []string{"/out/handoff-a2.md"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.TaskDir(tk.ID), "progress.json"), []byte(`{"compactions":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI("show", tk.ID)
+	if err != nil || !strings.Contains(out, "\ncontext: attempt 2 (handed off from /out/handoff-a2.md) · 3 compactions\n") {
+		t.Errorf("show = %q, %v", out, err)
+	}
+	out, err = runCLI("list", "--all")
+	if err != nil || !regexp.MustCompile(`\d+s, 3 compactions\s+fix login`).MatchString(out) {
+		t.Errorf("list = %q, %v", out, err)
 	}
 }

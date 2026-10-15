@@ -26,3 +26,23 @@ func ParseID(s string) (string, int, error) {
 	}
 	return FormatID(n), n, nil
 }
+
+// ParseAttemptRef accepts a task id that may name an attempt, such as "t3",
+// "#t3a2" or "T3A2", and returns the canonical id and the attempt, 0 when
+// none is named.
+func ParseAttemptRef(s string) (string, int, error) {
+	raw := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), "#"))
+	idPart, attemptPart, named := strings.Cut(raw, "a")
+	id, _, err := ParseID(idPart)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid task id %q: want t<number>, such as t3, or t<number>a<attempt>, such as t3a2", s)
+	}
+	if !named {
+		return id, 0, nil
+	}
+	n, err := strconv.Atoi(attemptPart)
+	if err != nil || n < 1 || attemptPart[0] == '0' {
+		return "", 0, fmt.Errorf("invalid attempt in %q: want t<number>a<attempt>, such as t3a2", s)
+	}
+	return id, n, nil
+}

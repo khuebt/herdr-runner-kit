@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,12 +61,16 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	}
 	loc := herdr.Location{WorkspaceID: t.Herdr.WorkspaceID, TabID: t.Herdr.TabID, PaneID: t.Herdr.PaneID}
 	name := "hrk-" + t.ID
-	if len(t.FallbackFrom) > 0 && t.Herdr.PaneID != "" {
-		// The agent hit its usage limit: its fallback takes over the same
-		// pane and checkout.
-		if err := r.clearPane(ctx, t); err != nil {
+	var carried []proc
+	if t.Herdr.PaneID != "" && (len(t.FallbackFrom) > 0 || t.Attempt > 1) {
+		// The agent hit its usage limit, or neared its context limit: its
+		// fallback, or a fresh session, takes over the same pane and
+		// checkout.
+		left, err := r.clearPane(ctx, t)
+		if err != nil {
 			return err
 		}
+		carried = left
 	} else {
 		var err error
 		if loc, err = r.openLocation(ctx, t); err != nil {
@@ -102,7 +107,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		if t, err = r.claimSwitch(t, []task.Status{task.Starting}, false, false); err != nil {
 			return err
 		}
-		if err := r.clearPane(ctx, t); err != nil {
+		// The latest snapshot holds every process still running, including
+		// those an earlier quit left.
+		if carried, err = r.clearPane(ctx, t); err != nil {
 			return err
 		}
 		spec, adapter, files, err = r.startAgent(ctx, t, name, loc.PaneID)
@@ -117,8 +124,11 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if t.Inputs != "" {
 		prompt = strings.TrimSpace(prompt + "\n\n" + untrustedInputs(t))
 	}
-	if len(t.FallbackFrom) > 0 {
-		prompt = strings.TrimSpace(prompt + "\n\n" + resumeNote)
+	for _, note := range relaunchNotes(t) {
+		prompt = strings.TrimSpace(prompt + "\n\n" + note)
+	}
+	if len(carried) > 0 {
+		prompt = strings.TrimSpace(prompt + "\n\n" + carriedNote(carried))
 	}
 	text := adapter.FirstPrompt(t.Skill, prompt, files.contractText)
 	// A dialog can open after the screen looked ready. Look once more, so
@@ -219,9 +229,10 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (runner
 }
 
 // runnerEnv is the environment every runner gets. HRK_STATE_DIR points
-// report and the turn-end hook at the spawner's state. TELEGRAM_BOT_TOKEN is
-// empty so the Telegram plugin exits before it takes over the main session's
-// poller.
+// report and the turn-end hook at the spawner's state, and HRK_ATTEMPT,
+// from the second session on, tells them which session they run in.
+// TELEGRAM_BOT_TOKEN is empty so the Telegram plugin exits before it takes
+// over the main session's poller.
 func (r *Runner) runnerEnv(t *task.Task) []string {
 	env := []string{
 		"HRK_TASK=" + t.ID, "HRK_STATE_DIR=" + r.Store.Dir(),
@@ -229,6 +240,9 @@ func (r *Runner) runnerEnv(t *task.Task) []string {
 	}
 	if t.ClaudeConfigDir != "" {
 		env = append(env, "CLAUDE_CONFIG_DIR="+t.ClaudeConfigDir)
+	}
+	if t.Attempt > 1 {
+		env = append(env, "HRK_ATTEMPT="+strconv.Itoa(t.Attempt))
 	}
 	return env
 }

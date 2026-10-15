@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,9 +78,13 @@ func redact(s, token string) string {
 }
 
 // Message formats one news event. Every message starts with the task's
-// #id tag, which the user's reply repeats to reach that runner.
+// #id tag, which the user's reply repeats to reach that runner. From the
+// runner's second session on, the tag names the session, such as #t3a2.
 func Message(ev state.Event, t *task.Task) string {
 	tag := "#" + ev.Task
+	if ev.Attempt > 1 {
+		tag += "a" + strconv.Itoa(ev.Attempt)
+	}
 	title := ""
 	if t != nil && t.Title != "" {
 		title = " · " + t.Title

@@ -12,7 +12,7 @@ Every command prints short plain text. `herdr-runner-kit <command> --help` lists
 | `show <id> --json [--events N]` | The task as one JSON object, or `{task, events}` with `--events`. Parse this, never the text view. |
 | `peek <id> [--lines N]` | The runner's visible screen (default 30 lines), secrets hidden. Use it instead of `herdr pane read`. |
 | `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one refuses. |
-| `answer <id> --stdin` | Answer a `needs-human` question. |
+| `answer <id> --stdin` | Answer a `needs-human` question. The id may name an attempt, such as `t3a2`; one for an attempt that ended is refused. |
 | `answer --from-telegram --stdin` | Route a Telegram reply by its `#id` tag. |
 | `release <id> [--note TEXT]` | Start a `held` task. |
 | `focus <id>` | Switch herdr to the runner's tab. |
@@ -168,7 +168,7 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | Line starts with | Meaning | What you do |
 |---|---|---|
 | `tN done` | Finished; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. |
-| `tN needs-human` | The runner asks a question, or a round: `N questions` and one numbered line each | Ask the user, all of a round in one message, then `answer` once, such as `1a 2b`. |
+| `tN needs-human` | The runner asks a question, or a round: `N questions` and one numbered line each; `attempt N` when the runner continues in a fresh session after a context handoff | Ask the user, all of a round in one message, then `answer` once, such as `1a 2b`, the same way for any attempt. An answer refused as `for attempt N of tN, which ended`: ask the user again. |
 | `tN held` | A `--gate human` task waits; `(reason)` when held with `--reason` | Ask the user, then `release`. |
 | `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. For `runner lost: herdr pane gone` (herdr or the machine restarted), relay it and offer a new `spawn`; `show <id>` names the worktree and branch with the partial work. |
 | `tN stalled` | `blocked on a prompt: …` quotes the prompt the agent waits on; `no progress for N min …` or `retrying for N min` means it stayed busy without progress after a nudge and an interrupt | Relay the quoted text as is; offer `focus <id>` or `peek <id>`. The runner stays open. Never chase `blocked`, `unstalled`, `nudged` or `interrupted` progress events. |
@@ -178,3 +178,7 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `tN stopped` | Stopped by `stop` | Relay it. |
 | `tN cleanable` | Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
 | `tN plan-done` | Every phase of a `plan run` is done; `out:` is the run report | Relay the verified count and the report path. |
+
+## Context handoff
+
+A runner near its context limit is asked once to hand off: it writes `out/handoff-a<N>.md`, runs `report handoff`, and attempt N starts in the same tab and checkout. The `context-low`, `handoff` and `processes-carried` events are progress, never news: do nothing. `show <id>` prints `context: attempt 2 (handed off from …) · 3 compactions`. Telegram tags name the attempt from the second on, such as `#t3a2`; pass such replies to `answer --from-telegram` unchanged. `contextHandoff: false` in the config turns it off.

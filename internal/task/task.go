@@ -164,6 +164,15 @@ type Task struct {
 	// FallbackFrom lists, in order, the agents that hit a usage limit on
 	// this task before it switched to its current one.
 	FallbackFrom []string `json:"fallbackFrom,omitempty"`
+	// Relaunched says why the launcher last restarted the agent in the
+	// task's pane: RelaunchUsageLimit or RelaunchHandoff. Empty with
+	// FallbackFrom set means a usage limit, from before the field existed.
+	Relaunched string `json:"relaunched,omitempty"`
+	// Attempt numbers the agent sessions of the task: 0 or 1 is the first,
+	// and each context handoff starts the next. Handoffs lists the handoff
+	// files of the sessions that ended, in order.
+	Attempt  int      `json:"attempt,omitempty"`
+	Handoffs []string `json:"handoffs,omitempty"`
 	// Stalled is set while herdr reports the agent blocked on a prompt.
 	Stalled bool `json:"stalled,omitempty"`
 	// Language is the language the runner writes its report summaries and
@@ -195,6 +204,19 @@ type Task struct {
 	LaunchDeadline time.Time `json:"launchDeadline,omitzero"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// Reasons a runner's agent was restarted in its pane, as Relaunched
+// records them.
+const (
+	RelaunchUsageLimit = "usage-limit"
+	RelaunchHandoff    = "handoff"
+)
+
+// AttemptOf returns the number of t's current agent session, 1 for the
+// first.
+func AttemptOf(t *Task) int {
+	return max(t.Attempt, 1)
 }
 
 // Verdicts of a PhaseCheck. Only PhaseOutside and PhaseDirty hold the
