@@ -128,6 +128,7 @@ A pi or omp runner starts with three files from its task folder: `contract.md`, 
 - Your own pi extensions still load in runners, next to the kit's; the kit does not turn them off.
 - omp ends the background jobs a tool call starts with `cmd &` when that shell call returns, and pi leaves them running unseen. The contract tells runners to wait for background work before reporting; a runner that does not is nudged.
 - Without its herdr integration (`herdr integration install pi` or `omp`), herdr cannot see the agent working, so stall checks go blind. `doctor` fails the check when your config uses that harness.
+- The runner extension is the only way the kit learns that a pi or omp turn ended, so it is also how the kit sees unreported turns, usage limits and low context. If it stops working, for example after a pi or omp update renames the event it listens to (`agent_settled` in pi 1.2.0, `agent_end` in omp 18.2.10), an idle runner that never reported stays `running` and `wait` keeps waiting. The kit is tested with pi 1.2.0 and omp 18.2.10; after updating either, watch the first runner: one that sits idle in `running` without a `nudged` event means the extension no longer reports turn ends.
 
 ## Cleaning up
 
