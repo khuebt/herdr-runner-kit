@@ -1,8 +1,9 @@
 // hrk-runner.ts is the herdr-runner-kit runner extension. The kit writes it
 // into each pi or omp task folder with the kit binary and the harness filled
 // in, and the agent loads it with `-e` (pi) or `--hook` (omp). It tells the
-// kit when a run ends and when the session compacts; it never changes what
-// the agent does, and no failure in it reaches the agent.
+// kit when a run ends and when the session compacts. In a task with locked
+// input it also refuses prompts the kit did not send; otherwise it never
+// changes what the agent does, and no failure in it reaches the agent.
 //
 // Events follow a live probe of pi 1.2.0 and omp 18.2.10:
 //   - pi ends a run with agent_end, agent_before_settle{outcome} and
@@ -12,13 +13,19 @@
 //     omp can send duplicate or late ends.
 //   - pi compacts with session_before_compact{reason} then session_compact;
 //     omp wraps an automatic one in auto_compaction_start/_end.
+//   - Both send a typed prompt through input with source "interactive",
+//     the kit's own as well as a human's, and drop it on a result of
+//     { action: "handled" } (pi) or { handled: true } (omp). omp also sends
+//     ! bash and $ python through input; pi's ! bash skips it and fires
+//     user_bash, whose { result } replaces the run.
 //
 // The source is plain JavaScript, so both agents load it as is.
 // @ts-nocheck
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const BIN = "__HRK_BIN__";
 const HARNESS = "__HRK_HARNESS__";
+const INPUT_LOCKED = __HRK_INPUT_LOCK__;
 
 // State of the current run.
 let run = 0; // counts runs, so a late timer never speaks for a newer one
@@ -41,6 +48,24 @@ function send(hook, payload) {
     child.stdin.end(JSON.stringify(payload));
     child.unref();
   } catch {}
+}
+
+// refusal asks `<bin> __prompt-gate` whether text submitted in the tab may
+// reach the agent: the gate prints why not, or nothing when the kit sent it.
+// A gate that fails or takes over 2 s lets it through, so the lock never
+// cuts the kit off from its runner.
+function refusal(text) {
+  try {
+    const r = spawnSync(BIN, ["__prompt-gate", "--harness", HARNESS], {
+      input: JSON.stringify({ text, source: "interactive" }),
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+      timeout: 2000,
+    });
+    return r.status === 0 ? (r.stdout ?? "").trim() : "";
+  } catch {
+    return "";
+  }
 }
 
 // usage reads the context gauge, leaving out what the agent does not know,
@@ -90,7 +115,7 @@ export default function (pi) {
     try {
       pi.on(name, (event, ctx) => {
         try {
-          handler(event ?? {}, ctx);
+          return handler(event ?? {}, ctx);
         } catch {}
       });
     } catch {}
@@ -134,5 +159,24 @@ export default function (pi) {
   });
   on("session_compact", () => {
     send("__context", { hook_event_name: "SessionStart", source: "compact" });
+  });
+
+  if (!INPUT_LOCKED) return;
+  // A prompt another extension sends is not typed in the tab. A refused
+  // one is dropped, and the agent clears it from the input.
+  on("input", (event, ctx) => {
+    if (event.source === "extension") return undefined;
+    const reason = refusal(event.text);
+    if (!reason) return undefined;
+    ctx?.ui?.notify?.(reason, "warning");
+    return { action: "handled", handled: true };
+  });
+  // A refused ! command runs nothing and shows the reason. omp's input
+  // handler above has already let it through.
+  on("user_bash", (event) => {
+    if (HARNESS !== "pi") return undefined;
+    const reason = refusal("!" + event.command);
+    if (!reason) return undefined;
+    return { result: { output: reason + "\n", exitCode: 1, cancelled: false, truncated: false } };
   });
 }

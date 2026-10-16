@@ -41,12 +41,19 @@ func runGate(t *testing.T, file string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return runGateAs(t, "claude", payload)
+}
+
+// runGateAs runs the hook of harness h with payload, and returns what it
+// printed to stdout.
+func runGateAs(t *testing.T, h string, payload []byte) string {
+	t.Helper()
 	root := NewRootCommand()
 	var out, errOut bytes.Buffer
 	root.SetIn(bytes.NewReader(payload))
 	root.SetOut(&out)
 	root.SetErr(&errOut)
-	root.SetArgs([]string{"__prompt-gate", "--harness", "claude"})
+	root.SetArgs([]string{"__prompt-gate", "--harness", h})
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("the gate failed the hook: %v", err)
 	}
@@ -123,5 +130,26 @@ func TestPromptGateFailsOpen(t *testing.T) {
 	t.Setenv("HRK_STATE_DIR", file)
 	if out := runGate(t, "userpromptsubmit-claude.json"); out != "" {
 		t.Errorf("an unreadable state dir blocked the prompt: %q", out)
+	}
+}
+
+// pi and omp's runner extension shows the gate's stdout as the refusal.
+func TestPromptGateAnswersTheRunnerExtension(t *testing.T) {
+	store, id := gateEnv(t)
+	payload := []byte(`{"text":"human typed text","source":"interactive"}`)
+	for _, h := range []string{"pi", "omp"} {
+		want := id + " is a runner: it takes prompts only from the main session. Ask there, or run: hrk send " + id + ` "…"` + "\n"
+		if out := runGateAs(t, h, payload); out != want {
+			t.Errorf("%s: block = %q, want %q", h, out, want)
+		}
+		if err := store.AddPromptToken(id); err != nil {
+			t.Fatal(err)
+		}
+		if out := runGateAs(t, h, payload); out != "" {
+			t.Errorf("%s: a prompt with a token was blocked: %q", h, out)
+		}
+	}
+	if blocked := blockedEvents(t, store); len(blocked) != 2 || blocked[0].Summary != "human typed text" {
+		t.Errorf("events = %+v", blocked)
 	}
 }

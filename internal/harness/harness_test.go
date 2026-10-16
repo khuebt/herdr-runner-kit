@@ -122,10 +122,14 @@ func TestPiFiles(t *testing.T) {
 				t.Errorf("%s: extension lacks %s", a.Harness(), want)
 			}
 		}
-		if strings.Contains(ext, "__HRK_") {
-			t.Errorf("%s: a placeholder is left", a.Harness())
+		if strings.Contains(ext, "__HRK_") || !strings.Contains(ext, "const INPUT_LOCKED = false;") {
+			t.Errorf("%s: a placeholder is left, or the input is locked", a.Harness())
 		}
 		checkScript(t, ext)
+		locked, _ := a.Files(FilesInput{Bin: "/b/hrk", InputLocked: true})
+		if !strings.Contains(string(locked[1].Data), "const INPUT_LOCKED = true;") {
+			t.Errorf("%s: a locked task's extension is open", a.Harness())
+		}
 	}
 	if _, err := piAgent.Files(FilesInput{Bin: "hrk"}); err == nil {
 		t.Error("a relative binary was accepted")
@@ -185,6 +189,68 @@ func checkScript(t *testing.T, src string) {
 	}
 	if out, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
 		t.Errorf("node --check: %v\n%s", err, out)
+	}
+}
+
+// TestPiExtensionGate runs the rendered extension in node against a fake
+// gate that refuses text naming a human and fails on text naming a crash.
+func TestPiExtensionGate(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not on PATH")
+	}
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "hrk")
+	writeFile(t, gate, "#!/bin/sh\nin=$(cat)\ncase \"$in\" in *crash*) echo no; exit 3;; *human*) echo \"refused: $*\";; esac\n")
+	if err := os.Chmod(gate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	driver := `import ext from "./hrk-runner.mjs";
+const h = {}, notes = [];
+ext({ on: (name, f) => { h[name] = f; } });
+const ctx = { ui: { notify: (m, level) => notes.push(level + ": " + m) } };
+const run = (name, ev) => (h[name] ? h[name](ev, ctx) ?? "pass" : "none");
+console.log(JSON.stringify({
+  human: run("input", { text: "human", source: "interactive" }),
+  kit: run("input", { text: "kit", source: "interactive" }),
+  extension: run("input", { text: "human", source: "extension" }),
+  crash: run("input", { text: "human crash", source: "interactive" }),
+  bash: run("user_bash", { command: "echo human" }),
+  bashKit: run("user_bash", { command: "echo kit" }),
+  notes,
+}));
+`
+	writeFile(t, filepath.Join(dir, "driver.mjs"), driver)
+	refused := map[string]any{"output": "refused: __prompt-gate --harness pi\n", "exitCode": 1.0, "cancelled": false, "truncated": false}
+	locked := func(h string, bash any) map[string]any {
+		return map[string]any{
+			"human": map[string]any{"action": "handled", "handled": true}, "kit": "pass", "extension": "pass", "crash": "pass",
+			"bash": bash, "bashKit": "pass", "notes": []any{"warning: refused: __prompt-gate --harness " + h},
+		}
+	}
+	open := map[string]any{"human": "none", "kit": "none", "extension": "none", "crash": "none", "bash": "none", "bashKit": "none", "notes": []any{}}
+	for _, tt := range []struct {
+		a      Adapter
+		locked bool
+		want   map[string]any
+	}{
+		{piAgent, true, locked("pi", map[string]any{"result": refused})},
+		{ompAgent, true, locked("omp", "pass")}, // omp's input handler gates ! bash
+		{piAgent, false, open},
+	} {
+		files, err := tt.a.Files(FilesInput{Bin: gate, InputLocked: tt.locked})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "hrk-runner.mjs"), string(files[1].Data))
+		out, err := exec.Command(node, filepath.Join(dir, "driver.mjs")).Output()
+		if err != nil {
+			t.Fatalf("%s locked %v: %v", tt.a.Harness(), tt.locked, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil || !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s locked %v: %s, %v", tt.a.Harness(), tt.locked, out, err)
+		}
 	}
 }
 
@@ -518,12 +584,24 @@ func TestClaudeSettingsPromptGate(t *testing.T) {
 
 func TestInputLockMethods(t *testing.T) {
 	for _, a := range All() {
-		locks := a.Harness() == task.Claude
+		locks := a.Harness() != task.Codex
 		if a.LocksInput() != locks {
 			t.Errorf("%s: LocksInput = %v", a.Harness(), a.LocksInput())
 		}
 		if !locks && (a.ClearInputKeys() != nil || a.GateBlock("x") != "") {
 			t.Errorf("%s: an open adapter clears or blocks", a.Harness())
+		}
+	}
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		if a.ClearInputKeys() != nil || a.GateBlock("t1 is a runner") != "t1 is a runner" {
+			t.Errorf("%s: clear keys %q, block %q", a.Harness(), a.ClearInputKeys(), a.GateBlock("t1 is a runner"))
+		}
+		prompt, synthetic, err := a.GatePrompt([]byte(`{"text":"hello","source":"interactive"}`))
+		if prompt != "hello" || synthetic || err != nil {
+			t.Errorf("%s: GatePrompt = %q, %v, %v", a.Harness(), prompt, synthetic, err)
+		}
+		if _, _, err := a.GatePrompt([]byte("not json")); err == nil {
+			t.Errorf("%s: an unreadable payload was read", a.Harness())
 		}
 	}
 	keys := claude{}.ClearInputKeys()

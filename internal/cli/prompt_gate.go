@@ -8,7 +8,8 @@ import (
 )
 
 // newPromptGateCommand is the prompt-submit hook of a runner with locked
-// input. It prints the block reply for a prompt typed in the runner's tab,
+// input: Claude's UserPromptSubmit hook, or the input handler of the pi and
+// omp runner extension, which shows what it prints as a warning. It prints the block reply for a prompt typed in the runner's tab,
 // and nothing for one the kit typed or the agent's own. It fails open:
 // errors go to stderr, the prompt goes through, and the command exits 0.
 func newPromptGateCommand() *cobra.Command {

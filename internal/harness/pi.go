@@ -8,6 +8,7 @@ import (
 	"math"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -41,7 +42,7 @@ var (
 // The per-task files a pi or omp runner starts with.
 const (
 	piContractFile  = "contract.md"
-	piExtensionFile = "hrk-runner.ts" // reports turn ends and compactions
+	piExtensionFile = "hrk-runner.ts" // reports turn ends and compactions, and gates prompts
 	ompOverlayFile  = "omp-runner.yml"
 )
 
@@ -97,7 +98,8 @@ func (p pi) FirstPrompt(skill, prompt, _ string) string {
 }
 
 // piExtension is the runner extension template. Its quoted placeholders
-// become the kit binary and the harness, as JSON strings.
+// become the kit binary and the harness, as JSON strings, and the lock
+// placeholder true or false.
 //
 //go:embed hrk-runner.ts
 var piExtension string
@@ -105,6 +107,7 @@ var piExtension string
 const (
 	piBinPlaceholder     = `"__HRK_BIN__"`
 	piHarnessPlaceholder = `"__HRK_HARNESS__"`
+	piLockPlaceholder    = `__HRK_INPUT_LOCK__`
 )
 
 func (p pi) Files(in FilesInput) ([]File, error) {
@@ -113,7 +116,8 @@ func (p pi) Files(in FilesInput) ([]File, error) {
 	}
 	bin, _ := json.Marshal(in.Bin)
 	h, _ := json.Marshal(string(p.harness))
-	ext := strings.NewReplacer(piBinPlaceholder, string(bin), piHarnessPlaceholder, string(h)).Replace(piExtension)
+	ext := strings.NewReplacer(piBinPlaceholder, string(bin), piHarnessPlaceholder, string(h),
+		piLockPlaceholder, strconv.FormatBool(in.InputLocked)).Replace(piExtension)
 	files := []File{
 		{Name: piContractFile, Data: []byte(in.Contract + "\n")},
 		{Name: piExtensionFile, Data: []byte(ext)},
@@ -268,16 +272,34 @@ func (pi) WorksInBackground(Screen) (bool, error)                  { return fals
 func (pi) DoneAtTurnEnd() bool      { return false }
 func (pi) ShowsWorking(string) bool { return false }
 
+// LocksInput is true: the runner extension's input handler asks
+// `hrk __prompt-gate` about every prompt submitted in the tab, since pi and
+// omp give the kit's typed prompt and a human's the same source. omp sends
+// ! bash and $ python through it too; for pi's ! bash a user_bash handler
+// asks the same way.
+func (pi) LocksInput() bool { return true }
+
+// ClearInputKeys is nil: pi and omp clear a prompt the extension refused.
+func (pi) ClearInputKeys() []string { return nil }
+
+// GatePrompt reads the extension's gate payload. Nothing in it is the
+// agent's own: the extension lets those through without asking.
+func (pi) GatePrompt(payload []byte) (string, bool, error) {
+	var in struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(payload, &in); err != nil {
+		return "", false, fmt.Errorf("parse runner extension gate input: %w", err)
+	}
+	return in.Text, false, nil
+}
+
+// GateBlock is the reason alone: the extension shows it as a warning.
+func (pi) GateBlock(reason string) string { return reason }
+
 // Checks keeps pi and omp optional, so a config without them sees warnings
 // only. The flags are long forms: doctor matches them as substrings of
 // --help, where "-e" would match anything.
-// LocksInput is false for now: pi and omp see the kit's typed prompt and
-// a human's with the same source.
-func (pi) LocksInput() bool                        { return false }
-func (pi) ClearInputKeys() []string                { return nil }
-func (pi) GatePrompt([]byte) (string, bool, error) { return "", false, nil }
-func (pi) GateBlock(string) string                 { return "" }
-
 func (p pi) Checks() Checks {
 	flags := []string{"--model", "--thinking", p.approve, "--append-system-prompt", "--extension"}
 	if p.overlay != "" { // omp
