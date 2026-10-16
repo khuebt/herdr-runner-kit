@@ -321,7 +321,9 @@ const goneConfirm = 15 * time.Second
 // waiting on the same attempt in the same pane, and herdr still sees no
 // agent there.
 func (r *Runner) stillGone(ctx context.Context, t *task.Task) bool {
-	r.Sleep(goneConfirm)
+	if !r.pause(ctx, goneConfirm) {
+		return false
+	}
 	cur, err := r.Store.Get(t.ID)
 	if err != nil || cur.Status != task.Running && cur.Status != task.NeedsHuman ||
 		task.AttemptOf(cur) != task.AttemptOf(t) || cur.Herdr.PaneID != t.Herdr.PaneID {
@@ -382,6 +384,22 @@ func (r *Runner) CheckLaunch(t *task.Task) {
 		r.fail(t.ID, "the launch did not finish in time")
 	case t.LauncherPID > 0 && errors.Is(syscall.Kill(t.LauncherPID, 0), syscall.ESRCH):
 		r.fail(t.ID, "the launcher exited before the agent started")
+	}
+}
+
+// pause waits d through Sleep, which tests replace, or until ctx ends, and
+// reports whether ctx is still live.
+func (r *Runner) pause(ctx context.Context, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Sleep(d)
+	}()
+	select {
+	case <-done:
+		return ctx.Err() == nil
+	case <-ctx.Done():
+		return false
 	}
 }
 

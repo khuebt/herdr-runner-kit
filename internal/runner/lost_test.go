@@ -201,13 +201,27 @@ func TestRelaunchDuringTheConfirmationKeepsTheRunner(t *testing.T) {
 		fake.on("agent get", agentGets(shellLeft))
 		r.Sleep = func(time.Duration) {
 			if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { change(t); return nil }); err != nil {
-				t.Fatal(err)
+				t.Error(err)
 			}
 		}
 		r.CheckLost(context.Background(), tk)
 		if got, _ := r.Store.Get(tk.ID); got.Status == task.Failed {
 			t.Errorf("%s: task failed: %q", name, got.Error)
 		}
+	}
+}
+
+func TestCanceledConfirmationKeepsTheRunner(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	fake.on("agent get", agentGets(shellLeft))
+	never := make(chan struct{})
+	t.Cleanup(func() { close(never) })
+	r.Sleep = func(time.Duration) { <-never }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.CheckLost(ctx, tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman {
+		t.Errorf("task = %s %q", got.Status, got.Error)
 	}
 }
 
