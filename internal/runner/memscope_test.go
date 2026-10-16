@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,11 +21,11 @@ func TestScopeUnit(t *testing.T) {
 }
 
 func TestScopeProperties(t *testing.T) {
-	base := "PIDs au 2 11 12 MemoryMax t 536870912 MemorySwapMax t 0 CollectMode s inactive-or-failed"
-	if got := strings.Join(scopeProperties([]int{11, 12}, 512<<20, false), " "); got != "4 "+base {
+	base := "PIDs au 1 11 MemoryMax t 536870912 MemorySwapMax t 0 CollectMode s inactive-or-failed Delegate b true"
+	if got := strings.Join(scopeProperties(11, 512<<20, false), " "); got != "5 "+base {
 		t.Errorf("without OOMPolicy: %s", got)
 	}
-	if got := strings.Join(scopeProperties([]int{11, 12}, 512<<20, true), " "); got != "5 "+base+" OOMPolicy s continue" {
+	if got := strings.Join(scopeProperties(11, 512<<20, true), " "); got != "6 "+base+" OOMPolicy s continue" {
 		t.Errorf("with OOMPolicy: %s", got)
 	}
 }
@@ -38,80 +39,152 @@ func TestScopeBytes(t *testing.T) {
 	}
 }
 
-// fakeBus is a memScope whose busctl records its calls and whose processes
-// land in the scope at once. With old, it rejects OOMPolicy as systemd 249
-// does.
-func fakeBus(old bool) (memScope, *[][]string) {
-	var calls [][]string
+// bus is a fake user manager: it records busctl calls and keeps the cgroup
+// of each process that moved; the others run in herdr's service.
+type bus struct {
+	calls   [][]string
+	cgroups map[int]string
+	// old rejects OOMPolicy, as systemd 249 does; gone processes have
+	// exited, and stuck ones refuse to move.
+	old         bool
+	gone, stuck map[int]bool
+}
+
+func (b *bus) cgroup(pid int) (string, error) {
+	if b.gone[pid] {
+		return "", os.ErrNotExist
+	}
+	if cg, ok := b.cgroups[pid]; ok {
+		return cg, nil
+	}
+	return "/app.slice/herdr.service", nil
+}
+
+// fakeBus returns a memScope on a fake manager.
+func fakeBus(old bool) (memScope, *bus) {
+	b := &bus{cgroups: map[int]string{}, old: old, gone: map[int]bool{}, stuck: map[int]bool{}}
 	s := memScope{
 		memoryMax: "25%",
 		memTotal:  func() (uint64, error) { return 4 << 30, nil },
 		sleep:     func(time.Duration) {},
+		cgroup:    b.cgroup,
 	}
-	unit := ""
 	s.busctl = func(_ context.Context, args ...string) ([]byte, error) {
-		calls = append(calls, args)
-		if old && slices.Contains(args, "OOMPolicy") {
-			return []byte("Call failed: Cannot set property OOMPolicy, or unknown property."), errors.New("exit status 1")
+		b.calls = append(b.calls, args)
+		unit := args[6]
+		switch args[4] {
+		case "StartTransientUnit":
+			if b.old && slices.Contains(args, "OOMPolicy") {
+				return []byte("Call failed: Cannot set property OOMPolicy, or unknown property."), errors.New("exit status 1")
+			}
+			pid, _ := strconv.Atoi(args[12])
+			if b.gone[pid] {
+				return []byte("Call failed: Process with ID " + args[12] + " does not exist."), errors.New("exit status 1")
+			}
+			b.cgroups[pid] = "/app.slice/" + unit
+			return []byte(`o "/org/freedesktop/systemd1/job/1"`), nil
+		case "AttachProcessesToUnit":
+			pid, _ := strconv.Atoi(args[9])
+			if b.gone[pid] || b.stuck[pid] {
+				return []byte("Call failed: Process with ID " + args[9] + " does not exist."), errors.New("exit status 1")
+			}
+			b.cgroups[pid] = "/app.slice/" + unit
+			return nil, nil
 		}
-		unit = args[6]
-		return []byte(`o "/org/freedesktop/systemd1/job/1"`), nil
+		return nil, errors.New("unexpected call")
 	}
-	s.cgroup = func(int) (string, error) { return "/user.slice/app.slice/" + unit, nil }
-	return s, &calls
+	return s, b
 }
 
-// properties returns a StartTransientUnit call's properties after PIDs.
-func properties(t *testing.T, call []string) []string {
-	t.Helper()
-	i := slices.Index(call, "PIDs")
-	if i < 0 || call[i+1] != "au" {
-		t.Fatalf("no PIDs in %q", call)
+func (b *bus) named(method string) [][]string {
+	var out [][]string
+	for _, c := range b.calls {
+		if c[4] == method {
+			out = append(out, c)
+		}
 	}
-	n := 0
-	for _, c := range call[i+2] {
-		n = n*10 + int(c-'0')
-	}
-	return call[i+3+n:]
+	return out
 }
 
 func TestProbeAndLaunchShareProperties(t *testing.T) {
 	for _, old := range []bool{false, true} {
-		s, calls := fakeBus(old)
+		s, b := fakeBus(old)
 		if err := s.probe(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		probeCalls := len(*calls)
-		path, err := s.enter(t.Context(), "hrk-t1-1-1.scope", []int{101, 102})
-		if err != nil || path != "/user.slice/app.slice/hrk-t1-1-1.scope" {
-			t.Fatalf("enter = %q, %v", path, err)
+		probe := b.named("StartTransientUnit")
+		b.calls = nil
+		sc, err := s.enter(t.Context(), "hrk-t1-1-1.scope", 101, func() []int { return nil })
+		if err != nil || sc.Path != "/app.slice/hrk-t1-1-1.scope" {
+			t.Fatalf("enter = %+v, %v", sc, err)
 		}
-		probe, launch := (*calls)[:probeCalls], (*calls)[probeCalls:]
+		launch := b.named("StartTransientUnit")
 		if want := map[bool]int{false: 1, true: 2}[old]; len(probe) != want || len(launch) != want {
-			t.Fatalf("old %v: calls = %q", old, *calls)
+			t.Fatalf("old %v: probe %q, launch %q", old, probe, launch)
 		}
 		for i := range probe {
-			if !slices.Equal(properties(t, probe[i]), properties(t, launch[i])) || probe[i][8] != launch[i][8] || !strings.HasPrefix(probe[i][6], "hrk-probe-") {
+			if !slices.Equal(probe[i][8:12], launch[i][8:12]) || !slices.Equal(probe[i][13:], launch[i][13:]) || !strings.HasPrefix(probe[i][6], "hrk-probe-") {
 				t.Errorf("old %v: probe %q, launch %q", old, probe[i], launch[i])
 			}
 		}
-		if last := launch[len(launch)-1]; slices.Contains(last, "OOMPolicy") == old {
-			t.Errorf("old %v: last call %q", old, last)
+		if note := strings.Join(sc.Notes, "; "); old != strings.Contains(note, "systemd rejected OOMPolicy=continue, so an OOM kill may end the runner") {
+			t.Errorf("old %v: notes %q", old, sc.Notes)
 		}
 	}
 }
 
 func TestEnterChecksTheProcessMoved(t *testing.T) {
 	s, _ := fakeBus(false)
-	s.cgroup = func(int) (string, error) { return "/user.slice/app.slice/herdr.service", nil }
-	if _, err := s.enter(t.Context(), "hrk-t1-1-1.scope", []int{101}); err == nil || !strings.Contains(err.Error(), "still in /user.slice/app.slice/herdr.service") {
+	s.cgroup = func(int) (string, error) { return "/app.slice/herdr.service", nil }
+	if _, err := s.enter(t.Context(), "hrk-t1-1-1.scope", 101, func() []int { return nil }); err == nil || !strings.Contains(err.Error(), "still in /app.slice/herdr.service") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestEnterStartsWithTheAgentAlone(t *testing.T) {
+	s, b := fakeBus(false)
+	// 103 exited after it was listed; 102 exits while it would move.
+	b.gone[103] = true
+	b.stuck[102] = true
+	sc, err := s.enter(t.Context(), "hrk-t1-1-1.scope", 101, func() []int {
+		if len(b.named("AttachProcessesToUnit")) > 0 {
+			b.gone[102] = true
+		}
+		return []int{102, 103}
+	})
+	if err != nil || len(sc.Notes) != 0 || b.cgroups[101] != sc.Path {
+		t.Fatalf("enter = %+v, %v", sc, err)
+	}
+	if start := b.named("StartTransientUnit"); len(start) != 1 || start[0][11] != "1" || start[0][12] != "101" {
+		t.Errorf("start = %q", start)
+	}
+}
+
+func TestEnterAttachesLateChildren(t *testing.T) {
+	s, b := fakeBus(false)
+	rounds := 0
+	sc, err := s.enter(t.Context(), "hrk-t1-1-1.scope", 101, func() []int {
+		rounds++
+		if rounds >= 2 {
+			return []int{102, 103} // an MCP server forked while 102 moved
+		}
+		return []int{102}
+	})
+	if err != nil || len(sc.Notes) != 0 || b.cgroups[102] != sc.Path || b.cgroups[103] != sc.Path || rounds != 3 {
+		t.Fatalf("enter = %+v, %v; cgroups %v after %d rounds", sc, err, b.cgroups, rounds)
+	}
+
+	s, b = fakeBus(false)
+	b.stuck[104] = true
+	sc, err = s.enter(t.Context(), "hrk-t1-1-1.scope", 101, func() []int { return []int{104} })
+	if err != nil || !slices.Equal(sc.Notes, []string{"1 of its processes stayed outside"}) || len(b.named("AttachProcessesToUnit")) != attachRounds {
+		t.Errorf("stuck child: %+v, %v, %d attaches", sc, err, len(b.named("AttachProcessesToUnit")))
 	}
 }
 
 // scopedLaunch launches a runner whose agent is pid 101 under shell 100,
 // with enter as its EnterScope, and returns the task and its started event.
-func scopedLaunch(t *testing.T, enter func(context.Context, string, []int) (string, error)) (*Runner, *fakeHerdr, *task.Task, string) {
+func scopedLaunch(t *testing.T, enter func(context.Context, string, int, func() []int) (Scope, error)) (*Runner, *fakeHerdr, *task.Task, string) {
 	t.Helper()
 	r, fake, _ := newTestRunner(t)
 	r.EnterScope = enter
@@ -131,15 +204,17 @@ func scopedLaunch(t *testing.T, enter func(context.Context, string, []int) (stri
 
 func TestLaunchMovesTheAgentIntoAScope(t *testing.T) {
 	var unit string
-	var pids []int
-	_, fake, tk, started := scopedLaunch(t, func(_ context.Context, u string, p []int) (string, error) {
-		unit, pids = u, p
-		return "/user.slice/app.slice/" + u, nil
+	var agent int
+	var children []int
+	_, fake, tk, started := scopedLaunch(t, func(_ context.Context, u string, a int, c func() []int) (Scope, error) {
+		unit, agent, children = u, a, c()
+		return Scope{Path: "/user.slice/app.slice/" + u, Notes: []string{"1 of its processes stayed outside"}}, nil
 	})
-	if !strings.HasPrefix(unit, "hrk-t1-1-") || !slices.Equal(pids, []int{101, 102}) {
-		t.Errorf("entered %q with %v", unit, pids)
+	if !strings.HasPrefix(unit, "hrk-t1-1-") || agent != 101 || !slices.Equal(children, []int{102}) {
+		t.Errorf("entered %q with %d and %v", unit, agent, children)
 	}
-	if !strings.Contains(started, "memory scope "+unit) || !slices.Equal(tk.Scopes, []string{"/user.slice/app.slice/" + unit}) {
+	if !strings.Contains(started, "memory scope "+unit+" (1 of its processes stayed outside)") ||
+		!slices.Equal(tk.Scopes, []string{"/user.slice/app.slice/" + unit}) {
 		t.Errorf("started %q, scopes %q", started, tk.Scopes)
 	}
 	if n := fake.count("pane", "run"); n != 0 {
@@ -148,8 +223,8 @@ func TestLaunchMovesTheAgentIntoAScope(t *testing.T) {
 }
 
 func TestLaunchWithoutAScope(t *testing.T) {
-	_, _, tk, started := scopedLaunch(t, func(context.Context, string, []int) (string, error) {
-		return "", errors.New("start hrk-t1-1-1.scope: Unknown assignment")
+	_, _, tk, started := scopedLaunch(t, func(context.Context, string, int, func() []int) (Scope, error) {
+		return Scope{}, errors.New("start hrk-t1-1-1.scope: Unknown assignment")
 	})
 	if tk.Status != task.Running || len(tk.Scopes) != 0 || !strings.Contains(started, "no memory scope: start hrk-t1-1-1.scope: Unknown assignment") {
 		t.Errorf("status %s, scopes %q, started %q", tk.Status, tk.Scopes, started)

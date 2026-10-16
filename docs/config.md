@@ -88,18 +88,20 @@ pi's own `--model provider/id:thinking` shorthand does not apply: the spec's thi
 
 herdr runs every pane, and so every runner and the main session, inside its own service's memory group. Without a cap, one runner running several test suites at once can fill the machine's memory, and systemd-oomd then kills herdr with every session in it.
 
-On Linux, once a runner's agent has started and before its first prompt, the kit moves the agent, with the processes it already started, into a new systemd scope capped at `runnerMemoryMax`. It asks the user's systemd manager over D-Bus with `busctl --user`, the same call `systemd-run --scope` makes:
+On Linux, once a runner's agent has started and before its first prompt, the kit moves the agent into a new systemd scope capped at `runnerMemoryMax`. It asks the user's systemd manager over D-Bus with `busctl --user`, the same call `systemd-run --scope` makes:
 
 ```
 busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
-  StartTransientUnit 'ssa(sv)a(sa(sv))' hrk-<task>-<attempt>-<unix seconds>.scope fail 5 \
+  StartTransientUnit 'ssa(sv)a(sa(sv))' hrk-<task>-<attempt>-<unix seconds>.scope fail 6 \
   PIDs au 1 <agent pid> MemoryMax t <bytes> MemorySwapMax t 0 CollectMode s inactive-or-failed \
-  OOMPolicy s continue 0
+  Delegate b true OOMPolicy s continue 0
 ```
+
+The scope starts with the agent alone, so a short-lived child that exits on the way cannot fail it. The processes the agent already started, such as its MCP servers, then join it one by one with `AttachProcessesToUnit`, which needs `Delegate`; the kit lists them again and moves the new ones, up to 3 rounds, until none is left outside. A process that exited meanwhile is skipped. Any still outside after that are counted in the `started` event, as `memory scope hrk-t3-1-1760000000.scope (2 of its processes stayed outside)`.
 
 Nothing is typed into the pane and the pane's shell stays where it is: only the agent and every command it starts from then on are in the scope. A share such as `25%` is taken of the machine's memory. Memory the agent used before the move stays counted against herdr's group; what it and its commands use from then on counts against the cap.
 
-- A command that goes over the cap is killed inside its runner only; `MemorySwapMax=0` keeps it from swapping instead. The kernel picks the largest process in the scope, usually the test worker, not the agent. Where systemd handles OOM kills in scopes, as systemd 252 on Debian 12 and 255 on Ubuntu 24.04 do, a scope would stop, killing the agent too, so the kit asks for `OOMPolicy=continue`. A systemd that rejects that property for scopes, such as 249 on Ubuntu 22.04, never stops a scope that way, and the kit asks again without it.
+- A command that goes over the cap is killed inside its runner only; `MemorySwapMax=0` keeps it from swapping instead. The kernel picks the largest process in the scope, usually the test worker, not the agent. Where systemd handles OOM kills in scopes, as Debian 12's 252.5 and later and Ubuntu 24.04's 255 do, a scope would stop, killing the agent too, so the kit asks for `OOMPolicy=continue`. When systemd rejects that property, the kit asks again without it and the `started` event says `systemd rejected OOMPolicy=continue, so an OOM kill may end the runner`: Ubuntu 22.04's 249 keeps such a scope running, but systemd 252.0 to 252.4, and other builds without the backport, end the whole scope, agent included.
 - The cap is per runner, not a total: four runners at `25%` can still fill memory together. Each runner is then its own group, so systemd-oomd kills the runner using the memory instead of herdr.
 - Each agent session, including a quota fallback or a context handoff, gets a new scope; processes the previous session left keep the old one, and systemd drops a scope once it is empty. The `started` event names it, as `memory scope hrk-t3-1-1760000000.scope`, and `systemctl --user status <scope>` shows its processes and limit.
 - When the scope cannot be made, the agent keeps running where herdr started it, and the `started` event says why, as `no memory scope: <reason>`. A launch never fails because of it.

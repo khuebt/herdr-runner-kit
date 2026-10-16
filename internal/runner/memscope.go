@@ -46,9 +46,18 @@ func newMemScope(memoryMax string) memScope {
 	return memScope{memoryMax: memoryMax, busctl: runBusctl, cgroup: procCgroup, memTotal: memTotal, sleep: time.Sleep}
 }
 
+// A Scope is the memory scope an agent session runs in.
+type Scope struct {
+	// Path is the scope's cgroup.
+	Path string
+	// Notes say what the started event adds about it, such as processes
+	// that stayed outside.
+	Notes []string
+}
+
 // SystemScope returns the Runner.EnterScope of this system: nil on systems
 // without systemd and with runnerMemoryMax off.
-func SystemScope(memoryMax, goos string) func(context.Context, string, []int) (string, error) {
+func SystemScope(memoryMax, goos string) func(context.Context, string, int, func() []int) (Scope, error) {
 	if memoryMax == config.MemoryOff || goos != "linux" {
 		return nil
 	}
@@ -85,38 +94,68 @@ func (s memScope) probe(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-	_, err := s.enter(ctx, fmt.Sprintf("hrk-probe-%d.scope", cmd.Process.Pid), []int{cmd.Process.Pid})
+	_, err := s.enter(ctx, fmt.Sprintf("hrk-probe-%d.scope", cmd.Process.Pid), cmd.Process.Pid, func() []int { return nil })
 	return err
 }
 
-// enter moves pids into a new scope named unit, capped at memoryMax, and
-// returns the scope's cgroup path once the first of pids is in it.
-func (s memScope) enter(ctx context.Context, unit string, pids []int) (string, error) {
+// attachRounds bounds how often enter moves the agent's children that are
+// still outside its scope: a child can fork while the ones before it move.
+const attachRounds = 3
+
+// enter moves agent into a new scope named unit, capped at memoryMax, and
+// returns the scope once agent is in it. The scope starts with agent alone,
+// so a child that exits meanwhile cannot fail it; then the processes
+// children lists, agent's descendants, join it, until none is left outside.
+// One that exited on the way is not an error.
+func (s memScope) enter(ctx context.Context, unit string, agent int, children func() []int) (Scope, error) {
 	maxBytes, err := s.bytes()
 	if err != nil {
-		return "", err
+		return Scope{}, err
 	}
-	out, err := s.busctl(ctx, startArgs(unit, scopeProperties(pids, maxBytes, true))...)
+	var sc Scope
+	out, err := s.busctl(ctx, startArgs(unit, scopeProperties(agent, maxBytes, true))...)
 	if err != nil && strings.Contains(string(out), "OOMPolicy") {
-		// A systemd that does not stop scopes on OOM kills rejects it.
-		out, err = s.busctl(ctx, startArgs(unit, scopeProperties(pids, maxBytes, false))...)
+		out, err = s.busctl(ctx, startArgs(unit, scopeProperties(agent, maxBytes, false))...)
+		sc.Notes = append(sc.Notes, "systemd rejected OOMPolicy=continue, so an OOM kill may end the runner")
 	}
 	if err != nil {
-		return "", busError("start "+unit, out, err)
+		return Scope{}, busError("start "+unit, out, err)
 	}
-	// systemd moves the processes when the scope's start job runs, right
-	// after the call returns.
-	var path string
+	// systemd moves the agent when the scope's start job runs, right after
+	// the call returns.
 	for range 20 {
-		if path, err = s.cgroup(pids[0]); err == nil && filepath.Base(path) == unit {
-			return path, nil
+		if sc.Path, err = s.cgroup(agent); err == nil && filepath.Base(sc.Path) == unit {
+			break
 		}
 		s.sleep(50 * time.Millisecond)
 	}
 	if err != nil {
-		return "", err
+		return Scope{}, err
 	}
-	return "", fmt.Errorf("process %d is still in %s, not %s", pids[0], path, unit)
+	if filepath.Base(sc.Path) != unit {
+		return Scope{}, fmt.Errorf("process %d is still in %s, not %s", agent, sc.Path, unit)
+	}
+	for round := 0; ; round++ {
+		var outside []int
+		for _, pid := range children() {
+			if path, err := s.cgroup(pid); err == nil && path != sc.Path {
+				outside = append(outside, pid)
+			}
+		}
+		if len(outside) == 0 {
+			break
+		}
+		if round == attachRounds {
+			sc.Notes = append(sc.Notes, fmt.Sprintf("%d of its processes stayed outside", len(outside)))
+			break
+		}
+		// One call per process: a call with one that exited fails whole.
+		for _, pid := range outside {
+			_, _ = s.busctl(ctx, "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+				"AttachProcessesToUnit", "ssau", unit, "", "1", strconv.Itoa(pid))
+		}
+	}
+	return sc, nil
 }
 
 // startArgs returns the busctl arguments that start the scope unit with
@@ -130,25 +169,25 @@ func startArgs(unit string, props []string) []string {
 }
 
 // scopeProperties returns the properties of a runner scope as busctl
-// arguments: pids moved in, capped at maxBytes. MemorySwapMax=0 makes the cap
-// hard: a command over it is killed instead of swapping. CollectMode drops
-// the unit once it is empty, even when an OOM kill marked it failed. Where
-// systemd handles OOM kills in scopes, as in Debian 12's 252 and in 255, a
-// scope stops, killing the agent too, when the kernel kills one of its
-// processes, unless oomPolicy adds OOMPolicy=continue. Versions without
-// that handling, such as Ubuntu 22.04's 249, reject the property and never
-// stop a scope that way. Every other property is accepted from systemd 236
-// on.
-func scopeProperties(pids []int, maxBytes uint64, oomPolicy bool) []string {
-	props := []string{"PIDs", "au", strconv.Itoa(len(pids))}
-	for _, pid := range pids {
-		props = append(props, strconv.Itoa(pid))
-	}
-	props = append(props,
+// arguments: agent moved in, capped at maxBytes. MemorySwapMax=0 makes the
+// cap hard: a command over it is killed instead of swapping. CollectMode
+// drops the unit once it is empty, even when an OOM kill marked it failed.
+// Delegate lets the agent's children join it later, through
+// AttachProcessesToUnit. Where systemd handles OOM kills in scopes, as
+// Debian 12's 252 and 255 do, a scope stops, killing the agent too, when
+// the kernel kills one of its processes, unless oomPolicy adds
+// OOMPolicy=continue. Ubuntu 22.04's 249 rejects the property and keeps the
+// scope running; some 252 releases reject it and still end the scope.
+// Every other property is accepted from systemd 238 on.
+func scopeProperties(agent int, maxBytes uint64, oomPolicy bool) []string {
+	props := []string{
+		"PIDs", "au", "1", strconv.Itoa(agent),
 		"MemoryMax", "t", strconv.FormatUint(maxBytes, 10),
 		"MemorySwapMax", "t", "0",
-		"CollectMode", "s", "inactive-or-failed")
-	n := 4
+		"CollectMode", "s", "inactive-or-failed",
+		"Delegate", "b", "true",
+	}
+	n := 5
 	if oomPolicy {
 		props = append(props, "OOMPolicy", "s", "continue")
 		n++
@@ -226,48 +265,57 @@ func memTotal() (uint64, error) {
 }
 
 // enterScope moves t's agent, which has just started in pane, and the
-// processes it already started into a new memory-capped scope, so a runaway
-// command meets its runner's cap instead of the memory every session
-// shares. Each agent session gets its own; systemd drops a scope once it is
-// empty. It records the scope on t and returns what the started event says
-// about it. When no scope can be made, the agent keeps running where it is.
+// processes it started into a new memory-capped scope, so a runaway command
+// meets its runner's cap instead of the memory every session shares. Each
+// agent session gets its own; systemd drops a scope once it is empty. It
+// records the scope on t and returns what the started
+// event says about it. When no scope can be made, the agent keeps running
+// where it is.
 func (r *Runner) enterScope(ctx context.Context, t *task.Task, pane string) string {
 	if r.EnterScope == nil {
 		return ""
 	}
-	path, err := r.scopeAgent(ctx, t, pane)
+	sc, err := r.scopeAgent(ctx, t, pane)
+	if err == nil {
+		_, err = r.Store.Update(t.ID, func(t *task.Task) error {
+			t.Scopes = append(t.Scopes, sc.Path)
+			return nil
+		})
+	}
 	if err != nil {
 		return "no memory scope: " + firstLine(err.Error(), 160)
 	}
-	if _, err := r.Store.Update(t.ID, func(t *task.Task) error {
-		t.Scopes = append(t.Scopes, path)
-		return nil
-	}); err != nil {
-		return "no memory scope: " + firstLine(err.Error(), 160)
+	line := "memory scope " + filepath.Base(sc.Path)
+	if len(sc.Notes) > 0 {
+		line += " (" + strings.Join(sc.Notes, "; ") + ")"
 	}
-	return "memory scope " + filepath.Base(path)
+	return line
 }
 
-func (r *Runner) scopeAgent(ctx context.Context, t *task.Task, pane string) (string, error) {
+func (r *Runner) scopeAgent(ctx context.Context, t *task.Task, pane string) (Scope, error) {
 	info, err := r.Herdr.PaneProcessInfo(ctx, pane)
 	if err != nil {
-		return "", err
+		return Scope{}, err
 	}
 	agent := info.ForegroundPGID
 	if agent <= 0 || agent == info.ShellPID {
-		return "", errors.New("herdr names no agent process in the pane")
+		return Scope{}, errors.New("herdr names no agent process in the pane")
 	}
-	// ponytail: a child that exits between the list and the call fails the
-	// call, and one forked in between stays out; retry if that shows up.
-	pids := []int{agent}
-	if r.ProcTable != nil {
-		if table, err := r.ProcTable(ctx); err == nil {
-			for _, p := range descendants(table, agent) {
-				pids = append(pids, p.PID)
-			}
+	children := func() []int {
+		if r.ProcTable == nil {
+			return nil
 		}
+		table, err := r.ProcTable(ctx)
+		if err != nil {
+			return nil
+		}
+		var pids []int
+		for _, p := range descendants(table, agent) {
+			pids = append(pids, p.PID)
+		}
+		return pids
 	}
-	return r.EnterScope(ctx, scopeUnit(t.ID, task.AttemptOf(t), time.Now()), pids)
+	return r.EnterScope(ctx, scopeUnit(t.ID, task.AttemptOf(t), time.Now()), agent, children)
 }
 
 // scopedProcs returns the processes of table that run in the cgroups of

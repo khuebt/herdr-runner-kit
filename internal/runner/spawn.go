@@ -62,10 +62,10 @@ type Runner struct {
 	// entries, so a close finds the processes a runner started that left
 	// its process tree. Nil, or an error, leaves only the tree.
 	ProcEnv func(pid int) ([]byte, error)
-	// EnterScope moves pids into a new memory-capped systemd scope named
-	// unit and returns its cgroup path. Nil starts agents where herdr puts
-	// them.
-	EnterScope func(ctx context.Context, unit string, pids []int) (string, error)
+	// EnterScope moves agent, and the processes children lists, into a new
+	// memory-capped systemd scope named unit. Nil starts agents where herdr
+	// puts them.
+	EnterScope func(ctx context.Context, unit string, agent int, children func() []int) (Scope, error)
 }
 
 // New returns a Runner for the real environment.
