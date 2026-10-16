@@ -273,6 +273,7 @@ func TestContractV3Rules(t *testing.T) {
 		"Ask where it is stored instead.",
 		"Do not run rm -r on directories, alone or inside compound commands, because the agent stops on a safety prompt for it; write scratch output into a new folder under /out instead.",
 		`/bin/hrk report handoff --output <handoff file> --summary "<what is done and what is left>"`,
+		`- In a done summary, name each check you ran and its result, such as "go test ./... passed"; name any check you could not run and why. Never claim a check you did not run.`,
 		"Only when the kit tells you your context is nearly full: commit or save your work at a stable point, write a handoff under /out naming what is done, what is left, the checks you ran and any background process you started (command and pid), then run report handoff and stop.",
 	} {
 		if !strings.Contains(c, want) {
