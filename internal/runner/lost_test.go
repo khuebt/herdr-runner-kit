@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -90,5 +91,122 @@ func TestAgentGoneFromItsPaneKeepsTheExitReason(t *testing.T) {
 	r.CheckLost(context.Background(), tk)
 	if got, _ := r.Store.Get(tk.ID); got.Status != task.Failed || got.Error != "the agent exited without reporting" {
 		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+// Agent states herdr reports for a runner's pane: its agent exited and left
+// the shell, keeping the agent's name; a restored agent herdr has yet to
+// detect; a live agent.
+const (
+	shellLeft = `{"result":{"agent":{"agent":null,"agent_status":"idle","name":"hrk-t1"}}}`
+	detecting = `{"result":{"agent":{"agent":null,"agent_status":"unknown","name":"hrk-t1"}}}`
+	liveAgent = `{"result":{"agent":{"agent":"claude","agent_status":"idle","name":"hrk-t1"}}}`
+)
+
+// agentGets answers herdr's agent get with outs in turn, repeating the last.
+func agentGets(outs ...string) func([]string) (string, error) {
+	n := 0
+	return func([]string) (string, error) {
+		out := outs[min(n, len(outs)-1)]
+		n++
+		return out, nil
+	}
+}
+
+// failedEvents counts the task's failed events.
+func failedEvents(t *testing.T, r *Runner, id string) int {
+	t.Helper()
+	all, _, err := r.Store.ReadEventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, ev := range all {
+		if ev.Task == id && ev.Type == "failed" {
+			n++
+		}
+	}
+	return n
+}
+
+func TestAgentThatDidNotResumeFailsWithItsLastLine(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.AgentName = "hrk-" + t.ID; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.on("agent get", agentGets(shellLeft))
+	fake.on("pane read", ok("$ claude --resume abc\nNo conversation found with session ID: abc\n\n❯ \n"))
+	var slept []time.Duration
+	r.Sleep = func(d time.Duration) { slept = append(slept, d) }
+	r.CheckLost(context.Background(), tk)
+	got, _ := r.Store.Get(tk.ID)
+	if want := "the agent exited without reporting: No conversation found with session ID: abc"; got.Status != task.Failed || got.Error != want {
+		t.Errorf("task = %s %q, want failed %q", got.Status, got.Error, want)
+	}
+	if n := failedEvents(t, r, tk.ID); n != 1 {
+		t.Errorf("failed events = %d, want 1", n)
+	}
+	if len(slept) != 1 || slept[0] != goneConfirm {
+		t.Errorf("slept %v, want one wait of %v", slept, goneConfirm)
+	}
+}
+
+func TestWaitingRunnerWhoseAgentLeftItsShellFails(t *testing.T) {
+	r, fake, tk, child := waitingRunner(t)
+	fake.on("agent get", agentGets(shellLeft))
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Failed || got.Error != "the agent exited without reporting" {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+	if dep, _ := r.Store.Get(child.ID); dep.Status != task.Failed {
+		t.Errorf("dependent = %s", dep.Status)
+	}
+}
+
+func TestAgentBackWithinTheConfirmationKeepsTheRunner(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	fake.on("agent get", agentGets(shellLeft, liveAgent))
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+func TestRestoredAgentHerdrHasYetToDetectIsKept(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	fake.on("agent get", agentGets(detecting))
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+func TestDetectionStillSettlingAfterTheConfirmationKeepsTheRunner(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	fake.on("agent get", agentGets(shellLeft, detecting))
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+func TestRelaunchDuringTheConfirmationKeepsTheRunner(t *testing.T) {
+	for name, change := range map[string]func(*task.Task){
+		"starting":    func(t *task.Task) { t.Status = task.Starting },
+		"new attempt": func(t *task.Task) { t.Attempt = 2 },
+	} {
+		r, fake, tk, _ := waitingRunner(t)
+		fake.on("agent get", agentGets(shellLeft))
+		r.Sleep = func(time.Duration) {
+			if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { change(t); return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.CheckLost(context.Background(), tk)
+		if got, _ := r.Store.Get(tk.ID); got.Status == task.Failed {
+			t.Errorf("%s: task failed: %q", name, got.Error)
+		}
 	}
 }
