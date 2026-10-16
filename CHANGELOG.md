@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.12.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.11.0...v0.12.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* default kind code to claude sonnet at medium effort ([#56](https://github.com/khuebt/herdr-runner-kit/issues/56))
+
+### Features
+
+* default kind code to claude sonnet at medium effort ([#56](https://github.com/khuebt/herdr-runner-kit/issues/56)) ([f0183cd](https://github.com/khuebt/herdr-runner-kit/commit/f0183cd36d47c787779e19d49c34d8031c14e8d4))
+* lock runner tabs so prompts come only from the kit ([#58](https://github.com/khuebt/herdr-runner-kit/issues/58)) ([f0183cd](https://github.com/khuebt/herdr-runner-kit/commit/f0183cd36d47c787779e19d49c34d8031c14e8d4))
+* run a per-repository setup step in new runner worktrees and name the checks in done reports ([#57](https://github.com/khuebt/herdr-runner-kit/issues/57)) ([f0183cd](https://github.com/khuebt/herdr-runner-kit/commit/f0183cd36d47c787779e19d49c34d8031c14e8d4))
+* share heavy command slots between runners with hrk heavy ([#55](https://github.com/khuebt/herdr-runner-kit/issues/55)) ([f0183cd](https://github.com/khuebt/herdr-runner-kit/commit/f0183cd36d47c787779e19d49c34d8031c14e8d4))
+* warn in doctor when herdr's systemd unit has no oomd preference ([#53](https://github.com/khuebt/herdr-runner-kit/issues/53)) ([f0183cd](https://github.com/khuebt/herdr-runner-kit/commit/f0183cd36d47c787779e19d49c34d8031c14e8d4))
+
+
+### Bug Fixes
+
+* count a codex runner's done once its turn ends ([#54](https://github.com/khuebt/herdr-runner-kit/issues/54)) ([f0183cd](https://github.com/khuebt/herdr-runner-kit/commit/f0183cd36d47c787779e19d49c34d8031c14e8d4))
+* retry the agent start when a new pane is busy and remove the empty worktree of a runner that never started ([#51](https://github.com/khuebt/herdr-runner-kit/issues/51)) ([f0183cd](https://github.com/khuebt/herdr-runner-kit/commit/f0183cd36d47c787779e19d49c34d8031c14e8d4))
+* skip codex's update prompt and ask the user before trusting new hooks ([#52](https://github.com/khuebt/herdr-runner-kit/issues/52)) ([f0183cd](https://github.com/khuebt/herdr-runner-kit/commit/f0183cd36d47c787779e19d49c34d8031c14e8d4))
+
 ## [0.11.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.10.0...v0.11.0) (2026-10-16)
 
 
