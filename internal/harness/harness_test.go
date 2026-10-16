@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -304,6 +305,17 @@ func TestFirstPrompt(t *testing.T) {
 	}
 	if got := (codex{}).FirstPrompt("", "fix the login bug", ""); got != "fix the login bug" {
 		t.Errorf("raw prompt = %q", got)
+	}
+}
+
+func TestCodexUpdateScreen(t *testing.T) {
+	screen, err := os.ReadFile(filepath.Join("testdata", "codex-update.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Enter on the update prompt would run the update.
+	if d, ok := DetectDialog(codex{}, string(screen)); !ok || d.Name != "codex-update" || d.Action != SendKeys || !slices.Equal(d.Keys, []string{"esc"}) {
+		t.Errorf("got %+v, %v", d, ok)
 	}
 }
 

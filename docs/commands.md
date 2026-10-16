@@ -160,6 +160,7 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 
 - A `done` or `failed` line carries `git:`, the state of the task's checkout when the runner reported: its worktree, or `repo state` for a task without one. It counts uncommitted and untracked files, naming the share under `plans/` (`1536 untracked (1530 under plans/)`), and commits not pushed, behind, diverged from the upstream, or with no upstream, and ends with `head <sha>`, the short sha of HEAD. For a task without a worktree it counts the commits made since the round began (the launch, or the latest `send` or `answer`): `2 commits since start, head abc1234`, so a runner that commits on the default branch itself is never reported as "no new commits".
 - A `done` line says `tab closes HH:MM` when `gc` will close the runner, `tab kept until HH:MM` after `keep`, or `tab kept` with `keepFor: 0`.
+- <a id="startup-dialogs"></a>A startup dialog the kit does not answer itself is a `needs-human` line. Codex's update prompt is skipped with `esc` for that launch (`codex-update-skipped`); the update never runs.
 - A `needs-human` line of a runner on its second attempt or later says so, as `attempt 2` after the title; answer it as usual. See [Context handoff](#context-handoff).
 - A `done` line lists the runner's own decisions as `decided: …` right after the title, and a round of questions spans a header and one numbered line per question. See [report-contract.md](report-contract.md#question-rounds).
 - Reports that land within 200 ms of each other wake it once.

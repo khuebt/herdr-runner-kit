@@ -59,6 +59,10 @@ func (c codex) FirstPrompt(skill, prompt, contract string) string {
 func (codex) Dialogs() []Dialog {
 	return []Dialog{
 		{Name: "codex-trust", Match: "Trust this folder?", Action: NeedsHuman},
+		// codex-cli shows this when a newer version is out. Enter would run
+		// the update; Esc skips it for this launch and persists nothing.
+		// "Skip until next version" would write the user's Codex state.
+		{Name: "codex-update", Match: "Skip until next version", Action: SendKeys, Keys: []string{"esc"}},
 		// The user's untrusted global hooks raise this on every launch, and
 		// herdr reports the screen as idle. Esc skips them for this session
 		// only and persists nothing.
