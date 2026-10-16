@@ -111,7 +111,7 @@ func newStopCommand() *cobra.Command {
 		Use:   "stop <id>...",
 		Short: "Quit runners' agents, close their tabs and mark the tasks stopped",
 		Long: "stop quits each runner's agent and closes its tab. A worktree task keeps its workspace " +
-			"and branch unless --remove-worktree is given; a dirty worktree is never removed, " +
+			"and branch unless --remove-worktree is given, and says so; a dirty worktree is never removed, " +
 			"and the branch is never deleted. Untracked files a runner without a worktree may have " +
 			"left are named, never deleted. One id that fails does not keep the others running.",
 		Args: cobra.MinimumNArgs(1),
@@ -131,6 +131,9 @@ func newStopCommand() *cobra.Command {
 					continue
 				}
 				fmt.Fprintf(out, "%s %s\n", t.ID, t.Status)
+				if t.Worktree != nil && t.Worktree.Path != "" && !t.Worktree.Removed {
+					fmt.Fprintf(out, "note: workspace kept for %s; hrk cleanup or stop --remove-worktree closes it\n", t.Worktree.Path)
+				}
 				if dir, n, list := runner.LeftFiles(cmd.Context(), t); n > 0 {
 					fmt.Fprintf(out, "note: %d untracked files in %s, which the runner may have left: %s\n", n, dir, list)
 				}

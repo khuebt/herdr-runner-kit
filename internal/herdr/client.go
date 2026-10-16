@@ -293,6 +293,11 @@ func (c *Client) TabClose(ctx context.Context, tab string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "tab", "close", tab)
 }
 
+// WorkspaceClose closes a workspace and ends the processes in its tabs.
+func (c *Client) WorkspaceClose(ctx context.Context, id string) error {
+	return c.runJSON(ctx, DefaultTimeout, nil, "workspace", "close", id)
+}
+
 // PaneRun types command and Enter into a pane's shell.
 func (c *Client) PaneRun(ctx context.Context, pane, command string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "pane", "run", pane, command)

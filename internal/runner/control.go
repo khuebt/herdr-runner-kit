@@ -482,8 +482,13 @@ func (r *Runner) closeRunner(ctx context.Context, t *task.Task, removeWorktree b
 		}
 		if cur, err := r.Store.Get(t.ID); err == nil {
 			summary := "tab closed"
-			if cur.Keep || c.released {
+			switch {
+			case cur.Keep || c.released:
 				summary = keptClosed
+			case t.Worktree != nil && removeWorktree:
+				summary = "agent quit" // the worktree's removal closes its workspace
+			case t.Worktree != nil:
+				summary = "agent quit; workspace kept"
 			}
 			r.emit(cur, "closed", summary, "")
 		}

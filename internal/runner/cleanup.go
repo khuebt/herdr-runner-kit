@@ -117,7 +117,8 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 }
 
 // markRemovedOutside records that t's worktree folder was removed outside
-// the kit. When its branch is gone too, or was never the task's, nothing is
+// the kit, and closes the runner's workspace left open on the deleted
+// folder. When its branch is gone too, or was never the task's, nothing is
 // left to clean: the task is marked cleaned, with a cleaned event, and nil
 // is returned. Otherwise the branch stays for the verdict.
 func (r *Runner) markRemovedOutside(ctx context.Context, t *task.Task) *task.Task {
@@ -140,7 +141,9 @@ func (r *Runner) markRemovedOutside(ctx context.Context, t *task.Task) *task.Tas
 		return nil // another process marked it
 	case err != nil:
 		return t
-	case branchGone:
+	}
+	r.closeOrphanWorkspace(ctx, nt)
+	if branchGone {
 		r.emit(nt, "cleaned", "removed outside the kit", "")
 		return nil
 	}

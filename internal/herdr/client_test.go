@@ -120,6 +120,21 @@ func TestWorkspaceLabel(t *testing.T) {
 	}
 }
 
+func TestWorkspaceClose(t *testing.T) {
+	var got []string
+	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		got = args
+		return []byte(`{}`), nil, nil
+	}}
+	if err := c.WorkspaceClose(context.Background(), "w2"); err != nil || strings.Join(got, " ") != "workspace close w2" {
+		t.Fatalf("err %v argv %q", err, got)
+	}
+	c.Exec = fakeExec("", `{"error":{"code":"workspace_not_found","message":"no such workspace"}}`, errors.New("exit status 1"))
+	if err := c.WorkspaceClose(context.Background(), "w4"); !HasCode(err, CodeNoWorkspace) {
+		t.Errorf("closed workspace: %v", err)
+	}
+}
+
 func TestRepoWorkspaceSkipsLinkedWorktrees(t *testing.T) {
 	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
 		switch strings.Join(args, " ") {
