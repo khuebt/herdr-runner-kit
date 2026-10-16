@@ -122,6 +122,23 @@ func TestParseStallAfter(t *testing.T) {
 	}
 }
 
+func TestParseRunnerMemoryMax(t *testing.T) {
+	if cfg := Default(); cfg.RunnerMemoryMax != "25%" {
+		t.Errorf("default runnerMemoryMax = %q", cfg.RunnerMemoryMax)
+	}
+	for _, v := range []string{"25%", "100%", "16G", "8192M", "512M", "off"} {
+		cfg, err := Parse([]byte("runnerMemoryMax: " + v + "\n"))
+		if err != nil || cfg.RunnerMemoryMax != v {
+			t.Errorf("Parse(%q) = %q, %v", v, cfg.RunnerMemoryMax, err)
+		}
+	}
+	for _, v := range []string{"16GB", "-1", "110%", "0%", "0G", "16", "16g", "''", "infinity"} {
+		if _, err := Parse([]byte("runnerMemoryMax: " + v + "\n")); err == nil || !strings.Contains(err.Error(), "runnerMemoryMax") {
+			t.Errorf("Parse(%q) error = %v", v, err)
+		}
+	}
+}
+
 func TestParseEmptyFile(t *testing.T) {
 	if _, err := Parse(nil); err != nil {
 		t.Fatal(err)

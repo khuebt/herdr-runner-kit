@@ -33,6 +33,7 @@ quotaFallback:            # tried in order when a runner hits a usage limit
 keepFor: 2h               # kept tabs close 2 hours after the task finished
 stallAfter: 15m           # nudge an agent that shows no progress for 15 minutes
 contextHandoffAt: 20      # ask a Codex, pi or omp runner to hand off at 20% context left
+runnerMemoryMax: 16G      # cap each runner at 16 GB (Linux with systemd)
 ```
 
 ## Keys
@@ -54,6 +55,7 @@ contextHandoffAt: 20      # ask a Codex, pi or omp runner to hand off at 20% con
 | `stallAfter` | `10m` | How long a `working` agent may show no visible progress before the kit nudges it, then interrupts it, then reports it `stalled` with the runner left open. `0` turns the check off; otherwise at least `2m`. See [commands.md](commands.md#what-wait-reports). |
 | `contextHandoff` | `true` | Lets the kit ask a runner near its context limit to hand off once to a fresh session of its task: a Claude runner at its first automatic compaction, a Codex runner at a turn end with little context left, and a pi or omp runner at either. `false` leaves runners to compact on their own. See [commands.md](commands.md#context-handoff). |
 | `contextHandoffAt` | `15` | For Codex, pi and omp runners: the context left, in percent of the window, at or below which a turn end asks for the handoff. Codex's footer shows it; for pi and omp the kit's runner extension sends it at each turn end. From 5 to 50. |
+| `runnerMemoryMax` | `25%` | Memory cap of each runner on Linux with systemd: a size such as `16G` or `8192M` (`K`, `M`, `G` or `T`), a share of RAM from `1%` to `100%`, or `off`. See [Runner memory cap](#runner-memory-cap). |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.
@@ -81,6 +83,27 @@ An explicit `--agent` or `--worktree` / `--no-worktree` on `spawn` always wins o
 Examples: `codex`, `codex:gpt-6-astra:xhigh`, `claude::max`, `claude:claude-sonnet-5-5`, `pi:openai-codex/gpt-6-luna:high`, `omp:openai-codex/gpt-6-luna:max`.
 
 pi's own `--model provider/id:thinking` shorthand does not apply: the spec's third field replaces it, so write `pi:openai-codex/gpt-6-luna:high`. A pi or omp model id may contain colons, as in `pi:ollama/qwen3:8b` or `omp:openrouter/vendor/model:free:high`: the last part is read as the effort only when it is an effort name, and an effort name the harness does not accept is an error.
+
+## Runner memory cap
+
+herdr runs every pane, and so every runner and the main session, inside its own service's memory group. Without a cap, one runner running several test suites at once can fill the machine's memory, and systemd-oomd then kills herdr with every session in it.
+
+On Linux, the kit starts each runner's agent in its own systemd scope, capped at `runnerMemoryMax`:
+
+```
+systemd-run --user --scope --quiet --collect --unit=hrk-<task>-<attempt>-<unix seconds> \
+  -p MemoryMax=<runnerMemoryMax> -p MemorySwapMax=0 -p OOMPolicy=continue -- "$SHELL"
+```
+
+herdr starts only an agent's own executable, so the kit types this into the runner's pane just before it starts the agent: the pane's shell starts again inside the scope, with the same process id and environment, and the agent and every command it runs inherit the cap.
+
+- A command that goes over the cap is killed inside its runner only; `MemorySwapMax=0` keeps it from swapping instead. The kernel picks the largest process in the scope, usually the test worker, not the agent, and `OOMPolicy=continue` keeps the agent running so it can report.
+- The cap is per runner, not a total: four runners at `25%` can still fill memory together. Each runner is then its own group, so systemd-oomd kills the runner using the memory instead of herdr.
+- Each agent session, including a quota fallback or a context handoff, gets a new scope; processes the previous session left keep the old one. The `started` event names it, as `memory scope hrk-t3-1-1760000000.scope`, and `systemctl --user status <scope>` shows its processes and limit.
+- `stop` and `gc` still only report the processes a runner left running. Their scope stays until they exit, then systemd drops it.
+- When herdr restores a pane after its own restart, herdr starts the agent again itself, outside any scope. That runner runs without a cap until its next agent session.
+
+The kit checks once per process, on its first launch, that `systemd-run --user --scope` works. When it does not, and on macOS, or with `runnerMemoryMax: off`, agents start exactly as before and share herdr's memory. `doctor` shows the cap on its `runner memory cap` line, or why there is none.
 
 ## What runners are allowed to do
 

@@ -176,3 +176,27 @@ func TestStaleAlias(t *testing.T) {
 		t.Fatalf("stale alias: %q %q", old, resolved)
 	}
 }
+
+func TestMemoryCapCheck(t *testing.T) {
+	ctx := t.Context()
+	if r := memoryCapCheck("25%", nil); r != ok("%s", "25% per runner (systemd scope)") {
+		t.Errorf("usable = %+v", r)
+	}
+	if r := memoryCapCheck("25%", scopeProblem(ctx, "25%", "darwin")); r != ok("not available on macOS; runners share herdr's memory") {
+		t.Errorf("macOS = %+v", r)
+	}
+	if r := memoryCapCheck("off", scopeProblem(ctx, "off", "linux")); r != ok("off; runners share herdr's memory") {
+		t.Errorf("off = %+v", r)
+	}
+	t.Setenv("PATH", t.TempDir())
+	r := memoryCapCheck("16G", scopeProblem(ctx, "16G", "linux"))
+	if r.level != "warn" || r.detail != "systemd-run is not on PATH; runners share herdr's memory" || !strings.Contains(r.fix, "runnerMemoryMax: off") {
+		t.Errorf("no systemd-run = %+v", r)
+	}
+}
+
+func TestMemoryScopeOff(t *testing.T) {
+	if got := memoryScope("off")(t.Context()); got != "" {
+		t.Errorf("off scope = %q", got)
+	}
+}

@@ -61,6 +61,9 @@ type Runner struct {
 	// entries, so a close finds the processes a runner started that left
 	// its process tree. Nil, or an error, leaves only the tree.
 	ProcEnv func(pid int) ([]byte, error)
+	// Scope returns the memory cap each agent session runs under, in its
+	// own systemd scope, or "" to start agents as they are. Nil is "".
+	Scope func(context.Context) string
 }
 
 // New returns a Runner for the real environment.

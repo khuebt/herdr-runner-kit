@@ -26,6 +26,13 @@ const (
 	// herdr saw as not ready to turn idle before it calls the screen an
 	// unknown startup dialog.
 	unknownDialogIdleWait = 5 * time.Second
+	// The pane's shell gets scopeShellRetries polls, scopeShellPoll apart,
+	// to start again in its memory scope before the agent start gives up.
+	scopeShellPoll    = 250 * time.Millisecond
+	scopeShellRetries = 40
+	// codePaneBusy is herdr's answer to an agent start in a pane whose shell
+	// is not at its prompt.
+	codePaneBusy = "agent_pane_busy"
 )
 
 // errHandled means the launch ended in a state that is already recorded.
@@ -100,7 +107,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		}
 	}
 
-	spec, adapter, contract, err := r.startAgent(ctx, t, name, loc.PaneID)
+	spec, adapter, contract, scope, err := r.startAgent(ctx, t, name, loc.PaneID)
 	for errors.Is(err, errUsageLimit) {
 		// errUsageLimit comes only while a fallback is left, and each switch
 		// records the agent it leaves, so this ends once they run out.
@@ -112,7 +119,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		if carried, err = r.clearPane(ctx, t); err != nil {
 			return err
 		}
-		spec, adapter, contract, err = r.startAgent(ctx, t, name, loc.PaneID)
+		spec, adapter, contract, scope, err = r.startAgent(ctx, t, name, loc.PaneID)
 	}
 	if err != nil {
 		return err
@@ -146,7 +153,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		return err
 	}
 	if changed {
-		r.emit(t, "started", startedLine(t, spec), "")
+		r.emit(t, "started", startedLine(t, spec, scope), "")
 	}
 	if _, err := r.Herdr.AgentWait(ctx, loc.PaneID, 5*time.Second, "working"); err != nil {
 		// Codex can report a stale state after skipped hooks; never resubmit.
@@ -160,32 +167,50 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 // starts it in pane until it is ready for the first prompt. It returns
 // errUsageLimit when the agent shows a usage limit at startup and a
 // fallback agent is left; without one the prompt goes in, and the agent's
-// own turn-end reports the limit. It also returns the contract text.
-func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string) (task.AgentSpec, harness.Adapter, string, error) {
+// own turn-end reports the limit. It also returns the contract text and
+// the memory scope the agent runs in, or "".
+func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string) (task.AgentSpec, harness.Adapter, string, string, error) {
 	spec, err := task.ParseAgentSpec(t.Agent)
 	if err != nil {
-		return spec, nil, "", err
+		return spec, nil, "", "", err
 	}
 	adapter, err := harness.For(spec.Harness)
 	if err != nil {
-		return spec, nil, "", err
+		return spec, nil, "", "", err
 	}
 	contract, err := r.writeRunnerFiles(t, adapter)
 	if err != nil {
-		return spec, nil, "", err
+		return spec, nil, "", "", err
 	}
 	if err := r.prepareTrust(t, adapter); err != nil {
-		return spec, nil, "", err
+		return spec, nil, "", "", err
+	}
+	// Each session gets its own memory-capped scope, so a runaway command
+	// meets its runner's cap, not the memory every session shares.
+	var scope string
+	if r.Scope != nil {
+		if memoryMax := r.Scope(ctx); memoryMax != "" {
+			scope = scopeUnit(t.ID, task.AttemptOf(t), time.Now())
+			if err := r.Herdr.PaneRun(ctx, pane, scopeCommand(scope, memoryMax)); err != nil {
+				return spec, nil, "", "", fmt.Errorf("start memory scope: %w", err)
+			}
+		}
 	}
 	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID)})
 	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
+	// The shell that starts again in the scope takes a moment to reach its
+	// prompt; herdr refuses the start until it does, without typing.
+	for i := 0; scope != "" && herdr.HasCode(err, codePaneBusy) && i < scopeShellRetries; i++ {
+		r.Sleep(scopeShellPoll)
+		_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
+	}
 	if err := r.settleStartup(ctx, t, adapter, pane, err); err != nil {
-		return spec, nil, "", err
+		return spec, nil, "", "", err
 	}
 	if screen, err := r.Herdr.PaneRead(ctx, pane, 40); err == nil && adapter.ShowsUsageLimit(screen) && r.switchable(t) {
-		return spec, nil, "", errUsageLimit
+		return spec, nil, "", "", errUsageLimit
 	}
-	return spec, adapter, contract, nil
+	return spec, adapter, contract, scope, nil
 }
 
 // writeRunnerFiles creates the output directory and writes the adapter's
@@ -552,10 +577,13 @@ func errorLine(screen string) string {
 	return ""
 }
 
-func startedLine(t *task.Task, spec task.AgentSpec) string {
+func startedLine(t *task.Task, spec task.AgentSpec, scope string) string {
 	parts := []string{t.ID + " started", string(spec.Harness)}
 	if t.Worktree != nil && t.Worktree.Path != "" {
 		parts = append(parts, "worktree "+t.Worktree.Branch+" at "+t.Worktree.Path)
+	}
+	if scope != "" {
+		parts = append(parts, "memory scope "+scope+".scope")
 	}
 	parts = append(parts, fmt.Sprintf("tab %q", t.ID+" · "+t.Title))
 	return strings.Join(parts, " · ")
