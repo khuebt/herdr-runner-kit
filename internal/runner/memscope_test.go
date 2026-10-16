@@ -21,19 +21,11 @@ func TestScopeUnit(t *testing.T) {
 
 func TestScopeProperties(t *testing.T) {
 	base := "PIDs au 2 11 12 MemoryMax t 536870912 MemorySwapMax t 0 CollectMode s inactive-or-failed"
-	for _, c := range []struct {
-		systemd int
-		want    string
-	}{
-		{249, "4 " + base},
-		{252, "4 " + base},
-		{0, "4 " + base},
-		{253, "5 " + base + " OOMPolicy s continue"},
-		{255, "5 " + base + " OOMPolicy s continue"},
-	} {
-		if got := strings.Join(scopeProperties([]int{11, 12}, 512<<20, c.systemd), " "); got != c.want {
-			t.Errorf("systemd %d:\n%s\nwant\n%s", c.systemd, got, c.want)
-		}
+	if got := strings.Join(scopeProperties([]int{11, 12}, 512<<20, false), " "); got != "4 "+base {
+		t.Errorf("without OOMPolicy: %s", got)
+	}
+	if got := strings.Join(scopeProperties([]int{11, 12}, 512<<20, true), " "); got != "5 "+base+" OOMPolicy s continue" {
+		t.Errorf("with OOMPolicy: %s", got)
 	}
 }
 
@@ -46,17 +38,10 @@ func TestScopeBytes(t *testing.T) {
 	}
 }
 
-func TestSystemdVersion(t *testing.T) {
-	for in, want := range map[string]int{`s "255.4-1ubuntu8.18"`: 255, `s "249.11-0ubuntu3.12"` + "\n": 249, `s "252"`: 252, "": 0} {
-		if got := systemdVersion(in); got != want {
-			t.Errorf("%q = %d", in, got)
-		}
-	}
-}
-
 // fakeBus is a memScope whose busctl records its calls and whose processes
-// land in the scope at once.
-func fakeBus(version string, fail error) (memScope, *[][]string) {
+// land in the scope at once. With old, it rejects OOMPolicy as systemd 249
+// does.
+func fakeBus(old bool) (memScope, *[][]string) {
 	var calls [][]string
 	s := memScope{
 		memoryMax: "25%",
@@ -66,11 +51,8 @@ func fakeBus(version string, fail error) (memScope, *[][]string) {
 	unit := ""
 	s.busctl = func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, args)
-		if args[0] == "get-property" {
-			return []byte(`s "` + version + `"`), nil
-		}
-		if fail != nil {
-			return []byte("Call failed: " + fail.Error()), fail
+		if old && slices.Contains(args, "OOMPolicy") {
+			return []byte("Call failed: Cannot set property OOMPolicy, or unknown property."), errors.New("exit status 1")
 		}
 		unit = args[6]
 		return []byte(`o "/org/freedesktop/systemd1/job/1"`), nil
@@ -94,36 +76,33 @@ func properties(t *testing.T, call []string) []string {
 }
 
 func TestProbeAndLaunchShareProperties(t *testing.T) {
-	for _, version := range []string{"249.11", "255.4"} {
-		s, calls := fakeBus(version, nil)
+	for _, old := range []bool{false, true} {
+		s, calls := fakeBus(old)
 		if err := s.probe(t.Context()); err != nil {
 			t.Fatal(err)
 		}
+		probeCalls := len(*calls)
 		path, err := s.enter(t.Context(), "hrk-t1-1-1.scope", []int{101, 102})
 		if err != nil || path != "/user.slice/app.slice/hrk-t1-1-1.scope" {
 			t.Fatalf("enter = %q, %v", path, err)
 		}
-		var starts [][]string
-		for _, c := range *calls {
-			if slices.Contains(c, "StartTransientUnit") {
-				starts = append(starts, c)
+		probe, launch := (*calls)[:probeCalls], (*calls)[probeCalls:]
+		if want := map[bool]int{false: 1, true: 2}[old]; len(probe) != want || len(launch) != want {
+			t.Fatalf("old %v: calls = %q", old, *calls)
+		}
+		for i := range probe {
+			if !slices.Equal(properties(t, probe[i]), properties(t, launch[i])) || probe[i][8] != launch[i][8] || !strings.HasPrefix(probe[i][6], "hrk-probe-") {
+				t.Errorf("old %v: probe %q, launch %q", old, probe[i], launch[i])
 			}
 		}
-		if len(starts) != 2 {
-			t.Fatalf("calls = %q", *calls)
-		}
-		probe, launch := properties(t, starts[0]), properties(t, starts[1])
-		if !slices.Equal(probe, launch) || !strings.HasPrefix(starts[0][6], "hrk-probe-") || starts[0][8] != starts[1][8] {
-			t.Errorf("%s: probe %q, launch %q", version, starts[0], starts[1])
-		}
-		if hasOOM := slices.Contains(launch, "OOMPolicy"); hasOOM != (version >= "253") {
-			t.Errorf("%s: properties %q", version, launch)
+		if last := launch[len(launch)-1]; slices.Contains(last, "OOMPolicy") == old {
+			t.Errorf("old %v: last call %q", old, last)
 		}
 	}
 }
 
 func TestEnterChecksTheProcessMoved(t *testing.T) {
-	s, _ := fakeBus("255", nil)
+	s, _ := fakeBus(false)
 	s.cgroup = func(int) (string, error) { return "/user.slice/app.slice/herdr.service", nil }
 	if _, err := s.enter(t.Context(), "hrk-t1-1-1.scope", []int{101}); err == nil || !strings.Contains(err.Error(), "still in /user.slice/app.slice/herdr.service") {
 		t.Errorf("err = %v", err)

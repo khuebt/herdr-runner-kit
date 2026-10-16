@@ -96,17 +96,12 @@ func (s memScope) enter(ctx context.Context, unit string, pids []int) (string, e
 	if err != nil {
 		return "", err
 	}
-	out, err := s.busctl(ctx, "get-property", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "Version")
+	out, err := s.busctl(ctx, startArgs(unit, scopeProperties(pids, maxBytes, true))...)
+	if err != nil && strings.Contains(string(out), "OOMPolicy") {
+		// A systemd that does not stop scopes on OOM kills rejects it.
+		out, err = s.busctl(ctx, startArgs(unit, scopeProperties(pids, maxBytes, false))...)
+	}
 	if err != nil {
-		return "", busError("read the systemd version", out, err)
-	}
-	version := systemdVersion(string(out))
-	args := []string{
-		"call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-		"StartTransientUnit", "ssa(sv)a(sa(sv))", unit, "fail",
-	}
-	args = append(append(args, scopeProperties(pids, maxBytes, version)...), "0")
-	if out, err := s.busctl(ctx, args...); err != nil {
 		return "", busError("start "+unit, out, err)
 	}
 	// systemd moves the processes when the scope's start job runs, right
@@ -124,15 +119,27 @@ func (s memScope) enter(ctx context.Context, unit string, pids []int) (string, e
 	return "", fmt.Errorf("process %d is still in %s, not %s", pids[0], path, unit)
 }
 
+// startArgs returns the busctl arguments that start the scope unit with
+// props.
+func startArgs(unit string, props []string) []string {
+	args := []string{
+		"call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+		"StartTransientUnit", "ssa(sv)a(sa(sv))", unit, "fail",
+	}
+	return append(append(args, props...), "0")
+}
+
 // scopeProperties returns the properties of a runner scope as busctl
 // arguments: pids moved in, capped at maxBytes. MemorySwapMax=0 makes the cap
 // hard: a command over it is killed instead of swapping. CollectMode drops
-// the unit once it is empty, even when an OOM kill marked it failed. From
-// systemd 253 on, a scope stops, killing every process in it, when the kernel
-// kills one for memory, unless OOMPolicy is continue; older versions reject
-// OOMPolicy for scopes and never stop one on an OOM kill. Every other
-// property is accepted from systemd 236 on.
-func scopeProperties(pids []int, maxBytes uint64, systemd int) []string {
+// the unit once it is empty, even when an OOM kill marked it failed. Where
+// systemd handles OOM kills in scopes, as in Debian 12's 252 and in 255, a
+// scope stops, killing the agent too, when the kernel kills one of its
+// processes, unless oomPolicy adds OOMPolicy=continue. Versions without
+// that handling, such as Ubuntu 22.04's 249, reject the property and never
+// stop a scope that way. Every other property is accepted from systemd 236
+// on.
+func scopeProperties(pids []int, maxBytes uint64, oomPolicy bool) []string {
 	props := []string{"PIDs", "au", strconv.Itoa(len(pids))}
 	for _, pid := range pids {
 		props = append(props, strconv.Itoa(pid))
@@ -142,7 +149,7 @@ func scopeProperties(pids []int, maxBytes uint64, systemd int) []string {
 		"MemorySwapMax", "t", "0",
 		"CollectMode", "s", "inactive-or-failed")
 	n := 4
-	if systemd >= 253 {
+	if oomPolicy {
 		props = append(props, "OOMPolicy", "s", "continue")
 		n++
 	}
@@ -173,18 +180,6 @@ func (s memScope) bytes() (uint64, error) {
 		return 0, fmt.Errorf("runnerMemoryMax %q is not a size", v)
 	}
 	return n << shift, nil
-}
-
-// systemdVersion reads the major version from busctl's answer for the
-// manager's Version, such as `s "255.4-1ubuntu8.18"`, or returns 0.
-func systemdVersion(out string) int {
-	v := strings.TrimPrefix(strings.TrimSpace(out), `s "`)
-	end := strings.IndexFunc(v, func(r rune) bool { return r < '0' || r > '9' })
-	if end < 0 {
-		end = len(v)
-	}
-	n, _ := strconv.Atoi(v[:end])
-	return n
 }
 
 // busError names what failed with busctl's own first line.
