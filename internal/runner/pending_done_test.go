@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -283,5 +285,69 @@ func TestLaterReportReplacesAHeldDone(t *testing.T) {
 	}
 	if _, err := r.FinishDone(tk.ID, true); err == nil || !strings.Contains(err.Error(), errNothingHeld.Error()) {
 		t.Errorf("finish with nothing held = %v", err)
+	}
+}
+
+func TestHeldDoneOfAGoneAgentIsFinished(t *testing.T) {
+	for name, gone := range map[string]func(r *Runner, fake *fakeHerdr, id string){
+		"lost check": func(r *Runner, fake *fakeHerdr, id string) {
+			fake.on("agent get", herdrErr("agent_not_found"))
+			tk, _ := r.Store.Get(id)
+			r.CheckLost(context.Background(), tk)
+		},
+		"agent watch": func(r *Runner, fake *fakeHerdr, id string) {
+			fake.on("agent wait", herdrErr("agent_not_found"))
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			r.WatchAgent(ctx, id)
+		},
+	} {
+		r, fake, _ := newTestRunner(t)
+		var after []string
+		tk := codexRunning(t, r, gitRepo(t), &after)
+		runnerDone(t, r, tk.ID, "fixed")
+		gone(r, fake, tk.ID)
+		got, _ := r.Store.Get(tk.ID)
+		if dones := doneEvents(t, r, tk.ID); got.Status != task.Done || len(dones) != 1 || dones[0].Summary != "fixed" {
+			t.Errorf("%s: status %s %q, done events %+v", name, got.Status, got.Error, dones)
+		}
+		if !slices.Equal(after, []string{tk.ID}) {
+			t.Errorf("%s: dependents started for %q", name, after)
+		}
+	}
+}
+
+func TestHeldDoneAtAUsageLimitIsNotRedone(t *testing.T) {
+	r, fake, launched := limitRunner(t, fixture(t, "usage-limit-codex.txt"), config.Fallback{Agent: "claude"})
+	var after []string
+	tk := codexRunning(t, r, gitRepo(t), &after)
+	*launched = nil
+	runnerDone(t, r, tk.ID, "fixed")
+	fake.on("agent wait", herdrErr(herdr.CodeAgentNotRunning))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	r.WatchAgent(ctx, tk.ID)
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Done || got.Agent != "codex" || len(*launched) != 0 || len(doneEvents(t, r, tk.ID)) != 1 {
+		t.Errorf("task = %s %s, launchers %v, done events %d", got.Status, got.Agent, *launched, len(doneEvents(t, r, tk.ID)))
+	}
+	if slices.Contains(events(t, r, tk.ID), "agent-switched") {
+		t.Error("the finished work was handed to a fallback")
+	}
+}
+
+func TestSupersededDoneOfAGoneAgentFails(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	var after []string
+	tk := codexRunning(t, r, gitRepo(t), &after)
+	runnerDone(t, r, tk.ID, "first")
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.PendingDone.Superseded = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	fake.on("agent get", herdrErr("agent_not_found"))
+	tk, _ = r.Store.Get(tk.ID)
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Failed || len(doneEvents(t, r, tk.ID)) != 0 {
+		t.Errorf("status %s, done events %d", got.Status, len(doneEvents(t, r, tk.ID)))
 	}
 }

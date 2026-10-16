@@ -85,6 +85,9 @@ func (r *Runner) agentGone(ctx context.Context, t *task.Task) bool {
 	if cur, err := r.Store.Get(t.ID); err == nil && cur.Status == task.Starting {
 		return true // the agent was quit for a fallback
 	}
+	if r.finishHeldDone(t.ID) {
+		return false
+	}
 	if r.switchable(t) && r.usageLimited(ctx, t) && r.switchAgent(t, false) == nil {
 		return true
 	}
@@ -384,6 +387,9 @@ func (r *Runner) goneReason(ctx context.Context, t *task.Task) string {
 // failLost fails a running or waiting task whose runner is gone, and its
 // dependents, and names the processes still running in its memory scopes.
 func (r *Runner) failLost(ctx context.Context, id, reason string) {
+	if r.finishHeldDone(id) {
+		return
+	}
 	var left []proc
 	var psErr error
 	if cur, err := r.Store.Get(id); err == nil {

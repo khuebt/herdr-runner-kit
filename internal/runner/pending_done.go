@@ -27,7 +27,7 @@ var (
 // the done is older than pendingDoneAge and herdr reports the agent idle or
 // done on two reads pendingDoneRecheck apart, with no working status line
 // on its screen, the done becomes final, superseded or not. A gone agent is
-// left to WatchAgent, which fails the task. It returns when the task
+// left to WatchAgent, which finishes the done (see finishHeldDone). It returns when the task
 // finishes or its runner closes, and at once for an agent whose done is
 // never held.
 func (r *Runner) WatchPendingDone(ctx context.Context, id string) {
@@ -46,6 +46,25 @@ func (r *Runner) WatchPendingDone(ctx context.Context, id string) {
 			fmt.Fprintf(os.Stderr, "hrk: %s: finish held done: %v\n", id, err)
 		}
 	}
+}
+
+// finishHeldDone makes id's held done final when the task is running and
+// holds one no queued message superseded, and reports whether it did. The
+// runner finished its work, so an agent that is gone or at its usage limit
+// after the done neither fails the task nor hands the work to a fallback.
+func (r *Runner) finishHeldDone(id string) bool {
+	cur, err := r.Store.Get(id)
+	if err != nil || cur.Status != task.Running || cur.PendingDone == nil || cur.PendingDone.Superseded {
+		return false
+	}
+	t, err := r.FinishDone(id, false)
+	if err != nil && t == nil {
+		return false // a report or a turn end took it first, or the task changed
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hrk: %s: finish held done: %v\n", id, err)
+	}
+	return true
 }
 
 // agentSettled reports whether herdr sees t's agent idle or done, and its
