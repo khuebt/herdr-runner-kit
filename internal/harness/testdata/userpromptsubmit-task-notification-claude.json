@@ -1,0 +1,10 @@
+{
+  "session_id": "b21a76f8-c836-43d1-9cd6-bf1b270a9a3f",
+  "transcript_path": "/home/u/.claude/projects/-home-u-repo/b21a76f8-c836-43d1-9cd6-bf1b270a9a3f.jsonl",
+  "cwd": "/home/u/repo",
+  "scratchpad_dir": "/tmp/claude-1000/-home-u-repo/b21a76f8-c836-43d1-9cd6-bf1b270a9a3f/scratchpad",
+  "prompt_id": "77c1da43-2726-499a-a100-81893a7745bf",
+  "permission_mode": "auto",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>b3389ywg8</task-id>\n<tool-use-id>toolu_01UK37u6G5vGHMydB5uDwufr</tool-use-id>\n<output-file>/tmp/claude-1000/-home-u-repo/b21a76f8-c836-43d1-9cd6-bf1b270a9a3f/tasks/b3389ywg8.output</output-file>\n<status>completed</status>\n<summary>Background command \"Sleep 25 seconds then echo slept, in background\" completed (exit code 0)</summary>\n</task-notification>"
+}

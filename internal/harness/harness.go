@@ -16,6 +16,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -36,6 +37,8 @@ type LaunchOptions struct {
 type FilesInput struct {
 	Bin      string // absolute path of the kit binary the hooks call
 	Contract string // the report contract text
+	// InputLocked adds the prompt gate, for an adapter that LocksInput.
+	InputLocked bool
 }
 
 // File is one per-task runner file, written into the task folder with mode
@@ -116,6 +119,9 @@ const (
 	NeedsHuman DialogAction = iota
 	// SendKeys answers the dialog with Keys and records a warning.
 	SendKeys
+	// Ask leaves the dialog for the user like NeedsHuman, but asks the
+	// question Question builds, and `hrk answer` may give one of Answers.
+	Ask
 )
 
 // Dialog is a startup screen the launcher recognises by its text.
@@ -127,6 +133,15 @@ type Dialog struct {
 	// IdleWhileShown says herdr reports the agent idle while the dialog is
 	// still up, so an answer shows only as the dialog leaving the screen.
 	IdleWhileShown bool
+	// OpensLate is how long after the agent looks ready it may still open
+	// the dialog, so the first prompt waits that long for it.
+	OpensLate time.Duration
+	// Answers maps each answer an Ask dialog takes to the herdr logical
+	// keys that give it.
+	Answers map[string][]string
+	// Question builds an Ask dialog's question to the user, for runner id,
+	// from the screen, in at most limit characters.
+	Question func(id, screen string, limit int) string
 }
 
 // InputState is an adapter's reading of the agent's input box.
@@ -203,6 +218,30 @@ type Adapter interface {
 	// WorksInBackground reports whether the agent's screen shows background
 	// work still running. It returns screen's error when it cannot tell.
 	WorksInBackground(screen Screen) (bool, error)
+	// DoneAtTurnEnd reports whether a done report waits for the end of the
+	// turn it came in, because the agent may keep working after it: the
+	// kit holds the done and makes it final at the turn end.
+	DoneAtTurnEnd() bool
+	// ShowsWorking reports whether screen shows the agent's own status line
+	// of a running turn. The kit reads it only for an adapter whose done
+	// waits for the turn end; the others answer false.
+	ShowsWorking(screen string) bool
+	// LocksInput reports whether the kit can lock the agent's input: a
+	// prompt-submit hook calls `hrk __prompt-gate`, which lets through only
+	// the prompts the kit typed and the agent's own.
+	LocksInput() bool
+	// ClearInputKeys are the herdr keys that empty the agent's input box
+	// without interrupting a running turn. The kit sends them before it
+	// types into a locked runner: the agent puts a prompt the gate blocked
+	// back into the box, and the kit's prompt would be joined to it.
+	ClearInputKeys() []string
+	// GatePrompt reads a prompt-submit hook's payload: the prompt, and
+	// whether it is the agent's own, such as a note that background work
+	// ended, which the gate always lets through.
+	GatePrompt(payload []byte) (prompt string, synthetic bool, err error)
+	// GateBlock is what the prompt gate prints to refuse a prompt, showing
+	// reason to the human.
+	GateBlock(reason string) string
 	// Checks lists what doctor checks.
 	Checks() Checks
 }

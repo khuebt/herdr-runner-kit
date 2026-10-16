@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
@@ -34,7 +37,30 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	head := roundHead(t) // a new round begins with this prompt
-	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
+	// A done held before a message sent while the agent works, or while it
+	// still holds a done, does not answer the message, so the turn end must
+	// not finish the task with it. The send is recorded before the prompt
+	// is typed, so a done the agent reports on the message is never taken
+	// for an earlier one, and taken back when the prompt fails.
+	var sent, prevSent time.Time
+	if doneAtTurnEnd(t) && (t.PendingDone != nil || r.agentWorking(ctx, t)) {
+		sent = time.Now().UTC()
+		if _, err := r.Store.Update(id, func(t *task.Task) error {
+			prevSent, t.QueuedSend = t.QueuedSend, sent
+			return nil
+		}); err != nil {
+			return false, err
+		}
+	}
+	if err := r.typePrompt(ctx, t, t.Herdr.PaneID, text); err != nil {
+		if !sent.IsZero() {
+			_, _ = r.Store.Update(id, func(t *task.Task) error {
+				if t.QueuedSend.Equal(sent) {
+					t.QueuedSend = prevSent
+				}
+				return nil
+			})
+		}
 		return false, err
 	}
 	errClosing, errStopped := errors.New("closing"), errors.New("stopped")
@@ -53,6 +79,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		// nudged, and wait watches it.
 		if t.Status.Terminal() {
 			t.Status, t.FinishedAt, t.Error = task.Running, time.Time{}, ""
+			t.PendingDone = nil
 		}
 		return nil
 	}); errors.Is(err, errClosing) {
@@ -69,6 +96,20 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	return err == nil, nil
 }
 
+// agentWorking reports whether t's agent runs a turn: herdr says so, or
+// the agent's own status line shows on a fresh read of its screen.
+func (r *Runner) agentWorking(ctx context.Context, t *task.Task) bool {
+	if a, err := r.Herdr.AgentGet(ctx, t.Herdr.PaneID); err == nil && a.Status == "working" {
+		return true
+	}
+	adapter, ok := adapterOf(t)
+	if !ok {
+		return false
+	}
+	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
+	return err == nil && adapter.ShowsWorking(screen)
+}
+
 // Answer sends the user's answer to a runner that reported needs-human and
 // sets it running again. It reports whether herdr saw the turn start.
 func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
@@ -79,6 +120,9 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 	if t.Status != task.NeedsHuman {
 		return false, fmt.Errorf("%s is %s, not waiting for an answer; use send", id, t.Status)
 	}
+	if len(t.DialogAnswers) > 0 {
+		return false, r.answerDialog(ctx, t, text)
+	}
 	if t.Question == "" {
 		return false, fmt.Errorf("%s waits on the %s dialog in its tab; answer it there (hrk focus %s)", id, t.Error, id)
 	}
@@ -86,7 +130,7 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	head := roundHead(t)
-	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
+	if err := r.typePrompt(ctx, t, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
 	nt, changed, err := r.Store.Transition(id, task.Running, []task.Status{task.NeedsHuman}, func(t *task.Task) {
@@ -105,6 +149,49 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 	}
 	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
 	return err == nil, nil
+}
+
+// answerDialog gives the startup dialog t waits on the answer text names.
+// The launcher sees the dialog close and moves the task on, as when the user
+// answers in the runner's tab.
+func (r *Runner) answerDialog(ctx context.Context, t *task.Task, text string) error {
+	choice := strings.ToLower(strings.TrimSpace(text))
+	keys, ok := t.DialogAnswers[choice]
+	if !ok {
+		return fmt.Errorf("%s waits on the %s dialog; answer %s", t.ID, t.Error, strings.Join(slices.Sorted(maps.Keys(t.DialogAnswers)), " or "))
+	}
+	if err := r.errIfLost(ctx, t); err != nil {
+		return err
+	}
+	// Keys sent after the dialog closed would land in the agent's input.
+	if d, known := dialogOf(t); known {
+		if screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40); err == nil && !harness.Shows(screen, d) {
+			return fmt.Errorf("%s no longer shows the %s dialog; it continues on its own", t.ID, t.Error)
+		}
+	}
+	if err := r.Herdr.AgentSendKeys(ctx, t.Herdr.PaneID, keys...); err != nil {
+		return err
+	}
+	r.emit(t, "answered", "answered the "+t.Error+" dialog with "+choice, "")
+	return nil
+}
+
+// dialogOf returns the startup dialog t waits on, by the name in its Error.
+func dialogOf(t *task.Task) (harness.Dialog, bool) {
+	spec, err := task.ParseAgentSpec(t.Agent)
+	if err != nil {
+		return harness.Dialog{}, false
+	}
+	a, err := harness.For(spec.Harness)
+	if err != nil {
+		return harness.Dialog{}, false
+	}
+	for _, d := range a.Dialogs() {
+		if d.Name == t.Error {
+			return d, true
+		}
+	}
+	return harness.Dialog{}, false
 }
 
 // Release opens a held task's human gate and launches it. A note is added

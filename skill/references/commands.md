@@ -22,6 +22,8 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `cleanup [id]... [--yes]` | List finished worktrees and branches left behind, yours and every project's: merged (squash and rebase merges included), unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
 | `events --learning [--task ID] [--project NAME]` | Use it when the user asks how much steering tasks took. Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish) and time waited on a human after the spawn. |
+| `heavy -- <command> [args...]` | Run your own tests, lint, typecheck and builds this way too: it waits for one of `heavySlots` slots (2 by default) shared with every runner, then runs the command and exits with its code. |
+| `heavy [--json]` | Who holds each heavy slot and who waits, with command and age. Use it when a runner, or your own check, seems to wait. |
 | `sync <id> [--from REF] [--no-send]` | Merge origin's default branch (such as `origin/main`), or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent, background work, an agent herdr cannot check, or a dirty worktree, and fetches only after those checks; a conflict is aborted and the text to `send` is printed. When it suggests `--from main`, local main has commits origin lacks. |
 
 ## Projects
@@ -158,6 +160,8 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--claude-config DIR` | Claude config folder (account) of a Claude runner: a path, or a name such as `claude2` for `~/.claude2`. Default: the main session's. |
 | `--cwd DIR` | Folder the task works in; by default the current folder, or the project's folder with `--project`. |
 | `--project NAME` | Registered project the task works for. It opens in the project's workspace and reports to `project:NAME`. Default: the project holding the task's folder, if any. |
+
+Picking an agent: the brief names each runner's harness, model and effort with one reason. Go below the kind's default for simple work, such as `--agent claude:claude-sonnet-5-5:low` for a doc edit, a rename or a one-line fix. Use a strong model and high effort only for multi-file design, root-cause hunts or live experiments, such as `--agent claude:claude-opus-5-5:high` for a cross-module refactor.
 
 ## Task statuses
 

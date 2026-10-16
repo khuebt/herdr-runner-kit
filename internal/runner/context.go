@@ -91,7 +91,7 @@ func (r *Runner) ContextHook(ctx context.Context, id string, h task.Harness, pay
 	}
 	r.emit(t, "context-low", "compacted automatically near its context limit; asked the runner to hand off to a fresh session", "")
 	request := r.handoffRequest(t)
-	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, request); err != nil {
+	if err := r.typePrompt(ctx, t, t.Herdr.PaneID, request); err != nil {
 		// The added context still carries the request.
 		err = fmt.Errorf("queue the handoff request: %w", err)
 		return adapter.SessionContext(request), err
@@ -143,7 +143,7 @@ func (r *Runner) contextLow(ctx context.Context, t *task.Task, left int) (bool, 
 	st.Asked = attempt
 	r.saveProgress(t.ID, st)
 	unlock()
-	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, r.handoffRequest(t)); err != nil {
+	if err := r.typePrompt(ctx, t, t.Herdr.PaneID, r.handoffRequest(t)); err != nil {
 		return false, fmt.Errorf("ask for a handoff: %w", err)
 	}
 	r.emit(t, "context-low", fmt.Sprintf("%d%% of its context left; asked the runner to hand off to a fresh session", left), "")

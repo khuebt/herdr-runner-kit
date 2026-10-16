@@ -47,7 +47,7 @@ const (
 )
 
 func (claude) Files(in FilesInput) ([]File, error) {
-	settings, err := ClaudeSettings(in.Bin)
+	settings, err := ClaudeSettings(in.Bin, in.InputLocked)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +106,11 @@ func (c claude) background(in TurnInput) bool {
 // NudgeInHook is true: the Stop hook returns the nudge as a block.
 func (claude) NudgeInHook() bool { return true }
 
+// DoneAtTurnEnd is false: the Stop hook ends Claude's turn, and no Claude
+// runner was seen working on after its done.
+func (claude) DoneAtTurnEnd() bool      { return false }
+func (claude) ShowsWorking(string) bool { return false }
+
 func (claude) HookPayload(_ []string, stdin io.Reader) ([]byte, error) { return readStdin(stdin) }
 
 func (claude) HookReply(block string) string {
@@ -136,6 +141,47 @@ func (claude) WorksInBackground(screen Screen) (bool, error) {
 	}
 	return false, nil
 }
+
+// LocksInput is true: a UserPromptSubmit hook blocks a prompt typed in the
+// tab, idle or mid-turn, without interrupting a running turn (Claude Code
+// 2.1.301). Dialog keys, built-in slash commands and ! bash mode never
+// reach it.
+func (claude) LocksInput() bool { return true }
+
+// claudeClearLines is how many lines ClearInputKeys clears: enough for a
+// typed prompt the gate put back, since a long paste shows as one "[Pasted
+// text …]" line.
+const claudeClearLines = 12
+
+// ClearInputKeys clears the input one line at a time: ctrl+u empties the
+// current line and backspace joins the one above. esc would clear it all,
+// but interrupts a running turn.
+func (claude) ClearInputKeys() []string {
+	keys := make([]string, 0, 2*claudeClearLines)
+	for range claudeClearLines {
+		keys = append(keys, "ctrl+u", "backspace")
+	}
+	return keys
+}
+
+// claudeSynthetic starts a prompt Claude submits itself through
+// UserPromptSubmit: the note that a background shell or subagent ended,
+// with no field that marks it as Claude's own.
+const claudeSynthetic = "<task-notification>"
+
+func (claude) GatePrompt(payload []byte) (string, bool, error) {
+	var in struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(payload, &in); err != nil {
+		return "", false, fmt.Errorf("parse claude hook input: %w", err)
+	}
+	return in.Prompt, strings.HasPrefix(strings.TrimSpace(in.Prompt), claudeSynthetic), nil
+}
+
+// GateBlock is a UserPromptSubmit block: Claude shows reason, drops the
+// prompt from the conversation and puts its text back into the input.
+func (claude) GateBlock(reason string) string { return ClaudeBlock(reason) }
 
 func (claude) Checks() Checks {
 	return Checks{
@@ -344,22 +390,26 @@ func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
 // StopFailure hooks that call `<bin> __turn-end`, which tells the two apart
 // by the hook input, and PreCompact and SessionStart(compact) hooks that
 // call `<bin> __context`. PreCompact has no matcher: a manual compaction
-// must cancel an automatic one Claude announced but never ran. Claude
+// must cancel an automatic one Claude announced but never ran. With
+// inputLocked, a UserPromptSubmit hook calls `<bin> __prompt-gate`. Claude
 // merges them with the user's own hooks.
-func ClaudeSettings(bin string) ([]byte, error) {
+func ClaudeSettings(bin string, inputLocked bool) ([]byte, error) {
 	if !filepath.IsAbs(bin) {
 		return nil, fmt.Errorf("hook binary must be an absolute path, got %q", bin)
 	}
 	turnEnd := map[string]any{"type": "command", "command": ShellQuote(bin) + " __turn-end --harness claude"}
 	onCompact := map[string]any{"type": "command", "command": ShellQuote(bin) + " __context --harness claude"}
-	settings := map[string]any{
-		"hooks": map[string]any{
-			"Stop":         []any{map[string]any{"hooks": []any{turnEnd}}},
-			"StopFailure":  []any{map[string]any{"hooks": []any{turnEnd}}},
-			"PreCompact":   []any{map[string]any{"hooks": []any{onCompact}}},
-			"SessionStart": []any{map[string]any{"matcher": "compact", "hooks": []any{onCompact}}},
-		},
+	hooks := map[string]any{
+		"Stop":         []any{map[string]any{"hooks": []any{turnEnd}}},
+		"StopFailure":  []any{map[string]any{"hooks": []any{turnEnd}}},
+		"PreCompact":   []any{map[string]any{"hooks": []any{onCompact}}},
+		"SessionStart": []any{map[string]any{"matcher": "compact", "hooks": []any{onCompact}}},
 	}
+	if inputLocked {
+		gate := map[string]any{"type": "command", "command": ShellQuote(bin) + " __prompt-gate --harness claude"}
+		hooks["UserPromptSubmit"] = []any{map[string]any{"hooks": []any{gate}}}
+	}
+	settings := map[string]any{"hooks": hooks}
 	return json.MarshalIndent(settings, "", "  ")
 }
 
@@ -565,7 +615,8 @@ func ShellQuote(s string) string {
 }
 
 // ClaudeBlock returns the Stop hook output that keeps Claude working, with
-// reason as its next instruction.
+// reason as its next instruction. A UserPromptSubmit hook refuses a prompt
+// with the same output.
 func ClaudeBlock(reason string) string {
 	out, _ := json.Marshal(map[string]string{"decision": "block", "reason": reason})
 	return string(out)

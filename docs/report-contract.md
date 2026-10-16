@@ -52,11 +52,13 @@ Rules the runner follows:
 - Every open question it settles itself with the recommended option is passed to `done` as `--decision`.
 - It never asks for, types or echoes a secret value in a question, summary or file; it asks where the secret is stored instead. `report` hides anything that looks like a secret (token-like strings, values of `password=`-style keys, credentials in URLs) in its summary, questions and decisions before it stores them or sends them to Telegram, and the `answered` event of `answer` and the `sent` event of `send` do the same.
 - Background shells and subagents finish before `done` is reported.
+- A `done` summary names each check the runner ran and its result, such as `go test ./... passed`, and any check it could not run and why. It never claims a check it did not run. The rule is added to contract version 3 as is.
 - Only when the kit says its context is nearly full, it commits or saves its work at a stable point, writes a handoff under `tasks/<id>/out/` naming what is done, what is left, the checks it ran and any background process it started (command and pid), then runs `report handoff` and stops.
 - It does not run `rm -r` on directories, alone or inside compound commands, because Claude Code stops on a safety prompt for it; scratch output goes into a new folder under `tasks/<id>/out/` instead.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Files under `plans/` and agent folders (`.claude/`, `.codex/`, `.agents/`) are never committed. The runner never pushes and never opens a pull request.
 - It commits on the branch it starts on, and never creates, switches or deletes branches. If its prompt names another branch, it stays on its own and says so in its summary.
 - With a report language set (`language` in [config.md](config.md), or `spawn --language`), it writes summaries and questions in that language.
+- With `heavySlots` above 0 ([config.md](config.md)), it runs tests, lint, typecheck and builds as `hrk heavy -- <command>`, which waits for a free slot shared by every runner and the main session. The rule is added to contract version 3 as is; a runner that does not follow it still works. See [commands.md](commands.md#heavy-commands).
 
 ### Notes on a report
 

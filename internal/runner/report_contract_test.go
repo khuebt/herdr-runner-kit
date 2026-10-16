@@ -26,7 +26,7 @@ func reportFiles(t *testing.T, o ReportOptions) (taskJSON, eventJSON string) {
 	t.Helper()
 	r, _, _ := newTestRunner(t)
 	dir := plainDir(t)
-	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: dir, Title: "fix login"})
+	tk := running(t, r, SpawnOptions{Agent: "codex", Prompt: "x", Cwd: dir, Title: "fix login"})
 	if _, err := r.Report(tk.ID, o); err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +273,7 @@ func TestContractV3Rules(t *testing.T) {
 		"Ask where it is stored instead.",
 		"Do not run rm -r on directories, alone or inside compound commands, because the agent stops on a safety prompt for it; write scratch output into a new folder under /out instead.",
 		`/bin/hrk report handoff --output <handoff file> --summary "<what is done and what is left>"`,
+		`- In a done summary, name each check you ran and its result, such as "go test ./... passed"; name any check you could not run and why. Never claim a check you did not run.`,
 		"Only when the kit tells you your context is nearly full: commit or save your work at a stable point, write a handoff under /out naming what is done, what is left, the checks you ran and any background process you started (command and pid), then run report handoff and stop.",
 	} {
 		if !strings.Contains(c, want) {
@@ -319,5 +320,19 @@ func TestReportHidesSecrets(t *testing.T) {
 	}
 	if ev := lastEvent(t, r); strings.Contains(got.Decisions[0], token) || strings.Contains(ev.Decisions[0], token) {
 		t.Errorf("decision keeps a secret: %q %q", got.Decisions, ev.Decisions)
+	}
+}
+
+func TestContractHeavyRuleFollowsHeavySlots(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	tk := &task.Task{ID: "t1", Cwd: "/work/other"}
+	rule := "\n- Run tests, lint, typecheck and builds as " + r.Bin + " heavy -- <command>; it waits for a free slot shared by every runner and the main session."
+	got, err := r.contract(tk, "/out", task.Claude)
+	if err != nil || !strings.HasSuffix(got, rule) || !strings.Contains(got, "report contract v3)") {
+		t.Errorf("heavySlots %d: contract lacks the heavy rule: %v\n%s", r.Config.HeavySlots, err, got)
+	}
+	r.Config.HeavySlots = 0
+	if got, err = r.contract(tk, "/out", task.Claude); err != nil || strings.Contains(got, " heavy -- ") {
+		t.Errorf("heavySlots 0: contract has the heavy rule: %v\n%s", err, got)
 	}
 }

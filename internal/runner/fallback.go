@@ -96,8 +96,12 @@ func (r *Runner) nextFallback(t *task.Task) (agent, claudeDir string, ok bool) {
 // back to starting for a launcher to restart the agent in its pane. With no
 // fallback left, a limit the agent confirmed fails the task with a
 // usage-limit reason, fails its dependents too and returns errHandled; an
-// unconfirmed one returns errNoFallback and changes nothing.
+// unconfirmed one returns errNoFallback and changes nothing. A running task
+// that holds a done finishes it instead and returns errHandled.
 func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting, confirmed bool) (*task.Task, error) {
+	if slices.Contains(from, task.Running) && r.finishHeldDone(seen.ID) {
+		return nil, errHandled
+	}
 	var prev, next string
 	nt, err := r.Store.Update(seen.ID, func(t *task.Task) error {
 		if !slices.Contains(from, t.Status) || t.Agent != seen.Agent ||

@@ -74,7 +74,7 @@ Each runner has a kind, which picks its default agent and whether it gets its ow
 
 | Kind | Default agent | Worktree | Use for |
 |---|---|---|---|
-| `code` | Codex | yes | features and refactors |
+| `code` | Claude Sonnet, medium effort | yes | features and refactors |
 | `flow` | Claude Opus, high effort | yes | skill flows that change code, such as `--skill ak:cook` |
 | `fix` | Claude Sonnet, medium effort | no | small fixes and edits |
 | `research` | Claude Opus, high effort | no | investigation and analysis |

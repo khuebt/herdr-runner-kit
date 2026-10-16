@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+	"unicode"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -59,11 +63,159 @@ func (c codex) FirstPrompt(skill, prompt, contract string) string {
 func (codex) Dialogs() []Dialog {
 	return []Dialog{
 		{Name: "codex-trust", Match: "Trust this folder?", Action: NeedsHuman},
-		// The user's untrusted global hooks raise this on every launch, and
-		// herdr reports the screen as idle. Esc skips them for this session
-		// only and persists nothing.
-		{Name: "codex-hooks-review", Match: "Hooks need review", Action: SendKeys, Keys: []string{"esc"}},
+		// codex-cli shows this when a newer version is out. Enter would run
+		// the update; Esc skips it for this launch and persists nothing.
+		// "Skip until next version" would write the user's Codex state.
+		{Name: "codex-update", Match: "Skip until next version", Action: SendKeys, Keys: []string{"esc"}},
+		// Trusting hooks lets them run outside the sandbox in every Codex
+		// session, so the user decides. herdr reports the screen as idle. A
+		// digit only moves the selection to its option, so Enter confirms
+		// it (codex-cli 0.162.1); Esc continues without trusting, for this
+		// session only. "1. Review hooks" is not used: Esc from the
+		// review closes the dialog as a skip. codex-cli 0.162.1 opened it
+		// 0.6 to 1.2 s after its input showed, and queues a prompt sent in
+		// between behind it.
+		{
+			Name: "codex-hooks-review", Match: "Hooks need review", Action: Ask, IdleWhileShown: true, OpensLate: 3 * time.Second,
+			Answers:  map[string][]string{"trust": {"2", "enter"}, "skip": {"esc"}},
+			Question: codexHooksQuestion,
+		},
 	}
+}
+
+// codexHooksCount reads "4 hooks are new or changed." off the hooks
+// review.
+var codexHooksCount = regexp.MustCompile(`(\d+) hooks? (?:is|are) new or changed`)
+
+// codexHooksQuestion asks the user whether a runner's Codex may trust the
+// hooks its review lists. Codex does not show them on the dialog, so it
+// names the user's hooks that have no trust entry at all; the hash of a
+// changed one is Codex's own, so those are only counted.
+func codexHooksQuestion(id, screen string, limit int) string {
+	head := "Codex in " + id + " asks to trust its new or changed hooks."
+	count := -1
+	if m := codexHooksCount.FindStringSubmatch(strings.Join(strings.Fields(screen), " ")); m != nil {
+		count, _ = strconv.Atoi(m[1])
+		head = fmt.Sprintf("Codex in %s asks to trust %d new or changed hooks.", id, count)
+	}
+	tail := " Trusting lets them run outside the sandbox in every Codex session. Answer trust or skip (recommended: skip unless you know these hooks)."
+	home, hooks := untrustedCodexHooks()
+	if n := count - len(hooks); count >= 0 && n > 0 {
+		tail = fmt.Sprintf(" %d changed since they were trusted.", n) + tail
+	}
+	if len(hooks) == 0 {
+		return head + tail
+	}
+	intro := " New in " + home + " (no trust entry): "
+	room := limit - len([]rune(head+intro+tail)) - 1
+	var list []string
+	for _, h := range hooks {
+		list = append(list, h.event+": "+h.command)
+	}
+	return head + intro + clipRunes(strings.Join(list, "; "), room) + "." + tail
+}
+
+// codexHook is one of the user's Codex hooks with no trust entry.
+type codexHook struct{ event, command string }
+
+// untrustedCodexHooks returns the folder holding the user's Codex config,
+// as it reads to the user, and the hooks in its hooks.json and the inline
+// [hooks] of its config.toml that config.toml holds no trust entry for.
+// Codex keys trust as "<source file>:<event in snake case>:<group>:<hook>".
+func untrustedCodexHooks() (string, []codexHook) {
+	cfgPath, err := CodexConfigPath()
+	if err != nil {
+		return "", nil
+	}
+	dir := filepath.Dir(cfgPath)
+	var cfg struct {
+		Hooks map[string]any `toml:"hooks"`
+	}
+	data, _ := os.ReadFile(cfgPath)
+	if toml.Unmarshal(data, &cfg) != nil {
+		return tildeHome(dir), nil
+	}
+	trusted := map[string]bool{}
+	if state, ok := cfg.Hooks["state"].(map[string]any); ok {
+		for k := range state {
+			trusted[k] = true
+		}
+	}
+	delete(cfg.Hooks, "state")
+	var hooks []codexHook
+	add := func(source string, events map[string][]codexHookGroup) {
+		for _, event := range slices.Sorted(maps.Keys(events)) {
+			for i, g := range events[event] {
+				for j, h := range g.Hooks {
+					if h.Command != "" && !trusted[fmt.Sprintf("%s:%s:%d:%d", source, snakeCase(event), i, j)] {
+						hooks = append(hooks, codexHook{event, shortCommand(h.Command)})
+					}
+				}
+			}
+		}
+	}
+	var file struct {
+		Hooks map[string][]codexHookGroup `json:"hooks"`
+	}
+	hooksPath := filepath.Join(dir, "hooks.json")
+	if data, err := os.ReadFile(hooksPath); err == nil && json.Unmarshal(data, &file) == nil {
+		add(hooksPath, file.Hooks)
+	}
+	// The inline hooks went through TOML's dynamic types; JSON gives them
+	// their shape back.
+	var inline map[string][]codexHookGroup
+	if b, err := json.Marshal(cfg.Hooks); err == nil && json.Unmarshal(b, &inline) == nil {
+		add(cfgPath, inline)
+	}
+	return tildeHome(dir), hooks
+}
+
+// codexHookGroup is one matcher group of a Codex hook event.
+type codexHookGroup struct {
+	Hooks []struct {
+		Command string `json:"command"`
+	} `json:"hooks"`
+}
+
+// snakeCase turns "UserPromptSubmit" into "user_prompt_submit".
+func snakeCase(s string) string {
+	var b strings.Builder
+	for i, c := range s {
+		if unicode.IsUpper(c) {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			c = unicode.ToLower(c)
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
+}
+
+// shortCommand shows a hook command on one short line, with the home
+// folder as ~.
+func shortCommand(cmd string) string {
+	return clipRunes(tildeHome(strings.Join(strings.Fields(cmd), " ")), 60)
+}
+
+// tildeHome writes the user's home folder in s as ~.
+func tildeHome(s string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" && home != "/" {
+		return strings.ReplaceAll(s, home, "~")
+	}
+	return s
+}
+
+// clipRunes cuts s to at most n characters, ending a cut one with "…".
+func clipRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n < 1 {
+		return ""
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // codexLimit is the error codex-cli 0.162.1 draws at the left edge when the
@@ -231,6 +383,29 @@ func (codex) SessionContext(string) string { return "" }
 
 // WorksInBackground is false: Codex draws no background count.
 func (codex) WorksInBackground(Screen) (bool, error) { return false, nil }
+
+// DoneAtTurnEnd is true: a Codex runner reports inside its turn and may go
+// on to commit, or to read a message sent into the running turn, before the
+// turn ends. codex-cli 0.162.1 adds a prompt typed while it works to the
+// running turn.
+func (codex) DoneAtTurnEnd() bool { return true }
+
+// codexWorking is the status line of a running turn, without the tip.
+var codexWorking = regexp.MustCompile(`^\s*•\s.*\besc to interrupt\b`)
+
+// ShowsWorking looks for the status line among the last lines, where Codex
+// draws it above its input.
+func (codex) ShowsWorking(screen string) bool {
+	return anyLineMatches(lastLines(screen, statusLines), codexWorking)
+}
+
+// LocksInput is false: a per-run prompt hook loads, but Codex skips it
+// until the user trusts its hash, which would add a trust step for every
+// Codex user.
+func (codex) LocksInput() bool                        { return false }
+func (codex) ClearInputKeys() []string                { return nil }
+func (codex) GatePrompt([]byte) (string, bool, error) { return "", false, nil }
+func (codex) GateBlock(string) string                 { return "" }
 
 func (codex) Checks() Checks {
 	return Checks{

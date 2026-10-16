@@ -61,18 +61,52 @@ type ReportOptions struct {
 // work (starting dependents, notifications) runs in a detached child, so a
 // report never waits on herdr or the network; it reads a local git
 // snapshot of the task's checkout, capped at 2 s.
+//
+// A runner's done is held while its turn runs when the adapter says the
+// agent may work on after it: the task stays running, and the done becomes
+// final at the turn end (see FinishDone). Only a report from a runner's
+// session (Attempt set) is held; a manual one never is.
 func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	if err := validateReport(&o); err != nil {
 		return nil, err
 	}
+	return r.report(id, o, finishNone)
+}
+
+// How report treats a held done.
+const (
+	finishNone       = iota // a report from the runner or the user
+	finishHeld              // make the held done final, unless superseded
+	finishSuperseded        // make the held done final, even if superseded
+)
+
+// errNothingHeld says the task holds no done to make final.
+var errNothingHeld = errors.New("no held done")
+
+// FinishDone makes t's held done final through the normal report path: a
+// fresh git snapshot, the done event and the dependents. superseded also
+// finishes a done a queued message superseded. It returns errNothingHeld
+// when the task holds none, so two callers finish it once.
+func (r *Runner) FinishDone(id string, superseded bool) (*task.Task, error) {
+	mode := finishHeld
+	if superseded {
+		mode = finishSuperseded
+	}
+	return r.report(id, ReportOptions{Status: task.Done}, mode)
+}
+
+func (r *Runner) report(id string, o ReportOptions, finish int) (*task.Task, error) {
 	cur, err := r.Store.Get(id)
 	if err != nil {
 		return nil, err
 	}
+	hold := finish == finishNone && o.Status == task.Done && o.Attempt > 0 &&
+		cur.Status == task.Running && doneAtTurnEnd(cur)
 	// Read git before taking the task lock, so a slow repository never
-	// holds it. A report the update refuses needs no snapshot.
+	// holds it. A report the update refuses, or a held done, needs no
+	// snapshot.
 	var git *task.GitState
-	if !cur.Status.Terminal() {
+	if !hold && !cur.Status.Terminal() {
 		git = gitState(cur)
 	}
 	question := ""
@@ -80,8 +114,8 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 		question = task.JoinQuestions(o.Questions)
 	}
 	// A report while the runner's question is still open means the user
-	// answered it in the runner's tab.
-	var answered bool
+	// answered it in the runner's tab, which a locked tab never takes.
+	var answered, held bool
 	t, err := r.Store.Update(id, func(t *task.Task) error {
 		if err := staleAttempt(t, o.Attempt); err != nil {
 			return err
@@ -92,21 +126,41 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 		case t.Status == task.Queued || t.Status == task.Held:
 			return fmt.Errorf("%s has not started (status %s)", t.ID, t.Status)
 		}
-		answered = t.Status == task.NeedsHuman && t.Question != ""
+		if finish != finishNone {
+			p := t.PendingDone
+			if p == nil || p.Superseded && finish != finishSuperseded {
+				return errNothingHeld
+			}
+			o.Summary, o.Decisions, o.Outputs = p.Summary, p.Decisions, p.Outputs
+		}
+		if held = hold && t.Status == task.Running; held {
+			t.PendingDone = &task.PendingDone{Summary: o.Summary, Decisions: o.Decisions, Outputs: o.Outputs, Since: time.Now().UTC()}
+			t.Unreported = 0
+			return nil
+		}
+		answered = t.Status == task.NeedsHuman && t.Question != "" && !InputLocked(t)
 		t.Status = o.Status
 		t.Summary, t.Outputs, t.Question, t.Decisions = o.Summary, o.Outputs, question, o.Decisions
 		t.Unreported = 0
-		t.Git = git // a failed snapshot clears an older one rather than show it as current
+		t.PendingDone = nil // a later report replaces a held done
+		t.Git = git         // a failed snapshot clears an older one rather than show it as current
 		if o.Status == task.Failed {
 			t.Error = o.Summary
 		}
 		if o.Status.Terminal() {
 			t.FinishedAt = time.Now().UTC()
+			t.QueuedSend = time.Time{}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if held {
+		// Progress, not news: the done reaches the main session when the
+		// turn ends.
+		r.emit(t, "done-pending", o.Summary, "")
+		return t, nil
 	}
 	if answered {
 		r.emit(t, "answered", answeredInTab, "")
@@ -130,6 +184,12 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 		fmt.Fprintf(os.Stderr, "hrk: %s: start follow-up: %v\n", t.ID, err)
 	}
 	return t, nil
+}
+
+// doneAtTurnEnd reports whether t's agent holds a done until its turn ends.
+func doneAtTurnEnd(t *task.Task) bool {
+	a, ok := adapterOf(t)
+	return ok && a.DoneAtTurnEnd()
 }
 
 // OutDir returns the folder for a task's files meant for the main session.

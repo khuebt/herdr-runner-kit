@@ -27,6 +27,7 @@ Rules:
 - When you settle an open question yourself with the recommended option, pass it to report done as --decision "<question> -> <choice>" (up to 7, each under 200 characters), so the main session sees what you decided.
 - Never ask for, type or echo a secret value (password, token, key) in a question, summary or file. Ask where it is stored instead.
 - If you hand work to background shells or subagents, wait for them before reporting done.
+- In a done summary, name each check you ran and its result, such as "go test ./... passed"; name any check you could not run and why. Never claim a check you did not run.
 - Only when the kit tells you your context is nearly full: commit or save your work at a stable point, write a handoff under %[4]s naming what is done, what is left, the checks you ran and any background process you started (command and pid), then run report handoff and stop.
 - Do not run rm -r on directories, alone or inside compound commands, because the agent stops on a safety prompt for it; write scratch output into a new folder under %[4]s instead.
 - Commits use Conventional Commits, with no AI attribution and no plan or task ids. Never add files under plans/ or agent folders such as .claude/, .codex/ or .agents/. Do not push and do not open pull requests.
@@ -39,11 +40,20 @@ Rules:
 	return contract
 }
 
+// heavyRule is the contract rule that sends heavy commands through hrk
+// heavy, added while heavySlots is on.
+func heavyRule(bin string) string {
+	return "\n- Run tests, lint, typecheck and builds as " + bin + " heavy -- <command>; it waits for a free slot shared by every runner and the main session."
+}
+
 // contract returns t's report contract and, for a project task, the
 // project's preamble in the skill syntax of harness h. A record that cannot
 // be read still yields the preamble, with sharing off and no context pack.
 func (r *Runner) contract(t *task.Task, outDir string, h task.Harness) (string, error) {
 	contract := Contract(t, r.Bin, outDir)
+	if r.Config.HeavySlots > 0 {
+		contract += heavyRule(r.Bin)
+	}
 	if t.Project == "" {
 		return contract, nil
 	}

@@ -153,8 +153,20 @@ type Task struct {
 	Outputs   []string `json:"outputs,omitempty"`
 	Question  string   `json:"question,omitempty"`
 	Decisions []string `json:"decisions,omitempty"`
+	// DialogAnswers are the answers the startup dialog the task waits on
+	// takes from `hrk answer`, each with the herdr keys that give it; the
+	// dialog's name is in Error and its question in Question.
+	DialogAnswers map[string][]string `json:"dialogAnswers,omitempty"`
 	// Inputs are the results of the --after tasks, added to the first prompt.
 	Inputs string `json:"inputs,omitempty"`
+	// PendingDone is a done report held until the turn it came in ends,
+	// for an agent that may keep working after it. The task stays running
+	// meanwhile.
+	PendingDone *PendingDone `json:"pendingDone,omitempty"`
+	// QueuedSend is when send typed a message into an agent that was still
+	// working. A done held from before it does not answer it. The next turn
+	// end clears it.
+	QueuedSend time.Time `json:"queuedSend,omitzero"`
 	// Unreported counts turns that ended without a report since the last
 	// prompt from the main session: the first is nudged, the second is news.
 	Unreported int `json:"unreported,omitempty"`
@@ -175,6 +187,9 @@ type Task struct {
 	Handoffs []string `json:"handoffs,omitempty"`
 	// Stalled is set while herdr reports the agent blocked on a prompt.
 	Stalled bool `json:"stalled,omitempty"`
+	// InputLocked says the runner takes prompts only from the kit, when its
+	// agent can lock its input: the runnerInput config at spawn.
+	InputLocked bool `json:"inputLocked,omitempty"`
 	// Language is the language the runner writes its report summaries and
 	// questions in. Empty leaves it to the runner.
 	Language string `json:"language,omitempty"`
@@ -210,6 +225,20 @@ type Task struct {
 	LaunchDeadline time.Time `json:"launchDeadline,omitzero"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// PendingDone is a held done report.
+type PendingDone struct {
+	Summary   string   `json:"summary"`
+	Decisions []string `json:"decisions,omitempty"`
+	Outputs   []string `json:"outputs,omitempty"`
+	// Since is when the done was reported, or when a queued message
+	// superseded it.
+	Since time.Time `json:"since"`
+	// Superseded says a message sent while the agent worked came after this
+	// done: the runner reports again on it, and no turn end finalizes this
+	// one.
+	Superseded bool `json:"superseded,omitempty"`
 }
 
 // Reasons a runner's agent was restarted in its pane, as Relaunched

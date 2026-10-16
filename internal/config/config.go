@@ -79,7 +79,25 @@ type Config struct {
 	// 16G or a share of RAM such as 25%, by running its agent in its own
 	// systemd scope. MemoryOff starts agents without one.
 	RunnerMemoryMax string
+	// HeavySlots is how many heavy commands (tests, lint, typecheck,
+	// builds) wrapped in hrk heavy run at once across every runner and the
+	// main session. Zero runs them at once with no queue.
+	HeavySlots int
+	// WorktreeSetup maps a repository's main checkout, as a clean absolute
+	// path, to the shell commands that run in each new runner worktree of
+	// it before its agent starts.
+	WorktreeSetup map[string][]string
+	// RunnerInput is InputLocked or InputOpen: whether a runner whose agent
+	// can lock its input takes prompts only from the kit, so text typed in
+	// its tab never reaches the model.
+	RunnerInput string
 }
+
+// The runnerInput values.
+const (
+	InputLocked = "locked"
+	InputOpen   = "open"
+)
 
 // MemoryOff is the runnerMemoryMax value that turns the memory cap off.
 const MemoryOff = "off"
@@ -93,6 +111,9 @@ const (
 	MinContextHandoffAt = 5
 	MaxContextHandoffAt = 50
 )
+
+// MaxHeavySlots is the most heavySlots accepts.
+const MaxHeavySlots = 64
 
 // MinStallAfter is the shortest stallAfter: the progress check samples once
 // a minute and needs a few samples before it acts.
@@ -116,6 +137,9 @@ type fileConfig struct {
 	ContextHandoff       *bool               `yaml:"contextHandoff"`
 	ContextHandoffAt     *int                `yaml:"contextHandoffAt"`
 	RunnerMemoryMax      *string             `yaml:"runnerMemoryMax"`
+	HeavySlots           *int                `yaml:"heavySlots"`
+	WorktreeSetup        map[string][]string `yaml:"worktreeSetup"`
+	RunnerInput          *string             `yaml:"runnerInput"`
 }
 
 type fileFallback struct {
@@ -230,6 +254,25 @@ func Parse(data []byte) (Config, error) {
 	if file.RunnerMemoryMax != nil {
 		cfg.RunnerMemoryMax = strings.TrimSpace(*file.RunnerMemoryMax)
 	}
+	if file.HeavySlots != nil {
+		cfg.HeavySlots = *file.HeavySlots
+	}
+	if file.RunnerInput != nil {
+		cfg.RunnerInput = strings.TrimSpace(*file.RunnerInput)
+	}
+	if file.WorktreeSetup != nil {
+		cfg.WorktreeSetup = make(map[string][]string, len(file.WorktreeSetup))
+		for repo, cmds := range file.WorktreeSetup {
+			key, err := expandHome(strings.TrimSpace(repo))
+			if err != nil {
+				return Config{}, fmt.Errorf("worktreeSetup: %w", err)
+			}
+			if key != "" {
+				key = filepath.Clean(key)
+			}
+			cfg.WorktreeSetup[key] = cmds
+		}
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -303,12 +346,61 @@ func (c Config) Validate() error {
 	if c.RunnerMemoryMax != MemoryOff && !memorySize.MatchString(c.RunnerMemoryMax) {
 		return fmt.Errorf("runnerMemoryMax must be a size such as 16G or 8192M, a share of RAM such as 25%%, or off, got %q", c.RunnerMemoryMax)
 	}
+	if c.HeavySlots < 0 || c.HeavySlots > MaxHeavySlots {
+		return fmt.Errorf("heavySlots must be from 0 (off) to %d, got %d", MaxHeavySlots, c.HeavySlots)
+	}
+	if c.RunnerInput != InputLocked && c.RunnerInput != InputOpen {
+		return fmt.Errorf("runnerInput must be %s or %s, got %q", InputLocked, InputOpen, c.RunnerInput)
+	}
+	for repo, cmds := range c.WorktreeSetup {
+		if !filepath.IsAbs(repo) {
+			return fmt.Errorf("worktreeSetup: %q is not an absolute path or ~/ path of a repository", repo)
+		}
+		if len(cmds) == 0 {
+			return fmt.Errorf("worktreeSetup.%s: list at least one command", repo)
+		}
+		for i, cmd := range cmds {
+			if strings.TrimSpace(cmd) == "" {
+				return fmt.Errorf("worktreeSetup.%s[%d] is empty", repo, i)
+			}
+		}
+	}
 	for _, ev := range c.Telegram.Notify {
 		if !slices.Contains(NotifyEvents, ev) {
 			return fmt.Errorf("telegram.notify: unknown event %q (known: %s)", ev, strings.Join(NotifyEvents, ", "))
 		}
 	}
 	return nil
+}
+
+// SetupFor returns the worktree setup commands of the repository whose main
+// checkout is root. A key that is a symlink to root matches too.
+func (c Config) SetupFor(root string) []string {
+	if root == "" {
+		return nil
+	}
+	for repo, cmds := range c.WorktreeSetup {
+		if repo == root {
+			return cmds
+		}
+		if resolved, err := filepath.EvalSymlinks(repo); err == nil && resolved == root {
+			return cmds
+		}
+	}
+	return nil
+}
+
+// expandHome replaces a leading ~/ in path with the home directory.
+func expandHome(path string) (string, error) {
+	rest, ok := strings.CutPrefix(path, "~/")
+	if !ok {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, rest), nil
 }
 
 // parseDuration reads a duration such as 4h or 90m; a bare 0 means none.

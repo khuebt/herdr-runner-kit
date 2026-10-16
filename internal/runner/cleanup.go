@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -329,6 +330,62 @@ func checkedOut(ctx context.Context, root, branch string) bool {
 	return slices.Contains(strings.Split(list, "\n"), "branch refs/heads/"+branch)
 }
 
+// startedTasks returns the ids of the tasks whose agent ever got its first
+// prompt: those with a started event.
+func (r *Runner) startedTasks() (map[string]bool, error) {
+	all, _, err := r.Store.ReadEventsSince(0)
+	if err != nil {
+		return nil, err
+	}
+	started := map[string]bool{}
+	for _, ev := range all {
+		if ev.Type == "started" {
+			started[ev.Task] = true
+		}
+	}
+	return started, nil
+}
+
+// removeUnstarted removes the worktree and branch the launch of task id
+// created when its agent never started and nothing was written there; the
+// worktree's removal closes its workspace. Any doubt keeps them for cleanup.
+func (r *Runner) removeUnstarted(ctx context.Context, id string) {
+	t, err := r.Store.Get(id)
+	if err != nil || t.Worktree == nil || t.Worktree.Removed || !t.Worktree.OwnsBranch() || !isDir(t.Worktree.Path) {
+		return
+	}
+	if started, err := r.startedTasks(); err != nil || started[id] {
+		return
+	}
+	wt, branch := t.Worktree.Path, t.Worktree.Branch
+	// Nothing written: no change or untracked file, and no commit beyond
+	// the one the branch started from.
+	base := gitOut(ctx, t.RepoRoot, "rev-parse", "--verify", "--quiet", cmp.Or(t.Worktree.Base, "HEAD")+"^{commit}")
+	st, err := readStatus(ctx, wt)
+	if err != nil || len(st.Changed) > 0 || len(st.Untracked) > 0 || base == "" ||
+		!BranchExists(ctx, t.RepoRoot, branch) || !isAncestor(ctx, t.RepoRoot, branch, base) || !isAncestor(ctx, wt, "HEAD", base) {
+		return
+	}
+	if err := r.removeWorktree(ctx, t, false); err != nil {
+		return
+	}
+	branchGone, _ := deleteMergedBranch(ctx, t.RepoRoot, branch, base)
+	t, err = r.Store.Update(id, func(t *task.Task) error {
+		t.Worktree.Removed = true
+		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone
+		t.Herdr.Closed = true // the pane went with the worktree's workspace
+		return nil
+	})
+	if err != nil {
+		return
+	}
+	summary := "never started; removed its empty worktree and branch"
+	if !branchGone {
+		summary = "never started; removed its empty worktree; kept branch " + branch
+	}
+	r.emit(t, "cleaned", summary, "")
+}
+
 // NoticeCleanable emits one cleanable event for each of the owner's merged
 // worktrees that was not offered before, so the main session can ask the
 // user. It runs at most once per CleanupCheckEvery for an owner, and never
@@ -353,6 +410,7 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 		return
 	}
 	errOffered := errors.New("offered")
+	started, startedErr := r.startedTasks()
 	for _, it := range items {
 		if it.Verdict != Merged {
 			continue
@@ -369,9 +427,17 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 		case !it.Worktree:
 			removes = "the branch"
 		}
+		summary := "branch " + t.Worktree.Branch + " is " + it.Detail
+		if startedErr == nil && !started[t.ID] && t.Status != task.Done {
+			// A branch with no commits counts as merged; say why it has none.
+			summary = "never started"
+			if reason, _, _ := strings.Cut(t.Error, "\n"); reason != "" {
+				summary += " (" + reason + ")"
+			}
+		}
 		ev := state.Event{
 			Task: t.ID, Owner: t.Owner, Type: "cleanable", Status: t.Status,
-			Summary: "branch " + t.Worktree.Branch + " is " + it.Detail + "; cleanup removes " + removes,
+			Summary: summary + "; cleanup removes " + removes,
 		}
 		if err := r.record(ev); err != nil {
 			// Not marked offered, so the next check offers it again.

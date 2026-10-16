@@ -13,6 +13,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -26,6 +27,13 @@ const (
 	// herdr saw as not ready to turn idle before it calls the screen an
 	// unknown startup dialog.
 	unknownDialogIdleWait = 5 * time.Second
+	// shellPollEvery is how often waitShell looks at a pane's shell.
+	shellPollEvery = 250 * time.Millisecond
+	// exportShellWait caps the wait for the shell after the runner's
+	// environment is typed into it, and busyShellWait the wait after herdr
+	// found the pane busy.
+	exportShellWait = 3 * time.Second
+	busyShellWait   = 10 * time.Second
 )
 
 // errHandled means the launch ended in a state that is already recorded.
@@ -48,10 +56,21 @@ func (r *Runner) Launch(ctx context.Context, id string) error {
 		return err
 	}
 	if err := r.launch(ctx, t); err != nil && !errors.Is(err, errHandled) {
+		if !takesOverPane(t) {
+			r.removeUnstarted(ctx, id)
+		}
 		r.fail(id, err.Error())
 		return err
 	}
 	return nil
+}
+
+// takesOverPane reports whether t's launch starts its agent in the pane and
+// checkout an earlier session of it used: the agent hit its usage limit, or
+// neared its context limit, and its fallback, or a fresh session, takes
+// over.
+func takesOverPane(t *task.Task) bool {
+	return t.Herdr.PaneID != "" && (len(t.FallbackFrom) > 0 || t.Attempt > 1)
 }
 
 func (r *Runner) launch(ctx context.Context, t *task.Task) error {
@@ -62,10 +81,8 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	loc := herdr.Location{WorkspaceID: t.Herdr.WorkspaceID, TabID: t.Herdr.TabID, PaneID: t.Herdr.PaneID}
 	name := "hrk-" + t.ID
 	var carried []proc
-	if t.Herdr.PaneID != "" && (len(t.FallbackFrom) > 0 || t.Attempt > 1) {
-		// The agent hit its usage limit, or neared its context limit: its
-		// fallback, or a fresh session, takes over the same pane and
-		// checkout.
+	var setup *setupResult
+	if takesOverPane(t) {
 		left, err := r.clearPane(ctx, t)
 		if err != nil {
 			return err
@@ -97,6 +114,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 			}); err != nil {
 				return err
 			}
+		}
+		if t, setup, err = r.setUpWorktree(ctx, t); err != nil {
+			return err
 		}
 	}
 
@@ -131,15 +151,19 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if len(carried) > 0 {
 		prompt = strings.TrimSpace(prompt + "\n\n" + carriedNote(carried))
 	}
+	if setup != nil && setup.Failed != "" {
+		prompt = strings.TrimSpace(prompt + "\n\n" + setup.note())
+	}
 	text := adapter.FirstPrompt(t.Skill, prompt, contract)
 	// A dialog can open after the screen looked ready. Look once more, so
 	// the prompt and its Enter never land in one. An agent herdr sees as
 	// blocked shows a dialog even when no known one matches.
 	a, err := r.Herdr.AgentGet(ctx, loc.PaneID)
+	r.waitLateDialog(ctx, adapter, loc.PaneID)
 	if err := r.settleDialogs(ctx, t, adapter, loc.PaneID, err == nil && a.Status == "blocked"); err != nil {
 		return err
 	}
-	if err := r.Herdr.AgentPrompt(ctx, loc.PaneID, text); err != nil {
+	if err := r.typePrompt(ctx, t, loc.PaneID, text); err != nil {
 		return fmt.Errorf("send first prompt: %w", err)
 	}
 	t, changed, err := r.Store.SetStatus(t.ID, task.Running, task.Starting, task.NeedsHuman)
@@ -147,7 +171,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		return err
 	}
 	if changed {
-		r.emit(t, "started", startedLine(t, spec, scope), "")
+		r.emit(t, "started", startedLine(t, spec, setup, scope), "")
 	}
 	if _, err := r.Herdr.AgentWait(ctx, loc.PaneID, 5*time.Second, "working"); err != nil {
 		r.emit(t, "prompt-unconfirmed", "prompt sent, but herdr saw no turn start within 5 s", "")
@@ -209,6 +233,12 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 	}
 	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID)})
 	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
+	if herdr.HasCode(err, herdr.CodeAgentPaneBusy) {
+		// The shell is still reading its startup files, or still running
+		// what was typed into it. Start once more when it is back.
+		r.waitShell(ctx, pane, busyShellWait)
+		_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
+	}
 	if err := r.settleStartup(ctx, t, adapter, pane, err); err != nil {
 		return spec, nil, "", err
 	}
@@ -231,7 +261,7 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (string
 	if err != nil {
 		return "", err
 	}
-	files, err := adapter.Files(harness.FilesInput{Bin: r.Bin, Contract: contract})
+	files, err := adapter.Files(harness.FilesInput{Bin: r.Bin, Contract: contract, InputLocked: t.InputLocked})
 	if err != nil {
 		return "", err
 	}
@@ -387,8 +417,21 @@ func (r *Runner) exportEnv(ctx context.Context, pane string, t *task.Task, reset
 	if err := r.Herdr.PaneRun(ctx, pane, cmd+"; clear"); err != nil {
 		return fmt.Errorf("set runner environment: %w", err)
 	}
-	r.Sleep(300 * time.Millisecond) // let the shell return to its prompt
+	r.waitShell(ctx, pane, exportShellWait)
 	return nil
+}
+
+// waitShell waits until pane's shell is the foreground process group again,
+// which is what herdr asks of a pane an agent starts in, for at most limit.
+func (r *Runner) waitShell(ctx context.Context, pane string, limit time.Duration) {
+	for range int(limit / shellPollEvery) {
+		// Wait first: the shell may not have read what was just typed.
+		r.Sleep(shellPollEvery)
+		info, err := r.Herdr.PaneProcessInfo(ctx, pane)
+		if (err == nil && info.ShellPID > 0 && info.ForegroundPGID == info.ShellPID) || ctx.Err() != nil {
+			return
+		}
+	}
 }
 
 // prepareTrust makes sure the agent trusts the folder spawn ran in, so the
@@ -497,8 +540,30 @@ func (r *Runner) findDialog(ctx context.Context, a harness.Adapter, pane string,
 		return harness.Dialog{}, false, nil
 	}
 	// herdr saw a dialog this kit does not know. Leave it to the user.
-	return harness.Dialog{Name: "unknown startup", Action: harness.NeedsHuman}, true, nil
+	return harness.Dialog{Name: unknownDialog, Action: harness.NeedsHuman}, true, nil
 }
+
+// unknownDialog names a startup dialog no adapter knows.
+const unknownDialog = "unknown startup"
+
+// waitLateDialog reads the screen until a known dialog shows or the longest
+// time one of adapter's dialogs may open late has passed.
+func (r *Runner) waitLateDialog(ctx context.Context, adapter harness.Adapter, pane string) {
+	var late time.Duration
+	for _, d := range adapter.Dialogs() {
+		late = max(late, d.OpensLate)
+	}
+	for range int(late / dialogLatePoll) {
+		screen, err := r.Herdr.PaneRead(ctx, pane, 40)
+		if _, shown := harness.DetectDialog(adapter, screen); err != nil || shown || ctx.Err() != nil {
+			return
+		}
+		r.Sleep(dialogLatePoll)
+	}
+}
+
+// dialogLatePoll is how often waitLateDialog reads the screen.
+const dialogLatePoll = 100 * time.Millisecond
 
 // waitDialogGone polls the screen until dialog d has closed, for at most two
 // seconds.
@@ -513,15 +578,32 @@ func (r *Runner) waitDialogGone(ctx context.Context, pane string, d harness.Dial
 }
 
 // waitForHuman marks the task needs-human until the user answers a startup
-// dialog in the runner's tab, then lets the launch continue. herdr's state
-// alone does not tell: it reports pi idle while pi's trust dialog shows, so
-// a known dialog must also be gone from the screen.
+// dialog in the runner's tab, or an Ask dialog with `hrk answer`, then lets
+// the launch continue. herdr's state alone does not tell: it reports pi idle
+// while pi's trust dialog shows, so a known dialog must also be gone from
+// the screen.
 func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d harness.Dialog) error {
 	dialog := d.Name
 	deadline := time.Now().Add(dialogAnswerTimeout)
 	q := fmt.Sprintf("Runner %s (%s) shows the %s dialog. Answer it in its herdr tab; the task continues on its own.", t.ID, t.Title, dialog)
+	var answers map[string][]string
+	switch {
+	case d.Action == harness.Ask && d.Question != nil:
+		// The question quotes the user's own config, which may name a secret.
+		screen, _ := r.Herdr.PaneRead(ctx, pane, 40)
+		q = clip(redact.Secrets(d.Question(t.ID, screen, MaxQuestionRunes)), MaxQuestionRunes)
+		answers = d.Answers
+	case dialog == unknownDialog:
+		screen, _ := r.Herdr.PaneRead(ctx, pane, 40)
+		if excerpt := promptExcerpt(screen); excerpt != "" {
+			q += " On screen: " + excerpt
+		}
+	}
 	nt, changed, err := r.Store.Transition(t.ID, task.NeedsHuman, []task.Status{task.Starting}, func(t *task.Task) {
 		t.Error = dialog
+		if answers != nil {
+			t.Question, t.DialogAnswers = q, answers
+		}
 		t.LaunchDeadline = time.Now().UTC().Add(dialogAnswerTimeout + LaunchBudget)
 	})
 	if err != nil {
@@ -543,7 +625,7 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d 
 		}
 	}
 	_, _, err = r.Store.Transition(t.ID, task.Starting, []task.Status{task.NeedsHuman}, func(t *task.Task) {
-		t.Error = ""
+		t.Error, t.Question, t.DialogAnswers = "", "", nil
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
 	})
 	return err
@@ -582,13 +664,20 @@ func errorLine(screen string) string {
 	return ""
 }
 
-func startedLine(t *task.Task, spec task.AgentSpec, scope string) string {
+func startedLine(t *task.Task, spec task.AgentSpec, setup *setupResult, scope string) string {
 	parts := []string{t.ID + " started", string(spec.Harness)}
 	if t.Worktree != nil && t.Worktree.Path != "" {
 		parts = append(parts, "worktree "+t.Worktree.Branch+" at "+t.Worktree.Path)
 	}
+	if setup != nil && setup.Failed == "" {
+		parts = append(parts, setup.summary())
+	}
 	if scope != "" {
 		parts = append(parts, scope)
+	}
+	if t.InputLocked && !InputLocked(t) {
+		name := string(spec.Harness)
+		parts = append(parts, fmt.Sprintf("input open (%s cannot lock it yet)", strings.ToUpper(name[:1])+name[1:]))
 	}
 	parts = append(parts, fmt.Sprintf("tab %q", t.ID+" · "+t.Title))
 	return strings.Join(parts, " · ")

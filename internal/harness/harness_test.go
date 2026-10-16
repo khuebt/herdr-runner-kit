@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -121,10 +122,14 @@ func TestPiFiles(t *testing.T) {
 				t.Errorf("%s: extension lacks %s", a.Harness(), want)
 			}
 		}
-		if strings.Contains(ext, "__HRK_") {
-			t.Errorf("%s: a placeholder is left", a.Harness())
+		if strings.Contains(ext, "__HRK_") || !strings.Contains(ext, "const INPUT_LOCKED = false;") {
+			t.Errorf("%s: a placeholder is left, or the input is locked", a.Harness())
 		}
 		checkScript(t, ext)
+		locked, _ := a.Files(FilesInput{Bin: "/b/hrk", InputLocked: true})
+		if !strings.Contains(string(locked[1].Data), "const INPUT_LOCKED = true;") {
+			t.Errorf("%s: a locked task's extension is open", a.Harness())
+		}
 	}
 	if _, err := piAgent.Files(FilesInput{Bin: "hrk"}); err == nil {
 		t.Error("a relative binary was accepted")
@@ -184,6 +189,68 @@ func checkScript(t *testing.T, src string) {
 	}
 	if out, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
 		t.Errorf("node --check: %v\n%s", err, out)
+	}
+}
+
+// TestPiExtensionGate runs the rendered extension in node against a fake
+// gate that refuses text naming a human and fails on text naming a crash.
+func TestPiExtensionGate(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not on PATH")
+	}
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "hrk")
+	writeFile(t, gate, "#!/bin/sh\nin=$(cat)\ncase \"$in\" in *crash*) echo no; exit 3;; *human*) echo \"refused: $*\";; esac\n")
+	if err := os.Chmod(gate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	driver := `import ext from "./hrk-runner.mjs";
+const h = {}, notes = [];
+ext({ on: (name, f) => { h[name] = f; } });
+const ctx = { ui: { notify: (m, level) => notes.push(level + ": " + m) } };
+const run = (name, ev) => (h[name] ? h[name](ev, ctx) ?? "pass" : "none");
+console.log(JSON.stringify({
+  human: run("input", { text: "human", source: "interactive" }),
+  kit: run("input", { text: "kit", source: "interactive" }),
+  extension: run("input", { text: "human", source: "extension" }),
+  crash: run("input", { text: "human crash", source: "interactive" }),
+  bash: run("user_bash", { command: "echo human" }),
+  bashKit: run("user_bash", { command: "echo kit" }),
+  notes,
+}));
+`
+	writeFile(t, filepath.Join(dir, "driver.mjs"), driver)
+	refused := map[string]any{"output": "refused: __prompt-gate --harness pi\n", "exitCode": 1.0, "cancelled": false, "truncated": false}
+	locked := func(h string, bash any) map[string]any {
+		return map[string]any{
+			"human": map[string]any{"action": "handled", "handled": true}, "kit": "pass", "extension": "pass", "crash": "pass",
+			"bash": bash, "bashKit": "pass", "notes": []any{"warning: refused: __prompt-gate --harness " + h},
+		}
+	}
+	open := map[string]any{"human": "none", "kit": "none", "extension": "none", "crash": "none", "bash": "none", "bashKit": "none", "notes": []any{}}
+	for _, tt := range []struct {
+		a      Adapter
+		locked bool
+		want   map[string]any
+	}{
+		{piAgent, true, locked("pi", map[string]any{"result": refused})},
+		{ompAgent, true, locked("omp", "pass")}, // omp's input handler gates ! bash
+		{piAgent, false, open},
+	} {
+		files, err := tt.a.Files(FilesInput{Bin: gate, InputLocked: tt.locked})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "hrk-runner.mjs"), string(files[1].Data))
+		out, err := exec.Command(node, filepath.Join(dir, "driver.mjs")).Output()
+		if err != nil {
+			t.Fatalf("%s locked %v: %v", tt.a.Harness(), tt.locked, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil || !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s locked %v: %s, %v", tt.a.Harness(), tt.locked, out, err)
+		}
 	}
 }
 
@@ -307,6 +374,69 @@ func TestFirstPrompt(t *testing.T) {
 	}
 }
 
+func TestCodexStartupDialogScreens(t *testing.T) {
+	a, _ := For(task.Codex)
+	for _, tt := range []struct {
+		file, name string
+		keys       []string
+	}{
+		// Enter on the update prompt would run the update.
+		{"codex-update.txt", "codex-update", []string{"esc"}},
+		{"codex-hooks-review.txt", "codex-hooks-review", nil},
+		// The user may open the review in the tab; the dialog still waits.
+		{"codex-hooks-table.txt", "codex-hooks-review", nil},
+	} {
+		screen, err := os.ReadFile(filepath.Join("testdata", tt.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, ok := DetectDialog(a, string(screen))
+		if !ok || d.Name != tt.name || !slices.Equal(d.Keys, tt.keys) {
+			t.Errorf("%s: got %+v, %v; want %s", tt.file, d, ok, tt.name)
+		}
+	}
+	d, _ := DetectDialog(a, "Hooks need review")
+	if d.Action != Ask || !d.IdleWhileShown || !slices.Equal(d.Answers["trust"], []string{"2", "enter"}) || !slices.Equal(d.Answers["skip"], []string{"esc"}) || len(d.Answers) != 2 {
+		t.Errorf("hooks review = %+v", d)
+	}
+}
+
+func TestCodexHooksQuestion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	hooks := `{"hooks":{
+		"SessionStart":[{"hooks":[{"type":"command","command":"gh-axi"},{"type":"command","command":"node  '/opt/hooks/session-init.cjs'"}]}],
+		"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"api_key=abcd1234 notify"}]}]}}`
+	cfg := "[hooks.state.\"" + filepath.Join(home, "hooks.json") + ":session_start:0:0\"]\ntrusted_hash = \"sha256:00\"\n\n" +
+		"[[hooks.PreToolUse]]\nhooks = [{ type = \"command\", command = \"inline-check\" }]\n"
+	if err := os.WriteFile(filepath.Join(home, "hooks.json"), []byte(hooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	screen, _ := os.ReadFile(filepath.Join("testdata", "codex-hooks-review.txt"))
+	d, _ := DetectDialog(codex{}, string(screen))
+	q := d.Question("t7", string(screen), 1000)
+	for _, want := range []string{
+		"Codex in t7 asks to trust 4 new or changed hooks.",
+		"SessionStart: node '/opt/hooks/session-init.cjs'; UserPromptSubmit: api_key=abcd1234 notify; PreToolUse: inline-check.",
+		"1 changed since they were trusted.",
+		"Answer trust or skip",
+	} {
+		if !strings.Contains(q, want) {
+			t.Errorf("question lacks %q:\n%s", want, q)
+		}
+	}
+	if strings.Contains(q, "gh-axi") {
+		t.Errorf("a trusted hook is listed: %s", q)
+	}
+	short := d.Question("t7", string(screen), 300)
+	if n := len([]rune(short)); n > 300 || !strings.Contains(short, "…") || !strings.HasSuffix(short, "unless you know these hooks).") {
+		t.Errorf("clipped question (%d) = %s", n, short)
+	}
+}
+
 func TestDetectDialog(t *testing.T) {
 	tests := []struct {
 		h      task.Harness
@@ -317,7 +447,7 @@ func TestDetectDialog(t *testing.T) {
 		{task.Claude, " Quick safety check: Is this a project you created or one you trust? (Like your own code", "claude-workspace-trust", NeedsHuman},
 		{task.Claude, "  Allow external CLAUDE.md file imports?\n", "claude-external-imports", NeedsHuman},
 		{task.Codex, "  Trust this folder? Codex can read, edit, and run files here", "codex-trust", NeedsHuman},
-		{task.Codex, "  Hooks need review\n  24 hooks are new or changed.", "codex-hooks-review", SendKeys},
+		{task.Codex, "  Hooks need review\n  24 hooks are new or changed.", "codex-hooks-review", Ask},
 		{task.Claude, "is this a project you created or one you trust?", "claude-workspace-trust", NeedsHuman},
 		{task.Claude, "│ Quick safety check: Is this a project you │\n│ created or one you trust? (Like your own  │", "claude-workspace-trust", NeedsHuman},
 		{task.Claude, "Is this a  project you created\tor one  you trust", "claude-workspace-trust", NeedsHuman},
@@ -367,7 +497,7 @@ func TestShows(t *testing.T) {
 }
 
 func TestClaudeSettings(t *testing.T) {
-	data, err := ClaudeSettings("/home/u/bin/hrk")
+	data, err := ClaudeSettings("/home/u/bin/hrk", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,12 +540,92 @@ func TestClaudeSettings(t *testing.T) {
 	if len(start) != 1 || start[0].Matcher != "compact" || len(start[0].Hooks) != 1 || start[0].Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
 		t.Errorf("SessionStart hooks = %s", data)
 	}
-	data, _ = ClaudeSettings("/opt/it's here/hrk")
+	if strings.Contains(string(data), "UserPromptSubmit") {
+		t.Errorf("open input has a prompt gate: %s", data)
+	}
+	data, _ = ClaudeSettings("/opt/it's here/hrk", false)
 	if !strings.Contains(string(data), `'/opt/it'\\''s here/hrk' __turn-end`) {
 		t.Errorf("unsafe quoting: %s", data)
 	}
-	if _, err := ClaudeSettings("hrk"); err == nil {
+	if _, err := ClaudeSettings("hrk", false); err == nil {
 		t.Error("relative binary accepted")
+	}
+}
+
+func TestClaudeSettingsPromptGate(t *testing.T) {
+	data, err := ClaudeSettings("/home/u/bin/hrk", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Hooks struct {
+			Stop, UserPromptSubmit []struct {
+				Matcher string
+				Hooks   []struct{ Type, Command string }
+			}
+		}
+	}
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatal(err)
+	}
+	gate := s.Hooks.UserPromptSubmit
+	if len(gate) != 1 || gate[0].Matcher != "" || len(gate[0].Hooks) != 1 ||
+		gate[0].Hooks[0].Type != "command" || gate[0].Hooks[0].Command != "/home/u/bin/hrk __prompt-gate --harness claude" {
+		t.Errorf("UserPromptSubmit hooks = %s", data)
+	}
+	if len(s.Hooks.Stop) != 1 {
+		t.Errorf("the gate replaced the other hooks: %s", data)
+	}
+	files, err := claude{}.Files(FilesInput{Bin: "/home/u/bin/hrk", Contract: "C", InputLocked: true})
+	if err != nil || len(files) == 0 || !strings.Contains(string(files[0].Data), "__prompt-gate") {
+		t.Errorf("locked Claude files = %q, %v", files, err)
+	}
+}
+
+func TestInputLockMethods(t *testing.T) {
+	for _, a := range All() {
+		locks := a.Harness() != task.Codex
+		if a.LocksInput() != locks {
+			t.Errorf("%s: LocksInput = %v", a.Harness(), a.LocksInput())
+		}
+		if !locks && (a.ClearInputKeys() != nil || a.GateBlock("x") != "") {
+			t.Errorf("%s: an open adapter clears or blocks", a.Harness())
+		}
+	}
+	for _, a := range []Adapter{piAgent, ompAgent} {
+		if a.ClearInputKeys() != nil || a.GateBlock("t1 is a runner") != "t1 is a runner" {
+			t.Errorf("%s: clear keys %q, block %q", a.Harness(), a.ClearInputKeys(), a.GateBlock("t1 is a runner"))
+		}
+		prompt, synthetic, err := a.GatePrompt([]byte(`{"text":"hello","source":"interactive"}`))
+		if prompt != "hello" || synthetic || err != nil {
+			t.Errorf("%s: GatePrompt = %q, %v, %v", a.Harness(), prompt, synthetic, err)
+		}
+		if _, _, err := a.GatePrompt([]byte("not json")); err == nil {
+			t.Errorf("%s: an unreadable payload was read", a.Harness())
+		}
+	}
+	keys := claude{}.ClearInputKeys()
+	if len(keys) != 2*claudeClearLines || keys[0] != "ctrl+u" || keys[1] != "backspace" || slices.Contains(keys, "esc") {
+		t.Errorf("Claude clear keys = %q", keys)
+	}
+	if got := (claude{}).GateBlock(`t1 is a runner: "hrk send"`); got != `{"decision":"block","reason":"t1 is a runner: \"hrk send\""}` {
+		t.Errorf("Claude block = %s", got)
+	}
+	for file, want := range map[string]bool{
+		"userpromptsubmit-claude.json":                   false,
+		"userpromptsubmit-task-notification-claude.json": true,
+	} {
+		payload, err := os.ReadFile(filepath.Join("testdata", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		prompt, got, err := (claude{}).GatePrompt(payload)
+		if err != nil || got != want || prompt == "" {
+			t.Errorf("%s: synthetic = %v, %v (prompt %q); want %v", file, got, err, prompt, want)
+		}
+	}
+	if _, _, err := (claude{}).GatePrompt([]byte("not json")); err == nil {
+		t.Error("an unreadable payload was read")
 	}
 }
 
@@ -800,5 +1010,42 @@ func TestReadTurnEnd(t *testing.T) {
 	}
 	if _, err := (codex{}).ReadTurnEnd(TurnInput{Payload: []byte("{"), Screen: screenOf("")}); err == nil {
 		t.Error("codex: a malformed notify payload was accepted")
+	}
+}
+
+func TestDoneAtTurnEnd(t *testing.T) {
+	for _, a := range All() {
+		if got, want := a.DoneAtTurnEnd(), a.Harness() == task.Codex; got != want {
+			t.Errorf("%s: DoneAtTurnEnd = %v, want %v", a.Harness(), got, want)
+		}
+	}
+}
+
+func TestShowsWorking(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		want bool
+	}{
+		{"working-codex-1.txt", true},
+		{"working-codex-2.txt", true},
+		{"streaming-codex-1.txt", false},
+		{"codex-context-low.txt", false},
+	} {
+		screen, err := os.ReadFile(filepath.Join("testdata", tc.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := (codex{}).ShowsWorking(string(screen)); got != tc.want {
+			t.Errorf("%s: ShowsWorking = %v, want %v", tc.file, got, tc.want)
+		}
+	}
+	if (codex{}).ShowsWorking("• Working (3s • esc to interrupt)\n" + strings.Repeat("output\n", 20)) {
+		t.Error("a status line far above the input counted")
+	}
+	working, _ := os.ReadFile(filepath.Join("testdata", "working-codex-1.txt"))
+	for _, a := range All() {
+		if a.Harness() != task.Codex && a.ShowsWorking(string(working)) {
+			t.Errorf("%s reads a working marker", a.Harness())
+		}
 	}
 }
