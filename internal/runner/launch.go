@@ -160,10 +160,10 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 // resubmitFirstPrompt handles a first prompt herdr saw no turn start for. When
 // the adapter reads the agent's input box as still holding the prompt, its
 // Enter was lost: it sends one more Enter, never the text again, and waits
-// once more. A runner that still has not started is stalled news. An agent
-// already working, an empty input and an input the adapter cannot read leave
-// everything as it was; Codex can report a stale state after skipped hooks,
-// so it never resubmits.
+// once more. A runner whose prompt is still in the input after that is
+// stalled news. An agent already working, an empty input and an input the
+// adapter cannot read leave everything as it was; Codex can report a stale
+// state after skipped hooks, so it never resubmits.
 func (r *Runner) resubmitFirstPrompt(ctx context.Context, t *task.Task, adapter harness.Adapter, pane, prompt string) {
 	if a, err := r.Herdr.AgentGet(ctx, pane); err != nil || a.Status == "working" {
 		return
@@ -175,11 +175,15 @@ func (r *Runner) resubmitFirstPrompt(ctx context.Context, t *task.Task, adapter 
 	if err := r.Herdr.AgentSendKeys(ctx, pane, "enter"); err != nil {
 		return
 	}
-	if _, err := r.Herdr.AgentWait(ctx, pane, 5*time.Second, "working"); err == nil {
-		r.emit(t, "prompt-resubmitted", "the first prompt was still in the input; sent Enter again", "")
-		return
+	if _, err := r.Herdr.AgentWait(ctx, pane, 5*time.Second, "working"); err != nil {
+		// A loaded machine can take longer to show the turn: only a prompt
+		// still in the input is stalled.
+		if screen, err := r.Herdr.PaneRead(ctx, pane, progressScreenLines); err == nil && adapter.InputState(screen, prompt) == harness.InputHolds {
+			r.markStalled(t.ID, "stalled", "prompt not submitted: the first prompt is still in the input after a second Enter; the runner is left open")
+			return
+		}
 	}
-	r.markStalled(t.ID, "stalled", "prompt not submitted: the first prompt is still in the input after a second Enter; the runner is left open")
+	r.emit(t, "prompt-resubmitted", "the first prompt was still in the input; sent Enter again", "")
 }
 
 // startAgent writes the runner files for t's agent, prepares its trust and

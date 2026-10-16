@@ -94,3 +94,25 @@ func TestFirstPromptNotResentWhenInputEmptyOrAgentWorking(t *testing.T) {
 		})
 	}
 }
+
+func TestFirstPromptSubmittedButSlowToStartIsNotStalled(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	held, empty := fixture(t, "input-pasted-claude.txt"), fixture(t, "working-claude-1.txt")
+	// The second Enter submits the prompt, but herdr is slow to see the turn.
+	fake.on("pane read", func([]string) (string, error) {
+		if fake.count("agent", "send-keys") > 0 {
+			return empty, nil
+		}
+		return held, nil
+	})
+	fake.on("agent get", ok(`{"result":{"agent":{"agent_status":"idle"}}}`))
+	fake.on("agent wait", herdrErr(herdr.CodeTimeout))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Skill: "ak:research", Agent: "claude", Prompt: "queues", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if ev := events(t, r, got.ID); slices.Contains(ev, "stalled") || got.Stalled || !slices.Contains(ev, "prompt-resubmitted") || fake.count("agent", "send-keys") != 1 {
+		t.Errorf("events = %v, stalled %v", ev, got.Stalled)
+	}
+}
