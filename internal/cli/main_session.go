@@ -110,15 +110,27 @@ func newAutoarmCommand() *cobra.Command {
 			}
 			_ = json.NewDecoder(io.LimitReader(cmd.InOrStdin(), 1<<20)).Decode(&payload)
 			main := os.Getenv("HRK_MAIN")
-			if os.Getenv("HRK_TASK") != "" || main == "" && payload.SessionID == "" {
-				return nil // not the main session; skip opening the state
+			if os.Getenv("HRK_TASK") != "" {
+				return nil // a runner has its own turn-end hook
+			}
+			byMain := startedByMain(main, hookClaude)
+			if !byMain {
+				// Every Claude session runs this hook, so ask the session list
+				// before opening the state, which may migrate it.
+				dir, err := stateDir()
+				if err != nil || !state.MainSessionListed(dir, payload.SessionID) {
+					return nil
+				}
 			}
 			if payload.Cwd == "" {
 				payload.Cwd, _ = os.Getwd()
 			}
 			r, err := openRunner()
-			if err != nil || !isMainSession(os.Getenv, payload.SessionID, r.Store) {
+			if err != nil {
 				return nil
+			}
+			if byMain {
+				_ = r.Store.RecordMainSession(payload.SessionID)
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 			defer stop()
@@ -134,30 +146,35 @@ func newAutoarmCommand() *cobra.Command {
 // autoarmHolder names the hook in the cursor lock.
 const autoarmHolder = "hook"
 
-// isMainSession reports whether the hook runs in the main session. Only it
-// consumes news here: another Claude session in the same folder would take
-// the cursor and hide news from main, and a runner has its own turn-end hook.
-// The session hrk main starts has HRK_MAIN, and its Claude session id is
-// recorded; a resume (herdr restoring it, or claude --resume) loses the
-// environment but keeps the id.
-func isMainSession(getenv func(string) string, sessionID string, s *state.Store) bool {
-	if getenv("HRK_TASK") != "" {
+// startedByMain reports whether the hook runs in the session hrk main
+// started. Only that session consumes news here: another Claude session in
+// the same folder would take the cursor and hide news from main. Its session
+// id is recorded too, because a resume (herdr restoring it, or claude
+// --resume) loses the environment but keeps the id. HRK_MAIN holds the
+// main Claude's pid, so a claude started from the main session's shell,
+// which inherits it, does not count; the printed command's HRK_MAIN=1 names
+// no process and counts as is.
+func startedByMain(env string, claudePID func() int) bool {
+	if env == "" {
 		return false
 	}
-	if getenv("HRK_MAIN") != "" {
-		_ = s.RecordMainSession(sessionID)
-		return true
-	}
-	return s.IsMainSession(sessionID)
+	pid, err := strconv.Atoi(env)
+	return err != nil || pid <= 1 || claudePID() == pid
 }
 
 // mainPID is the PID of the main session's Claude process: HRK_MAIN when it
-// holds one, else the parent of the hook's shell. It returns 0 when neither
-// is known, and then whileAlive watches only the shell.
+// holds one, else the hook's Claude. It returns 0 when neither is known, and
+// then whileAlive watches only the shell.
 func mainPID(env string) int {
 	if pid, err := strconv.Atoi(env); err == nil && pid > 1 {
 		return pid
 	}
+	return hookClaude()
+}
+
+// hookClaude is the PID of the Claude process that runs the hook: the
+// parent of the hook's shell, or 0 when it is not known.
+func hookClaude() int {
 	out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(os.Getppid())).Output()
 	if err != nil {
 		return 0

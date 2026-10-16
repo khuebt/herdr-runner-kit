@@ -129,7 +129,9 @@ func (s *Store) LockCursor(name, holder string) (func(), error) {
 // a nested claude started from the main session cannot push its id out.
 const mainSessionsKept = 8
 
-func (s *Store) mainSessionsPath() string { return filepath.Join(s.dir, "main-sessions") }
+func (s *Store) mainSessionsPath() string { return filepath.Join(s.dir, mainSessionsFile) }
+
+const mainSessionsFile = "main-sessions"
 
 func (s *Store) mainSessions() []string {
 	data, _ := os.ReadFile(s.mainSessionsPath())
@@ -159,5 +161,13 @@ func (s *Store) RecordMainSession(id string) error {
 
 // IsMainSession reports whether RecordMainSession recorded id.
 func (s *Store) IsMainSession(id string) bool {
-	return id != "" && slices.Contains(s.mainSessions(), id)
+	return MainSessionListed(s.dir, id)
+}
+
+// MainSessionListed reports whether RecordMainSession recorded id in the
+// state folder dir. It only reads, so a hook can ask before it opens the
+// state.
+func MainSessionListed(dir, id string) bool {
+	data, _ := os.ReadFile(filepath.Join(dir, mainSessionsFile))
+	return id != "" && slices.Contains(strings.Fields(string(data)), id)
 }

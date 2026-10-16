@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -196,31 +197,41 @@ func TestWhileAliveEndsWithItsParent(t *testing.T) {
 	t.Fatal("the orphaned watch did not end")
 }
 
-func TestIsMainSession(t *testing.T) {
-	r := testRunner(t)
-	if err := r.Store.RecordMainSession("main-id"); err != nil {
+func TestStartedByMain(t *testing.T) {
+	claude := func() int { return 123 }
+	cases := []struct {
+		name, hrkMain string
+		want          bool
+	}{
+		{"started by hrk main --exec", "123", true},
+		{"a claude started from the main session's shell", "123", false},
+		{"the printed command names no process", "1", true},
+		{"no HRK_MAIN", "", false},
+	}
+	for i, c := range cases {
+		pid := claude
+		if i == 1 {
+			pid = func() int { return 456 }
+		}
+		if got := startedByMain(c.hrkMain, pid); got != c.want {
+			t.Errorf("%s: startedByMain = %v", c.name, got)
+		}
+	}
+}
+
+func TestAutoarmLeavesTheStateOfAnotherSessionUnopened(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HRK_MAIN", "")
+	t.Setenv("HRK_TASK", "")
+	cmd := newAutoarmCommand()
+	cmd.SetIn(strings.NewReader(`{"session_id":"other-id","cwd":"/tmp"}`))
+	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	cases := []struct {
-		name, hrkMain, hrkTask, id string
-		want, recorded             bool
-	}{
-		{"started by hrk main records its id", "123", "", "new-id", true, true},
-		{"resumed main session", "", "", "main-id", true, true},
-		{"another session in the folder", "", "", "other-id", false, false},
-		{"runner, even with a main id", "123", "t1", "runner-id", false, false},
-		{"no session id", "", "", "", false, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			env := map[string]string{"HRK_MAIN": c.hrkMain, "HRK_TASK": c.hrkTask}
-			if got := isMainSession(func(k string) string { return env[k] }, c.id, r.Store); got != c.want {
-				t.Fatalf("isMainSession = %v, want %v", got, c.want)
-			}
-			if got := r.Store.IsMainSession(c.id); got != c.recorded {
-				t.Fatalf("recorded = %v, want %v", got, c.recorded)
-			}
-		})
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("state opened for another session: %v", err)
 	}
 }
 

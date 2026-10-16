@@ -383,4 +383,7 @@ func TestMainSessionsKeepTheNewest(t *testing.T) {
 	if !s.IsMainSession("id1") || s.IsMainSession("id2") {
 		t.Fatal("a re-recorded id must count as newest")
 	}
+	if !MainSessionListed(s.Dir(), "id1") || MainSessionListed(t.TempDir(), "id1") {
+		t.Fatal("MainSessionListed must read the state folder's list")
+	}
 }
