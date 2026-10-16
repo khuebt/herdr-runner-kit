@@ -46,7 +46,7 @@ End with "Start?". Spawn only after the user agrees, with their additions in the
 
 | Kind | Default agent | Worktree | Use for |
 |---|---|---|---|
-| `code` | codex | yes | features and refactors |
+| `code` | claude sonnet, medium | yes | features and refactors |
 | `flow` | claude opus, high | yes | skill flows that change code (`--skill ak:cook`) |
 | `fix` | claude sonnet, medium | no | small fixes and edits |
 | `research` | claude opus, high | no | investigation and analysis |

@@ -351,7 +351,7 @@ func TestSpawnPicksClaudeConfig(t *testing.T) {
 	}
 	for _, o := range []SpawnOptions{
 		{Kind: "research", Prompt: "x", Cwd: dir, ClaudeConfig: "claude3"},
-		{Kind: "code", Prompt: "x", Cwd: dir, ClaudeConfig: "claude2"},
+		{Kind: "code", Agent: "codex", Prompt: "x", Cwd: dir, ClaudeConfig: "claude2"},
 	} {
 		if _, err := r.Spawn(context.Background(), o); err == nil {
 			t.Errorf("Spawn(%+v) succeeded", o)
@@ -480,7 +480,7 @@ func TestLaunchCodexWorktree(t *testing.T) {
 			t.Errorf("answer skip: %v", err)
 		}
 	}
-	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Skill: "ak:cook", Prompt: "plan.md", Cwd: repo})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Agent: "codex", Skill: "ak:cook", Prompt: "plan.md", Cwd: repo})
 	if err := r.Launch(context.Background(), tk.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestLaunchCodexWaitsForLateHooksReview(t *testing.T) {
 
 func TestAnswerDialogGoneSendsNothing(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
-	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: plainDir(t)})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Agent: "codex", Prompt: "x", Cwd: plainDir(t)})
 	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
 		t.Status, t.Error, t.Question = task.NeedsHuman, "codex-hooks-review", "trust?"
 		t.DialogAnswers = map[string][]string{"trust": {"2"}, "skip": {"esc"}}

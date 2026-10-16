@@ -26,7 +26,7 @@ func reportFiles(t *testing.T, o ReportOptions) (taskJSON, eventJSON string) {
 	t.Helper()
 	r, _, _ := newTestRunner(t)
 	dir := plainDir(t)
-	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: dir, Title: "fix login"})
+	tk := running(t, r, SpawnOptions{Agent: "codex", Prompt: "x", Cwd: dir, Title: "fix login"})
 	if _, err := r.Report(tk.ID, o); err != nil {
 		t.Fatal(err)
 	}

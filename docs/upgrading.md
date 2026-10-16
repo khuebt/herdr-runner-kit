@@ -38,6 +38,7 @@ An older binary reads a task that a newer one wrote, since it ignores fields it 
 
 ## Changes to know about
 
+- **Kind `code` runs Claude Sonnet.** A `code` runner now starts `claude:claude-sonnet-5-5:medium` in a worktree instead of Codex. Set `kinds.code.agent: codex` in `config.yaml` to keep Codex, or pass `--agent codex` to one `spawn`.
 - **The command is `hrk`.** `herdr-runner-kit` stays as an alias: `install.sh` links it to `hrk`, and an install upgraded from an older release keeps its `herdr-runner-kit` binary and gets an `hrk` link beside it from `setup`. With `HRK_NO_SETUP=1` the link waits until you run `herdr-runner-kit setup`; `doctor` names the missing link. Hooks and running runners call the binary by its full path, so nothing breaks. The repository, the skill, and the config and state folders keep the name `herdr-runner-kit`.
 - **Kept tabs close.** A runner kept with `keep`, or by a project stage, now closes `keepFor` (4 hours by default) after its task finished, and running a stage again releases the stage's earlier kept tab. Set `keepFor: 0` to keep tabs until `keep --off` or `stop`, as before.
 - **`show` prints compact text.** It no longer prints the task as JSON followed by text. Scripts that parsed it should use `show --json`, which prints the task as one JSON object; the prompt shows in the text view only with `--prompt`.
