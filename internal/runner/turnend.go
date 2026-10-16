@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -48,6 +49,11 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	}
 	if ignore, err := r.otherThread(t, sig.Thread); ignore || err != nil {
 		return "", err
+	}
+	if t.PendingDone != nil || !t.QueuedSend.IsZero() {
+		if settled, err := r.settleTurn(t.ID); settled || err != nil {
+			return "", err
+		}
 	}
 	if t.Status != task.Running || t.Herdr.PaneID == "" {
 		return "", nil
@@ -105,6 +111,43 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 		r.emit(t, "turn-ended-unreported", summary, "")
 	}
 	return "", nil
+}
+
+// settleTurn handles the turn end of a task that holds a done or has a
+// message sent while its agent worked, and reports whether the turn end
+// needs nothing more. The agent reads such a message within the running
+// turn, or in the next one when the turn ended as it was sent. A done
+// reported after the message answers it; one reported before is superseded,
+// and the turn end goes on to the nudge, since the runner has not reported
+// on the message. Otherwise the held done becomes final.
+func (r *Runner) settleTurn(id string) (bool, error) {
+	var finish, superseded bool
+	t, err := r.Store.Update(id, func(t *task.Task) error {
+		p := t.PendingDone
+		if sent := t.QueuedSend; !sent.IsZero() {
+			t.QueuedSend = time.Time{}
+			if p != nil && !p.Superseded && !p.Since.After(sent) {
+				p.Superseded, p.Since, superseded = true, time.Now().UTC(), true
+			}
+		}
+		finish = p != nil && !p.Superseded
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if superseded {
+		r.emit(t, "done-superseded", "a message sent while the runner worked came after its done; it reports again", "")
+	}
+	if !finish {
+		return false, nil
+	}
+	if _, err := r.FinishDone(id, false); errors.Is(err, errNothingHeld) {
+		return false, nil // a report or another turn end took it first
+	} else if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // limitNews tells the main session about a usage limit seen on a runner's

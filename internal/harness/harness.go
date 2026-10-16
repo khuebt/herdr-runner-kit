@@ -216,6 +216,14 @@ type Adapter interface {
 	// WorksInBackground reports whether the agent's screen shows background
 	// work still running. It returns screen's error when it cannot tell.
 	WorksInBackground(screen Screen) (bool, error)
+	// DoneAtTurnEnd reports whether a done report waits for the end of the
+	// turn it came in, because the agent may keep working after it: the
+	// kit holds the done and makes it final at the turn end.
+	DoneAtTurnEnd() bool
+	// ShowsWorking reports whether screen shows the agent's own status line
+	// of a running turn. The kit reads it only for an adapter whose done
+	// waits for the turn end; the others answer false.
+	ShowsWorking(screen string) bool
 	// Checks lists what doctor checks.
 	Checks() Checks
 }

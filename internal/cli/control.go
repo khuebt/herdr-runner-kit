@@ -566,6 +566,10 @@ func showText(t *task.Task, anchor *task.Task, events []state.Event, dir string,
 		list("question", strings.Split(t.Question, "\n"))
 	}
 	list("outputs", t.Outputs)
+	if p := t.PendingDone; p != nil && !t.Status.Terminal() {
+		fmt.Fprintln(&b, "done reported, waiting for the turn to end")
+		field("pending summary", p.Summary)
+	}
 	if withPrompt {
 		fmt.Fprintf(&b, "prompt:\n%s\n", t.Prompt)
 		if t.Inputs != "" {

@@ -262,6 +262,12 @@ func (pi) HookReply(string) string                                 { return "" }
 func (pi) SessionContext(string) string                            { return "" }
 func (pi) WorksInBackground(Screen) (bool, error)                  { return false, nil }
 
+// DoneAtTurnEnd is false: the runner extension reports the turn end only
+// after the run settles. Turn it on once a live run shows pi or omp working
+// on after a done.
+func (pi) DoneAtTurnEnd() bool      { return false }
+func (pi) ShowsWorking(string) bool { return false }
+
 // Checks keeps pi and omp optional, so a config without them sees warnings
 // only. The flags are long forms: doctor matches them as substrings of
 // --help, where "-e" would match anything.

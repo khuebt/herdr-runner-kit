@@ -866,3 +866,40 @@ func TestReadTurnEnd(t *testing.T) {
 		t.Error("codex: a malformed notify payload was accepted")
 	}
 }
+
+func TestDoneAtTurnEnd(t *testing.T) {
+	for _, a := range All() {
+		if got, want := a.DoneAtTurnEnd(), a.Harness() == task.Codex; got != want {
+			t.Errorf("%s: DoneAtTurnEnd = %v, want %v", a.Harness(), got, want)
+		}
+	}
+}
+
+func TestShowsWorking(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		want bool
+	}{
+		{"working-codex-1.txt", true},
+		{"working-codex-2.txt", true},
+		{"streaming-codex-1.txt", false},
+		{"codex-context-low.txt", false},
+	} {
+		screen, err := os.ReadFile(filepath.Join("testdata", tc.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := (codex{}).ShowsWorking(string(screen)); got != tc.want {
+			t.Errorf("%s: ShowsWorking = %v, want %v", tc.file, got, tc.want)
+		}
+	}
+	if (codex{}).ShowsWorking("• Working (3s • esc to interrupt)\n" + strings.Repeat("output\n", 20)) {
+		t.Error("a status line far above the input counted")
+	}
+	working, _ := os.ReadFile(filepath.Join("testdata", "working-codex-1.txt"))
+	for _, a := range All() {
+		if a.Harness() != task.Codex && a.ShowsWorking(string(working)) {
+			t.Errorf("%s reads a working marker", a.Harness())
+		}
+	}
+}

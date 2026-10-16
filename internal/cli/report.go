@@ -59,7 +59,11 @@ func newReportCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s reported to the main session\n", t.ID, t.Status); err != nil {
+			line := fmt.Sprintf("%s %s reported to the main session", t.ID, t.Status)
+			if o.Status == task.Done && t.Status != task.Done {
+				line = fmt.Sprintf("%s done recorded; it reaches the main session when this turn ends", t.ID)
+			}
+			if _, err = fmt.Fprintln(cmd.OutOrStdout(), line); err != nil {
 				return err
 			}
 			for _, note := range r.ReportNotes(t.ID, o) {

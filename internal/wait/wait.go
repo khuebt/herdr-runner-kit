@@ -110,7 +110,7 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
-	b := backstop{r: r, watched: map[string]bool{}, sampled: map[string]bool{}}
+	b := backstop{r: r, watched: map[string]bool{}, sampled: map[string]bool{}, held: map[string]bool{}}
 	timeout := time.NewTimer(o.Timeout)
 	defer timeout.Stop()
 	scan := time.NewTicker(scanEvery)
@@ -403,7 +403,8 @@ type backstop struct {
 	r       *runner.Runner
 	watched map[string]bool
 	sampled map[string]bool
-	lostAt  time.Time // last check for lost runners
+	held    map[string]bool // tasks whose held done is watched
+	lostAt  time.Time       // last check for lost runners
 	// checking is set while a check for lost runners runs.
 	checking atomic.Bool
 }
@@ -428,6 +429,10 @@ func (b *backstop) scan(ctx context.Context, tasks []*task.Task) {
 			if !b.watched[t.ID] && t.Herdr.PaneID != "" {
 				b.watched[t.ID] = true
 				go b.r.WatchAgent(ctx, t.ID)
+			}
+			if !b.held[t.ID] && t.Herdr.PaneID != "" {
+				b.held[t.ID] = true
+				go b.r.WatchPendingDone(ctx, t.ID)
 			}
 			if !b.sampled[t.ID] && t.Herdr.PaneID != "" && b.r.Config.StallAfter > 0 {
 				b.sampled[t.ID] = true

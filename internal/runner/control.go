@@ -37,6 +37,9 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	head := roundHead(t) // a new round begins with this prompt
+	// A done the agent held before a message sent while it works does not
+	// answer the message, so its turn end must not finish the task.
+	queued := doneAtTurnEnd(t) && r.agentWorking(ctx, t)
 	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
@@ -56,6 +59,10 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		// nudged, and wait watches it.
 		if t.Status.Terminal() {
 			t.Status, t.FinishedAt, t.Error = task.Running, time.Time{}, ""
+			t.PendingDone = nil
+		}
+		if queued {
+			t.QueuedSend = time.Now().UTC()
 		}
 		return nil
 	}); errors.Is(err, errClosing) {
@@ -70,6 +77,20 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	r.emit(t, "sent", firstLine(redact.Secrets(text), 120), "")
 	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
 	return err == nil, nil
+}
+
+// agentWorking reports whether t's agent runs a turn: herdr says so, or
+// the agent's own status line shows on a fresh read of its screen.
+func (r *Runner) agentWorking(ctx context.Context, t *task.Task) bool {
+	if a, err := r.Herdr.AgentGet(ctx, t.Herdr.PaneID); err == nil && a.Status == "working" {
+		return true
+	}
+	adapter, ok := adapterOf(t)
+	if !ok {
+		return false
+	}
+	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
+	return err == nil && adapter.ShowsWorking(screen)
 }
 
 // Answer sends the user's answer to a runner that reported needs-human and

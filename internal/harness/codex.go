@@ -383,6 +383,21 @@ func (codex) SessionContext(string) string { return "" }
 // WorksInBackground is false: Codex draws no background count.
 func (codex) WorksInBackground(Screen) (bool, error) { return false, nil }
 
+// DoneAtTurnEnd is true: a Codex runner reports inside its turn and may go
+// on to commit, or to read a message sent into the running turn, before the
+// turn ends. codex-cli 0.162.1 adds a prompt typed while it works to the
+// running turn.
+func (codex) DoneAtTurnEnd() bool { return true }
+
+// codexWorking is the status line of a running turn, without the tip.
+var codexWorking = regexp.MustCompile(`^\s*•\s.*\besc to interrupt\b`)
+
+// ShowsWorking looks for the status line among the last lines, where Codex
+// draws it above its input.
+func (codex) ShowsWorking(screen string) bool {
+	return anyLineMatches(lastLines(screen, statusLines), codexWorking)
+}
+
 func (codex) Checks() Checks {
 	return Checks{
 		Bin:         "codex",

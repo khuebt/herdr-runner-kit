@@ -50,9 +50,12 @@ The main session (`hrk main`) always runs Claude Code and names the `claude` com
 | Reading a turn end | `ReadTurnEnd` returns a `TurnSignal`: ignore, thread, confirmed limit, limit on screen, background work, context left |
 | How the hook gets its input and answers | `HookPayload`, `HookReply`, `NudgeInHook`, `SessionContext` |
 | Background work before a sync | `WorksInBackground` |
+| Whether a done waits for the turn end, and the agent's working status line | `DoneAtTurnEnd`, `ShowsWorking` |
 | What doctor checks | `Checks`: binary, flags, herdr integration, required or not |
 
-`TurnEnd` keeps one order of checks for every harness: a confirmed limit, an ignored turn, the thread, a limit on screen, low context, background work, and only then the nudge.
+`TurnEnd` keeps one order of checks for every harness: a confirmed limit, an ignored turn, the thread, a held done or a queued message, a limit on screen, low context, background work, and only then the nudge.
+
+A done becomes final when the runner reports it, unless the adapter's `DoneAtTurnEnd` is true (Codex). Then a done the runner reports from its session is held on the task as `pendingDone`, the task stays `running`, and only a `done-pending` progress event is written. The turn end makes it final through the normal report path: a fresh git snapshot, the `done` news and the dependents. A `send` while the agent works (herdr says `working`, or `ShowsWorking` sees the status line) records `queuedSend`. Codex adds such a message to the running turn, so at the turn end a done reported after the send counts, while one reported before it is superseded (`done-superseded`) and the turn is nudged as unreported; the runner reports again on the message. If no turn end comes, `wait`'s `WatchPendingDone` makes a done older than 2 minutes final once herdr sees the agent idle on two reads 5 s apart with no status line on screen. A manual report, and every report of Claude, pi and omp, is final at once.
 
 ## Extension recipes
 

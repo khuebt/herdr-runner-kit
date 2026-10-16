@@ -106,6 +106,11 @@ func (c claude) background(in TurnInput) bool {
 // NudgeInHook is true: the Stop hook returns the nudge as a block.
 func (claude) NudgeInHook() bool { return true }
 
+// DoneAtTurnEnd is false: the Stop hook ends Claude's turn, and no Claude
+// runner was seen working on after its done.
+func (claude) DoneAtTurnEnd() bool      { return false }
+func (claude) ShowsWorking(string) bool { return false }
+
 func (claude) HookPayload(_ []string, stdin io.Reader) ([]byte, error) { return readStdin(stdin) }
 
 func (claude) HookReply(block string) string {
