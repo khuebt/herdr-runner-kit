@@ -46,9 +46,10 @@ func newWaitCommand() *cobra.Command {
 			defer stop()
 			res, err := wait.Run(ctx, r, o)
 			out := cmd.OutOrStdout()
+			var held *state.HeldError
 			switch {
-			case errors.Is(err, state.ErrAlreadyWaiting):
-				_, err = fmt.Fprintln(out, "already waiting: another wait holds this cursor")
+			case errors.As(err, &held):
+				_, err = fmt.Fprintln(out, alreadyWaiting(held))
 				return err
 			case errors.Is(err, context.Canceled):
 				return errors.New("wait interrupted")
@@ -70,6 +71,18 @@ func newWaitCommand() *cobra.Command {
 	f.StringVar(&o.Cursor, "cursor", "", "cursor name (default: derived from the owner)")
 	f.DurationVar(&o.Timeout, "timeout", wait.DefaultTimeout, "safety timeout; wait prints `timeout` and exits 0")
 	return cmd
+}
+
+// alreadyWaiting says who holds the cursor, so the agent knows whether news
+// still reaches it.
+func alreadyWaiting(held *state.HeldError) string {
+	switch held.Holder {
+	case autoarmHolder:
+		return fmt.Sprintf("already waiting: the main session's auto re-arm hook holds this cursor (pid %d); it wakes you on news", held.PID)
+	case "wait":
+		return fmt.Sprintf("already waiting: another hrk wait holds this cursor (pid %d)", held.PID)
+	}
+	return "already waiting: another wait holds this cursor"
 }
 
 func newAnswerCommand() *cobra.Command {

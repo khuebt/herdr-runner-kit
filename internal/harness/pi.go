@@ -147,6 +147,9 @@ func (pi) ShowsRetry(screen string) bool {
 	return anyLineMatches(lastLines(screen, statusLines), piRetry)
 }
 
+// InputState is always unknown: the input of pi and omp is not read.
+func (pi) InputState(string, string) InputState { return InputUnknown }
+
 func (pi) SelfResolvingPrompts() []SelfResolvingPrompt { return nil }
 
 // piRule matches the full-width rules pi 1.2.0 draws above and below its

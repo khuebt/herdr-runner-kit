@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/khuebt/herdr-runner-kit/internal/state"
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
 func TestParsePS(t *testing.T) {
@@ -66,12 +67,12 @@ func TestSurvivorSummary(t *testing.T) {
 		{PID: 3, Command: "esbuild"},
 		{PID: 4, Command: "tail -f"},
 	}
-	got := survivorSummary(left)
+	got := survivorSummary(left, "after its tab closed")
 	if !strings.HasPrefix(got, "4 processes the runner started still run after its tab closed: 1 `node server.js --token=<redacted>`, 2 `vite`, 3 `esbuild` and 1 more") ||
 		strings.Contains(got, "abcdefgh") {
 		t.Errorf("summary = %q", got)
 	}
-	if got := survivorSummary(left[1:2]); !strings.HasPrefix(got, "1 process the runner started") {
+	if got := survivorSummary(left[1:2], "after its tab closed"); !strings.HasPrefix(got, "1 process the runner started") {
 		t.Errorf("one survivor = %q", got)
 	}
 }
@@ -221,5 +222,27 @@ func TestCloseFindsAProcessThatLeftTheTree(t *testing.T) {
 	left := eventsOf(t, r, tk.ID, "processes-left")
 	if len(left) != 1 || !strings.Contains(left[0].Summary, "1 process the runner started still run after its tab closed: 300 `python3 -m http.server 8765`") {
 		t.Fatalf("processes-left = %+v", left)
+	}
+}
+
+func TestCloseReportsScopeProcessesOfAGonePane(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	path := scopeDir(t, "101\n102\n")
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes = []string{path}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	fake.on("pane process-info", herdrErr("pane_not_found"))
+	fake.on("agent get", herdrErr("pane_not_found"))
+	r.ProcTable = procTables(runnerTree)
+	if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	left := eventsOf(t, r, tk.ID, "processes-left")
+	if len(left) != 1 || !strings.HasPrefix(left[0].Summary, "2 processes the runner started still run after its tab closed: 101 `claude`, 102 `python3") {
+		t.Fatalf("processes-left = %+v", left)
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "process-check-skipped") {
+		t.Errorf("events = %v", ev)
 	}
 }

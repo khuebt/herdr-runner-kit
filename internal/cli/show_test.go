@@ -142,3 +142,44 @@ func TestShowAndListCountCompactions(t *testing.T) {
 		t.Errorf("list = %q, %v", out, err)
 	}
 }
+
+// TestShowAndListSharedWorktree names the plan task whose worktree a later
+// phase works in.
+func TestShowAndListSharedWorktree(t *testing.T) {
+	store, tk := stateWithTask(t)
+	t.Chdir(t.TempDir())
+	if _, err := store.Update(tk.ID, func(t *task.Task) error {
+		t.Worktree = &task.Worktree{Path: "/wt/t1-plan", Branch: "t1-plan", Removed: true}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	phase := &task.Task{
+		Kind: "code", Agent: "claude", Title: "phase two", Owner: "/repo", Cwd: "/wt/t1-plan",
+		Status: task.Running, CheckoutOf: tk.ID,
+	}
+	if err := store.Create(phase); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI("show", phase.ID)
+	if err != nil || !strings.Contains(out, "\nworktree: /wt/t1-plan on t1-plan (removed) (of "+tk.ID+")\n") || strings.Contains(out, "cwd:") {
+		t.Errorf("show = %q, %v", out, err)
+	}
+	out, err = runCLI("show", tk.ID)
+	if err != nil || !strings.Contains(out, "\nworktree: /wt/t1-plan on t1-plan (removed)\n") {
+		t.Errorf("show of the anchor = %q, %v", out, err)
+	}
+	out, err = runCLI("list", "--all")
+	if err != nil || !strings.Contains(out, "phase two (in "+tk.ID+"'s worktree)\n") || strings.Contains(out, "fix login (in") {
+		t.Errorf("list = %q, %v", out, err)
+	}
+
+	// An anchor that cannot be read is still named.
+	if _, err := store.Update(phase.ID, func(t *task.Task) error { t.CheckoutOf = "t99"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI("show", phase.ID)
+	if err != nil || !strings.Contains(out, "\nworktree: shared with t99\ncwd: /wt/t1-plan\n") {
+		t.Errorf("show without the anchor = %q, %v", out, err)
+	}
+}

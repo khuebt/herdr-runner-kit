@@ -940,11 +940,11 @@ func TestGCClosesOnlyOldFinishedRunners(t *testing.T) {
 	if _, _, err := r.Store.SetStatus("t2", task.Done); err != nil { // finished just now
 		t.Fatal(err)
 	}
-	closed, err := r.GC(context.Background(), "", GCAge, false, false)
+	closed, err := r.GC(context.Background(), Owners{}, GCAge, false, false)
 	if err != nil || !slices.Equal(closed, []string{"t1"}) {
 		t.Fatalf("closed = %v, %v", closed, err)
 	}
-	if closed, _ := r.GC(context.Background(), "", GCAge, false, false); len(closed) != 0 {
+	if closed, _ := r.GC(context.Background(), Owners{}, GCAge, false, false); len(closed) != 0 {
 		t.Errorf("second gc closed %v", closed)
 	}
 }
@@ -979,11 +979,11 @@ func TestGCLeavesARunnerSomeoneStillUses(t *testing.T) {
 	}
 	// The user kept typing in the tab after the report.
 	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
-	if closed, err := r.GC(context.Background(), "", GCAge, false, false); err != nil || len(closed) != 0 || fake.count("agent", "send-keys") != 0 {
+	if closed, err := r.GC(context.Background(), Owners{}, GCAge, false, false); err != nil || len(closed) != 0 || fake.count("agent", "send-keys") != 0 {
 		t.Fatalf("closed %v, %v, send-keys %d", closed, err, fake.count("agent", "send-keys"))
 	}
 	fake.on("agent get", herdrErr(herdr.CodeAgentNotFound))
-	if closed, err := r.GC(context.Background(), "", GCAge, false, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
+	if closed, err := r.GC(context.Background(), Owners{}, GCAge, false, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
 		t.Fatalf("after the work: closed %v, %v", closed, err)
 	}
 }
@@ -1031,7 +1031,7 @@ func TestGCSkipsATaskReopenedBySend(t *testing.T) {
 	if err := r.closeRunner(context.Background(), listed, false, gcCheck()); !errors.Is(err, errReopened) {
 		t.Fatalf("close of a reopened runner = %v", err)
 	}
-	if closed, err := r.GC(context.Background(), "", GCAge, false, false); err != nil || len(closed) != 0 {
+	if closed, err := r.GC(context.Background(), Owners{}, GCAge, false, false); err != nil || len(closed) != 0 {
 		t.Fatalf("gc closed %v, %v", closed, err)
 	}
 	got, _ := r.Store.Get(listed.ID)
@@ -1069,7 +1069,7 @@ func TestSendRefusesAClosingRunner(t *testing.T) {
 		}
 		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
 	})
-	if closed, err := r.GC(context.Background(), "", GCAge, false, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
+	if closed, err := r.GC(context.Background(), Owners{}, GCAge, false, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
 		t.Fatalf("gc closed %v, %v", closed, err)
 	}
 	if sendErr == nil || !strings.Contains(sendErr.Error(), "tab is closing") {
@@ -1118,7 +1118,7 @@ func TestStaleClaimExpires(t *testing.T) {
 	if _, err := r.Send(context.Background(), tk.ID, "x"); err == nil {
 		t.Error("send got past a live claim")
 	}
-	if closed, err := r.GC(context.Background(), "", GCAge, false, false); err != nil || len(closed) != 0 {
+	if closed, err := r.GC(context.Background(), Owners{}, GCAge, false, false); err != nil || len(closed) != 0 {
 		t.Errorf("gc got past a live claim: %v, %v", closed, err)
 	}
 
@@ -1127,7 +1127,7 @@ func TestStaleClaimExpires(t *testing.T) {
 		t.Errorf("send refused after the claim expired: %v", err)
 	}
 	claim(2 * time.Minute)
-	if closed, err := r.GC(context.Background(), "", GCAge, false, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
+	if closed, err := r.GC(context.Background(), Owners{}, GCAge, false, false); err != nil || !slices.Equal(closed, []string{tk.ID}) {
 		t.Errorf("gc did not reclaim an expired claim: %v, %v", closed, err)
 	}
 }
@@ -1195,7 +1195,7 @@ func TestSendAndGCNeverBothAct(t *testing.T) {
 		var sendErr, gcErr error
 		wg.Add(2)
 		go func() { defer wg.Done(); _, sendErr = r.Send(context.Background(), tk.ID, "x") }()
-		go func() { defer wg.Done(); _, gcErr = r.GC(context.Background(), "", GCAge, false, false) }()
+		go func() { defer wg.Done(); _, gcErr = r.GC(context.Background(), Owners{}, GCAge, false, false) }()
 		wg.Wait()
 		if gcErr != nil {
 			t.Fatalf("run %d: gc: %v", i, gcErr)
@@ -1227,7 +1227,7 @@ func TestKeepStopsGC(t *testing.T) {
 	if _, ok := NextGC([]*task.Task{got}, "", 0); ok {
 		t.Error("NextGC counts a kept runner")
 	}
-	if closed, err := r.GC(context.Background(), "", GCAge, false, false); err != nil || len(closed) != 0 {
+	if closed, err := r.GC(context.Background(), Owners{}, GCAge, false, false); err != nil || len(closed) != 0 {
 		t.Fatalf("gc closed a kept runner: %v, %v", closed, err)
 	}
 	// A stale list that still shows it unkept does not close it either.

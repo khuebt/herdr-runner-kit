@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +74,7 @@ func TestAutoarm(t *testing.T) {
 	if err := r.Store.Create(t2); err != nil {
 		t.Fatal(err)
 	}
-	unlock, err := r.Store.LockCursor(state.CursorName("/repo"))
+	unlock, err := r.Store.LockCursor(state.CursorName("/repo"), "wait")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,4 +196,64 @@ func TestWhileAliveEndsWithItsParent(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("the orphaned watch did not end")
+}
+
+func TestStartedByMain(t *testing.T) {
+	// The hook's shell 300 runs under Claude 200, which a wrapper 123 that
+	// hrk main ran as started.
+	chain := func() []int { return []int{300, 200, 123} }
+	cases := []struct {
+		name, hrkMain string
+		ancestors     func() []int
+		want          bool
+	}{
+		{"started by hrk main --exec", "200", chain, true},
+		{"under a wrapper that does not exec", "123", chain, true},
+		{"a claude started from the main session's shell", "123", func() []int { return []int{400, 450, 77} }, false},
+		{"the printed command names no process", "1", chain, true},
+		{"no HRK_MAIN", "", chain, false},
+	}
+	for _, c := range cases {
+		if got := startedByMain(c.hrkMain, c.ancestors); got != c.want {
+			t.Errorf("%s: startedByMain = %v", c.name, got)
+		}
+	}
+}
+
+func TestAncestors(t *testing.T) {
+	ps := "  1     0\n 77     1\n123    77\n200   123\n300   200\n310   300\n"
+	if got := ancestors(ps, 310, 6); !slices.Equal(got, []int{300, 200, 123, 77}) {
+		t.Errorf("ancestors = %v", got)
+	}
+	if got := ancestors(ps, 310, 2); !slices.Equal(got, []int{300, 200}) {
+		t.Errorf("two levels = %v", got)
+	}
+}
+
+func TestAutoarmLeavesTheStateOfAnotherSessionUnopened(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HRK_MAIN", "")
+	t.Setenv("HRK_TASK", "")
+	cmd := newAutoarmCommand()
+	cmd.SetIn(strings.NewReader(`{"session_id":"other-id","cwd":"/tmp"}`))
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("state opened for another session: %v", err)
+	}
+}
+
+func TestAlreadyWaitingNamesTheHolder(t *testing.T) {
+	for holder, want := range map[string]string{
+		"hook": "already waiting: the main session's auto re-arm hook holds this cursor (pid 7); it wakes you on news",
+		"wait": "already waiting: another hrk wait holds this cursor (pid 7)",
+		"":     "already waiting: another wait holds this cursor",
+	} {
+		if got := alreadyWaiting(&state.HeldError{Holder: holder, PID: 7}); got != want {
+			t.Errorf("%q: got %q", holder, got)
+		}
+	}
 }

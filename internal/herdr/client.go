@@ -293,6 +293,11 @@ func (c *Client) TabClose(ctx context.Context, tab string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "tab", "close", tab)
 }
 
+// WorkspaceClose closes a workspace and ends the processes in its tabs.
+func (c *Client) WorkspaceClose(ctx context.Context, id string) error {
+	return c.runJSON(ctx, DefaultTimeout, nil, "workspace", "close", id)
+}
+
 // PaneRun types command and Enter into a pane's shell.
 func (c *Client) PaneRun(ctx context.Context, pane, command string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "pane", "run", pane, command)
@@ -389,10 +394,14 @@ func (c *Client) AgentFocus(ctx context.Context, target string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "agent", "focus", target)
 }
 
-// ProcessInfo is herdr's view of the processes in a pane. Only the shell
-// is decoded: everything the pane started descends from it.
+// ProcessInfo is herdr's view of the processes in a pane. Only the shell and
+// the foreground group are decoded: everything the pane started descends
+// from the shell.
 type ProcessInfo struct {
 	ShellPID int `json:"shell_pid"`
+	// ForegroundPGID is the process group at the pane's terminal: an
+	// agent's own while it runs, the shell's otherwise.
+	ForegroundPGID int `json:"foreground_process_group_id"`
 }
 
 // PaneProcessInfo returns the processes in pane.

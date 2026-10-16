@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -61,6 +62,10 @@ type Runner struct {
 	// entries, so a close finds the processes a runner started that left
 	// its process tree. Nil, or an error, leaves only the tree.
 	ProcEnv func(pid int) ([]byte, error)
+	// EnterScope moves agent, and the processes children lists, into a new
+	// memory-capped systemd scope named unit. Nil starts agents where herdr
+	// puts them.
+	EnterScope func(ctx context.Context, unit string, agent int, children func() []int) (Scope, error)
 }
 
 // New returns a Runner for the real environment.
@@ -68,6 +73,7 @@ func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	r := &Runner{
 		Store: store, Config: cfg, Herdr: herdr.New(), Telegram: telegram.New(),
 		Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep, ProcTable: psTable, ProcEnv: procEnviron,
+		EnterScope: SystemScope(cfg.RunnerMemoryMax, runtime.GOOS),
 	}
 	r.Notify = r.startDetachedNotify
 	r.StartLauncher = func(id string) (int, error) { return r.startDetached(id, "__launch", "launch.log") }
@@ -489,13 +495,16 @@ func (r *Runner) emit(t *task.Task, typ, summary, question string) {
 	}
 }
 
-// fail marks a task failed with reason and emits the failed event.
-func (r *Runner) fail(id, reason string) {
+// fail marks a task failed with reason and emits the failed event. It
+// returns the failed task, and false when the task was already failed or
+// could not be read.
+func (r *Runner) fail(id, reason string) (*task.Task, bool) {
 	t, changed, err := r.Store.Transition(id, task.Failed, nil, func(t *task.Task) { t.Error = reason })
 	if err != nil || !changed {
-		return
+		return nil, false
 	}
 	r.emit(t, "failed", reason, "")
+	return t, true
 }
 
 // CallerOwner names the main session working in dir: its git top-level, or

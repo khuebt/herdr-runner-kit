@@ -220,4 +220,7 @@ func TestReleaseNotesHaveOneHeading(t *testing.T) {
 	if got := releaseNotes(upgrade.Release{Tag: "v0.2.0", Body: "- feat: faster wait"}); got != "## v0.2.0\n- feat: faster wait" {
 		t.Errorf("no heading: %q", got)
 	}
+	if got := releaseNotes(upgrade.Release{Tag: "v0.11.0-rc.1", Body: "\n"}); got != "## v0.11.0-rc.1\n(no release notes)" {
+		t.Errorf("blank body: %q", got)
+	}
 }

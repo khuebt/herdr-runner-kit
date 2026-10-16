@@ -88,7 +88,10 @@ func (r *Runner) agentGone(ctx context.Context, t *task.Task) bool {
 	if r.switchable(t) && r.usageLimited(ctx, t) && r.switchAgent(t, false) == nil {
 		return true
 	}
-	r.fail(t.ID, r.goneReason(ctx, t))
+	left, psErr := r.scopeLeft(ctx, t)
+	if failed, ok := r.fail(t.ID, r.goneReason(ctx, t)); ok {
+		r.reportScopeLeft(failed, left, psErr)
+	}
 	return false
 }
 
@@ -247,17 +250,24 @@ func blockedSummary(screen string) string {
 // promptExcerpt quotes the last few non-empty lines of a screen on one
 // line, with anything that looks like a secret hidden.
 func promptExcerpt(screen string) string {
+	lines := screenLines(screen)
+	text := redact.Secrets(strings.Join(lines[max(0, len(lines)-excerptLines):], " / "))
+	if r := []rune(text); len(r) > maxExcerpt {
+		text = string(r[:maxExcerpt-1]) + "…"
+	}
+	return text
+}
+
+// screenLines returns a screen's non-empty lines, with runs of spaces
+// collapsed.
+func screenLines(screen string) []string {
 	var lines []string
 	for _, l := range strings.Split(screen, "\n") {
 		if l = strings.Join(strings.Fields(l), " "); l != "" {
 			lines = append(lines, l)
 		}
 	}
-	text := redact.Secrets(strings.Join(lines[max(0, len(lines)-excerptLines):], " / "))
-	if r := []rune(text); len(r) > maxExcerpt {
-		text = string(r[:maxExcerpt-1]) + "…"
-	}
-	return text
+	return lines
 }
 
 // CheckLost fails a running or waiting task whose runner herdr no longer
@@ -271,12 +281,42 @@ func (r *Runner) CheckLost(ctx context.Context, t *task.Task) {
 	}
 	reason, lost := r.lostReason(ctx, t)
 	if !lost {
+		r.checkRestarted(ctx, t)
 		return
 	}
 	if r.switchable(t) && r.usageLimited(ctx, t) && r.switchAgent(t, false) == nil {
 		return
 	}
-	r.failLost(t.ID, reason)
+	r.failLost(ctx, t.ID, reason)
+}
+
+// checkRestarted reports, once per herdr restart, the processes still
+// running in the memory scopes of a runner whose pane herdr restored: its
+// agent came back outside them, so they would otherwise go unnoticed until
+// the runner closes. A pane shell other than the one the latest scope was
+// made under means herdr restarted the pane. It never signals them.
+func (r *Runner) checkRestarted(ctx context.Context, t *task.Task) {
+	if r.ProcTable == nil || len(t.Scopes) == 0 || t.ShellPID == 0 {
+		return
+	}
+	info, err := r.Herdr.PaneProcessInfo(ctx, t.Herdr.PaneID)
+	if err != nil || info.ShellPID <= 0 || info.ShellPID == t.ShellPID {
+		return
+	}
+	left, err := r.scopeLeft(ctx, t)
+	if err != nil {
+		return // looked at again in a minute
+	}
+	cur, err := r.Store.Update(t.ID, func(cur *task.Task) error {
+		if cur.ShellPID != t.ShellPID {
+			return errors.New("another check took this restart")
+		}
+		cur.ShellPID = info.ShellPID
+		return nil
+	})
+	if err == nil && len(left) > 0 {
+		r.emit(cur, "processes-left", survivorSummary(left, "after herdr restarted its pane"), "")
+	}
 }
 
 // lostReason reports whether t's runner is gone from herdr, and why.
@@ -289,22 +329,66 @@ func (r *Runner) lostReason(ctx context.Context, t *task.Task) (string, bool) {
 		return "", false
 	case t.Herdr.AgentName != "" && a.Name != "" && a.Name != t.Herdr.AgentName:
 		return "runner lost: herdr pane " + t.Herdr.PaneID + " now holds another agent", true
+	case a.Name != "" && shellOnly(a) && r.stillGone(ctx, t):
+		// herdr still names the pane's agent but sees only a shell in it, as
+		// after a resume that found no conversation.
+		return r.goneReason(ctx, t), true
 	}
 	return "", false
 }
 
+// shellOnly reports whether herdr looked at a pane and found no agent in it.
+// Right after a restore herdr reports a live agent with no kind and the
+// status unknown until it detects it again, which took 35 s on a loaded
+// machine.
+func shellOnly(a herdr.Agent) bool {
+	return a.Kind == "" && a.Status != "unknown"
+}
+
+// goneConfirm is how long a pane herdr sees only a shell in must stay so
+// before its runner counts as lost, so that a relaunch that started in
+// between, or a detection that is still settling, keeps the runner.
+const goneConfirm = 15 * time.Second
+
+// stillGone waits goneConfirm, then reports whether t is still running or
+// waiting on the same attempt in the same pane, and herdr still sees no
+// agent there.
+func (r *Runner) stillGone(ctx context.Context, t *task.Task) bool {
+	if !r.pause(ctx, goneConfirm) {
+		return false
+	}
+	cur, err := r.Store.Get(t.ID)
+	if err != nil || cur.Status != task.Running && cur.Status != task.NeedsHuman ||
+		task.AttemptOf(cur) != task.AttemptOf(t) || cur.Herdr.PaneID != t.Herdr.PaneID {
+		return false
+	}
+	a, err := r.Herdr.AgentGet(ctx, t.Herdr.PaneID)
+	return isGone(err) || err == nil && shellOnly(a)
+}
+
 // goneReason says why t's agent is gone: its whole pane is gone, or the
-// agent exited and left its pane.
+// agent exited and left its pane. The latter quotes the agent's last line
+// on the screen: the one above the shell prompt it left behind.
 func (r *Runner) goneReason(ctx context.Context, t *task.Task) string {
-	if _, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 1); herdr.HasCode(err, "pane_not_found") || herdr.HasCode(err, "tab_not_found") {
+	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
+	if herdr.HasCode(err, "pane_not_found") || herdr.HasCode(err, "tab_not_found") {
 		return "runner lost: herdr pane gone"
 	}
-	return "the agent exited without reporting"
+	reason := "the agent exited without reporting"
+	if lines := screenLines(screen); err == nil && len(lines) >= 2 {
+		reason += ": " + firstLine(redact.Secrets(lines[len(lines)-2]), 160)
+	}
+	return reason
 }
 
 // failLost fails a running or waiting task whose runner is gone, and its
-// dependents.
-func (r *Runner) failLost(id, reason string) {
+// dependents, and names the processes still running in its memory scopes.
+func (r *Runner) failLost(ctx context.Context, id, reason string) {
+	var left []proc
+	var psErr error
+	if cur, err := r.Store.Get(id); err == nil {
+		left, psErr = r.scopeLeft(ctx, cur)
+	}
 	t, changed, err := r.Store.Transition(id, task.Failed, []task.Status{task.Running, task.NeedsHuman}, func(t *task.Task) {
 		t.Error = reason
 	})
@@ -312,6 +396,7 @@ func (r *Runner) failLost(id, reason string) {
 		return
 	}
 	r.emit(t, "failed", reason, "")
+	r.reportScopeLeft(t, left, psErr)
 	_ = r.failDependents(t)
 }
 
@@ -322,7 +407,7 @@ func (r *Runner) errIfLost(ctx context.Context, t *task.Task) error {
 	if !lost {
 		return nil
 	}
-	r.failLost(t.ID, reason)
+	r.failLost(ctx, t.ID, reason)
 	return fmt.Errorf("%s's runner is gone (%s); its worktree and branch are in hrk show %s", t.ID, reason, t.ID)
 }
 
@@ -337,6 +422,22 @@ func (r *Runner) CheckLaunch(t *task.Task) {
 		r.fail(t.ID, "the launch did not finish in time")
 	case t.LauncherPID > 0 && errors.Is(syscall.Kill(t.LauncherPID, 0), syscall.ESRCH):
 		r.fail(t.ID, "the launcher exited before the agent started")
+	}
+}
+
+// pause waits d through Sleep, which tests replace, or until ctx ends, and
+// reports whether ctx is still live.
+func (r *Runner) pause(ctx context.Context, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Sleep(d)
+	}()
+	select {
+	case <-done:
+		return ctx.Err() == nil
+	case <-ctx.Done():
+		return false
 	}
 }
 

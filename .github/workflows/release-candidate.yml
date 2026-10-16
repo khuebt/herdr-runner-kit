@@ -25,3 +25,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # release-please owns stable notes, so goreleaser's changelog is off and
+      # ignores --release-notes. A candidate gets its commits since the last
+      # stable tag instead.
+      - run: |
+          sh scripts/rc-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/rc-notes.md"
+          gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/rc-notes.md"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

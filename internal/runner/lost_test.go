@@ -2,8 +2,10 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -90,5 +92,197 @@ func TestAgentGoneFromItsPaneKeepsTheExitReason(t *testing.T) {
 	r.CheckLost(context.Background(), tk)
 	if got, _ := r.Store.Get(tk.ID); got.Status != task.Failed || got.Error != "the agent exited without reporting" {
 		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+// Agent states herdr reports for a runner's pane: its agent exited and left
+// the shell, keeping the agent's name; a restored agent herdr has yet to
+// detect; a live agent.
+const (
+	shellLeft = `{"result":{"agent":{"agent":null,"agent_status":"idle","name":"hrk-t1"}}}`
+	detecting = `{"result":{"agent":{"agent":null,"agent_status":"unknown","name":"hrk-t1"}}}`
+	liveAgent = `{"result":{"agent":{"agent":"claude","agent_status":"idle","name":"hrk-t1"}}}`
+)
+
+// agentGets answers herdr's agent get with outs in turn, repeating the last.
+func agentGets(outs ...string) func([]string) (string, error) {
+	n := 0
+	return func([]string) (string, error) {
+		out := outs[min(n, len(outs)-1)]
+		n++
+		return out, nil
+	}
+}
+
+// failedEvents counts the task's failed events.
+func failedEvents(t *testing.T, r *Runner, id string) int {
+	t.Helper()
+	all, _, err := r.Store.ReadEventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, ev := range all {
+		if ev.Task == id && ev.Type == "failed" {
+			n++
+		}
+	}
+	return n
+}
+
+func TestAgentThatDidNotResumeFailsWithItsLastLine(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.AgentName = "hrk-" + t.ID; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.on("agent get", agentGets(shellLeft))
+	fake.on("pane read", ok("$ claude --resume abc\nNo conversation found with session ID: abc\n\n❯ \n"))
+	var slept []time.Duration
+	r.Sleep = func(d time.Duration) { slept = append(slept, d) }
+	r.CheckLost(context.Background(), tk)
+	got, _ := r.Store.Get(tk.ID)
+	if want := "the agent exited without reporting: No conversation found with session ID: abc"; got.Status != task.Failed || got.Error != want {
+		t.Errorf("task = %s %q, want failed %q", got.Status, got.Error, want)
+	}
+	if n := failedEvents(t, r, tk.ID); n != 1 {
+		t.Errorf("failed events = %d, want 1", n)
+	}
+	if len(slept) != 1 || slept[0] != goneConfirm {
+		t.Errorf("slept %v, want one wait of %v", slept, goneConfirm)
+	}
+}
+
+func TestWaitingRunnerWhoseAgentLeftItsShellFails(t *testing.T) {
+	r, fake, tk, child := waitingRunner(t)
+	fake.on("agent get", agentGets(shellLeft))
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Failed || got.Error != "the agent exited without reporting" {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+	if dep, _ := r.Store.Get(child.ID); dep.Status != task.Failed {
+		t.Errorf("dependent = %s", dep.Status)
+	}
+}
+
+func TestAgentBackWithinTheConfirmationKeepsTheRunner(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	fake.on("agent get", agentGets(shellLeft, liveAgent))
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+func TestRestoredAgentHerdrHasYetToDetectIsKept(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	fake.on("agent get", agentGets(detecting))
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+func TestDetectionStillSettlingAfterTheConfirmationKeepsTheRunner(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	fake.on("agent get", agentGets(shellLeft, detecting))
+	r.CheckLost(context.Background(), tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+func TestRelaunchDuringTheConfirmationKeepsTheRunner(t *testing.T) {
+	for name, change := range map[string]func(*task.Task){
+		"starting":    func(t *task.Task) { t.Status = task.Starting },
+		"new attempt": func(t *task.Task) { t.Attempt = 2 },
+	} {
+		r, fake, tk, _ := waitingRunner(t)
+		fake.on("agent get", agentGets(shellLeft))
+		r.Sleep = func(time.Duration) {
+			if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { change(t); return nil }); err != nil {
+				t.Error(err)
+			}
+		}
+		r.CheckLost(context.Background(), tk)
+		if got, _ := r.Store.Get(tk.ID); got.Status == task.Failed {
+			t.Errorf("%s: task failed: %q", name, got.Error)
+		}
+	}
+}
+
+func TestCanceledConfirmationKeepsTheRunner(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	fake.on("agent get", agentGets(shellLeft))
+	never := make(chan struct{})
+	t.Cleanup(func() { close(never) })
+	r.Sleep = func(time.Duration) { <-never }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.CheckLost(ctx, tk)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman {
+		t.Errorf("task = %s %q", got.Status, got.Error)
+	}
+}
+
+func TestLostRunnerReportsItsScopeProcesses(t *testing.T) {
+	for name, lose := range map[string]func(*Runner, *task.Task){
+		"lost check":    func(r *Runner, tk *task.Task) { r.CheckLost(context.Background(), tk) },
+		"watched agent": func(r *Runner, tk *task.Task) { r.WatchAgent(context.Background(), tk.ID) },
+	} {
+		r, fake, tk, _ := waitingRunner(t)
+		path := scopeDir(t, "102\n")
+		tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes = []string{path}; return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A wait that reports the failure may exit at once, so the processes
+		// are listed before the failure is written.
+		r.ProcTable = func(context.Context) ([]proc, error) {
+			if cur, _ := r.Store.Get(tk.ID); cur.Status == task.Failed {
+				return nil, errors.New("listed after the failure")
+			}
+			return runnerTree, nil
+		}
+		for _, cmd := range []string{"agent get", "agent wait", "pane read"} {
+			fake.on(cmd, herdrErr("pane_not_found"))
+		}
+		lose(r, tk)
+		left := eventsOf(t, r, tk.ID, "processes-left")
+		if len(left) != 1 || left[0].Summary != "1 process the runner started still run after its runner was lost: 102 `python3 -m http.server 8765` (stop them yourself if not needed)" {
+			t.Errorf("%s: processes-left = %+v", name, left)
+		}
+	}
+}
+
+func TestRestartedPaneReportsItsScopeProcessesOnce(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	path := scopeDir(t, "102\n")
+	tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes, t.ShellPID = []string{path}, 100; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ProcTable = procTables(runnerTree)
+	fake.on("agent get", ok(liveAgent))
+	shell := `{"result":{"process_info":{"shell_pid":100,"foreground_process_group_id":101}}}`
+	fake.on("pane process-info", func([]string) (string, error) { return shell, nil })
+	r.CheckLost(context.Background(), tk)
+	if n := len(eventsOf(t, r, tk.ID, "processes-left")); n != 0 {
+		t.Fatalf("same shell: %d reports", n)
+	}
+	// herdr restarted: the pane has a new shell and the agent came back
+	// outside the scope.
+	shell = `{"result":{"process_info":{"shell_pid":200,"foreground_process_group_id":201}}}`
+	for range 2 {
+		tk, _ = r.Store.Get(tk.ID)
+		r.CheckLost(context.Background(), tk)
+	}
+	left := eventsOf(t, r, tk.ID, "processes-left")
+	if len(left) != 1 || left[0].Summary != "1 process the runner started still run after herdr restarted its pane: 102 `python3 -m http.server 8765` (stop them yourself if not needed)" {
+		t.Errorf("processes-left = %+v", left)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman || got.ShellPID != 200 {
+		t.Errorf("task = %s, shell %d", got.Status, got.ShellPID)
 	}
 }

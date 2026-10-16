@@ -110,7 +110,7 @@ func newStopCommand() *cobra.Command {
 		Use:   "stop <id>...",
 		Short: "Quit runners' agents, close their tabs and mark the tasks stopped",
 		Long: "stop quits each runner's agent and closes its tab. A worktree task keeps its workspace " +
-			"and branch unless --remove-worktree is given; a dirty worktree is never removed, " +
+			"and branch unless --remove-worktree is given, and says so; a dirty worktree is never removed, " +
 			"and the branch is never deleted. Untracked files a runner without a worktree may have " +
 			"left are named, never deleted. One id that fails does not keep the others running.",
 		Args: cobra.MinimumNArgs(1),
@@ -130,6 +130,9 @@ func newStopCommand() *cobra.Command {
 					continue
 				}
 				fmt.Fprintf(out, "%s %s\n", t.ID, t.Status)
+				if t.Worktree != nil && t.Worktree.Path != "" && !t.Worktree.Removed {
+					fmt.Fprintf(out, "note: workspace kept for %s; hrk cleanup or stop --remove-worktree closes it\n", t.Worktree.Path)
+				}
 				if dir, n, list := runner.LeftFiles(cmd.Context(), t); n > 0 {
 					fmt.Fprintf(out, "note: %d untracked files in %s, which the runner may have left: %s\n", n, dir, list)
 				}
@@ -158,7 +161,8 @@ func stopOne(cmd *cobra.Command, r *runner.Runner, arg string, removeWorktree bo
 
 func newGCCommand() *cobra.Command {
 	var olderThan time.Duration
-	var removeWorktree, kept bool
+	var removeWorktree, kept, all bool
+	var owner string
 	cmd := &cobra.Command{
 		Use:   "gc",
 		Short: "Close runners of finished tasks so they stop using memory",
@@ -168,7 +172,16 @@ func newGCCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			closed, err := r.GC(cmd.Context(), "", olderThan, removeWorktree, kept)
+			// Without --owner or --all, project tasks count along with the
+			// folder's, as in list.
+			var owners runner.Owners
+			switch {
+			case owner != "":
+				owners.Owner = owner
+			case !all:
+				owners = runner.Owners{Owner: currentOwner(cmd), Projects: true}
+			}
+			closed, err := r.GC(cmd.Context(), owners, olderThan, removeWorktree, kept)
 			if len(closed) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "closed %s\n", strings.Join(closed, ", "))
 			} else if err == nil {
@@ -180,6 +193,9 @@ func newGCCommand() *cobra.Command {
 	cmd.Flags().DurationVar(&olderThan, "older-than", runner.GCAge, "close runners whose task finished at least this long ago")
 	cmd.Flags().BoolVar(&removeWorktree, "remove-worktree", false, "also remove clean worktrees (branches are kept)")
 	cmd.Flags().BoolVar(&kept, "kept", false, "also close kept runners whose task finished at least --older-than ago")
+	cmd.Flags().BoolVar(&all, "all", false, "close runners of every main session")
+	cmd.Flags().StringVar(&owner, "owner", "", "close runners of this main session only (default: git top-level of the current folder, plus the tasks of every project)")
+	cmd.MarkFlagsMutuallyExclusive("owner", "all")
 	return cmd
 }
 
@@ -300,8 +316,12 @@ func newListCommand() *cobra.Command {
 				if note := compactionNote(r.Compactions(t.ID)); note != "" {
 					lastAge += ", " + note
 				}
+				title := t.Title
+				if t.CheckoutOf != "" {
+					title += " (in " + t.CheckoutOf + "'s worktree)"
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Kind, t.Agent, t.Status, state,
-					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), lastAge, t.Title)
+					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), lastAge, title)
 			}
 			return w.Flush()
 		},
@@ -461,7 +481,11 @@ func newShowCommand() *cobra.Command {
 					Events []state.Event `json:"events"`
 				}{t, mine})
 			}
-			_, err = fmt.Fprint(out, showText(t, mine, r.Store.TaskDir(id), r.Config.KeepFor, r.Compactions(id), withPrompt))
+			var anchor *task.Task
+			if t.CheckoutOf != "" {
+				anchor, _ = r.Store.Get(t.CheckoutOf) // unreadable: showText names the id only
+			}
+			_, err = fmt.Fprint(out, showText(t, anchor, mine, r.Store.TaskDir(id), r.Config.KeepFor, r.Compactions(id), withPrompt))
 			return err
 		},
 	}
@@ -475,9 +499,10 @@ func newShowCommand() *cobra.Command {
 // summary is printed whole.
 const maxShowField = 400
 
-// showText is the compact view of a task that show prints. compactions is
+// showText is the compact view of a task that show prints. anchor is the
+// task whose worktree t works in (t.CheckoutOf), or nil. compactions is
 // how many times its runner's sessions compacted their context.
-func showText(t *task.Task, events []state.Event, dir string, keepFor time.Duration, compactions int, withPrompt bool) string {
+func showText(t *task.Task, anchor *task.Task, events []state.Event, dir string, keepFor time.Duration, compactions int, withPrompt bool) string {
 	var b strings.Builder
 	field := func(name, value string) {
 		if value != "" {
@@ -511,13 +536,22 @@ func showText(t *task.Task, events []state.Event, dir string, keepFor time.Durat
 	}
 	field("time", when)
 	field("context", contextNote(t, compactions))
-	if w := t.Worktree; w != nil && w.Path != "" {
+	worktree := func(w *task.Worktree) string {
 		where := w.Path + " on " + w.Branch
 		if w.Removed {
 			where += " (removed)"
 		}
-		field("worktree", where)
-	} else {
+		return where
+	}
+	switch {
+	case t.Worktree != nil && t.Worktree.Path != "":
+		field("worktree", worktree(t.Worktree))
+	case t.CheckoutOf != "" && anchor != nil && anchor.Worktree != nil && anchor.Worktree.Path != "":
+		field("worktree", worktree(anchor.Worktree)+" (of "+t.CheckoutOf+")")
+	case t.CheckoutOf != "":
+		field("worktree", "shared with "+t.CheckoutOf)
+		field("cwd", t.Cwd)
+	default:
 		field("cwd", t.Cwd)
 	}
 	if t.Git != nil {

@@ -117,6 +117,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if err != nil {
 		return err
 	}
+	scope := r.enterScope(ctx, t, loc.PaneID)
 
 	// Address the agent by pane id from here on: herdr drops the name when
 	// a start times out.
@@ -146,14 +147,43 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		return err
 	}
 	if changed {
-		r.emit(t, "started", startedLine(t, spec), "")
+		r.emit(t, "started", startedLine(t, spec, scope), "")
 	}
 	if _, err := r.Herdr.AgentWait(ctx, loc.PaneID, 5*time.Second, "working"); err != nil {
-		// Codex can report a stale state after skipped hooks; never resubmit.
 		r.emit(t, "prompt-unconfirmed", "prompt sent, but herdr saw no turn start within 5 s", "")
+		r.resubmitFirstPrompt(ctx, t, adapter, loc.PaneID, text)
 	}
 	r.emit(t, "prompted", "", "")
 	return nil
+}
+
+// resubmitFirstPrompt handles a first prompt herdr saw no turn start for. When
+// the adapter reads the agent's input box as still holding the prompt, its
+// Enter was lost: it sends one more Enter, never the text again, and waits
+// once more. A runner whose prompt is still in the input after that is
+// stalled news. An agent already working, an empty input and an input the
+// adapter cannot read leave everything as it was; Codex can report a stale
+// state after skipped hooks, so it never resubmits.
+func (r *Runner) resubmitFirstPrompt(ctx context.Context, t *task.Task, adapter harness.Adapter, pane, prompt string) {
+	if a, err := r.Herdr.AgentGet(ctx, pane); err != nil || a.Status == "working" {
+		return
+	}
+	screen, err := r.Herdr.PaneRead(ctx, pane, progressScreenLines)
+	if err != nil || adapter.InputState(screen, prompt) != harness.InputHolds {
+		return
+	}
+	if err := r.Herdr.AgentSendKeys(ctx, pane, "enter"); err != nil {
+		return
+	}
+	if _, err := r.Herdr.AgentWait(ctx, pane, 5*time.Second, "working"); err != nil {
+		// A loaded machine can take longer to show the turn: only a prompt
+		// still in the input is stalled.
+		if screen, err := r.Herdr.PaneRead(ctx, pane, progressScreenLines); err == nil && adapter.InputState(screen, prompt) == harness.InputHolds {
+			r.markStalled(t.ID, "stalled", "prompt not submitted: the first prompt is still in the input after a second Enter; the runner is left open")
+			return
+		}
+	}
+	r.emit(t, "prompt-resubmitted", "the first prompt was still in the input; sent Enter again", "")
 }
 
 // startAgent writes the runner files for t's agent, prepares its trust and
@@ -552,10 +582,13 @@ func errorLine(screen string) string {
 	return ""
 }
 
-func startedLine(t *task.Task, spec task.AgentSpec) string {
+func startedLine(t *task.Task, spec task.AgentSpec, scope string) string {
 	parts := []string{t.ID + " started", string(spec.Harness)}
 	if t.Worktree != nil && t.Worktree.Path != "" {
 		parts = append(parts, "worktree "+t.Worktree.Branch+" at "+t.Worktree.Path)
+	}
+	if scope != "" {
+		parts = append(parts, scope)
 	}
 	parts = append(parts, fmt.Sprintf("tab %q", t.ID+" · "+t.Title))
 	return strings.Join(parts, " · ")

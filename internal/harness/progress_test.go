@@ -203,3 +203,27 @@ func TestPiShowsRetry(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeInputState(t *testing.T) {
+	prompt := "/ak:research queues in the billing service and report which ones can drop messages"
+	cases := []struct {
+		name, screen string
+		want         InputState
+	}{
+		{"pasted", readFixture(t, "input-pasted-claude.txt"), InputHolds},
+		{"typed", readFixture(t, "input-typed-claude.txt"), InputHolds},
+		{"empty", readFixture(t, "working-claude-1.txt"), InputEmpty},
+		{"no box", "❯ \n", InputUnknown},
+		{"other text", strings.Replace(readFixture(t, "input-typed-claude.txt"), "/ak:research queues", "something else", 1), InputUnknown},
+	}
+	for _, c := range cases {
+		if got := (claude{}).InputState(c.screen, prompt); got != c.want {
+			t.Errorf("%s: InputState = %v, want %v", c.name, got, c.want)
+		}
+	}
+	for _, a := range []Adapter{codex{}, piAgent, ompAgent} {
+		if got := a.InputState(readFixture(t, "input-pasted-claude.txt"), prompt); got != InputUnknown {
+			t.Errorf("%s: InputState = %v, want unknown", a.Harness(), got)
+		}
+	}
+}

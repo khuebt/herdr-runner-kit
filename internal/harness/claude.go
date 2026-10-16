@@ -198,6 +198,43 @@ var claudeSpinner = regexp.MustCompile(`^\s*\S\s+\S[^…]*…`)
 // claudeBoxEdge is a border of the input box, which sits above the footer.
 var claudeBoxEdge = regexp.MustCompile(`^─{20,}`)
 
+// claudePasted is what Claude's input box shows for a pasted prompt: "[Pasted
+// text #1 +12 lines]".
+var claudePasted = regexp.MustCompile(`\[Pasted text #\d+`)
+
+// claudePromptHead is how many characters of the prompt InputState compares
+// with a typed one.
+const claudePromptHead = 40
+
+// InputState reads the box between the last two input box edges. A pasted
+// prompt shows as "[Pasted text #N …]" and a short one as its own text.
+// Anything else in the box, or no box on screen, is unknown.
+func (claude) InputState(screen, prompt string) InputState {
+	lines := strings.Split(screen, "\n")
+	end := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !claudeBoxEdge.MatchString(lines[i]) {
+			continue
+		}
+		if end < 0 {
+			end = i
+			continue
+		}
+		box := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.Join(lines[i+1:end], "\n")), "❯"))
+		box = strings.Join(strings.Fields(box), " ")
+		head := []rune(strings.Join(strings.Fields(prompt), " "))
+		head = head[:min(claudePromptHead, len(head))]
+		switch {
+		case box == "":
+			return InputEmpty
+		case claudePasted.MatchString(box), len(head) > 0 && strings.HasPrefix(box, string(head)):
+			return InputHolds
+		}
+		return InputUnknown
+	}
+	return InputUnknown
+}
+
 // claudeRetry is the status line of a request Claude retries, as Claude
 // Code 2.1.300 draws it: "✻ Connection refused … · Retrying in 8s ·
 // attempt 5/10".

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -174,5 +175,23 @@ func TestStaleAlias(t *testing.T) {
 	}
 	if old, resolved := staleAlias(bin); old != alias || resolved != alias {
 		t.Fatalf("stale alias: %q %q", old, resolved)
+	}
+}
+
+func TestMemoryCapCheck(t *testing.T) {
+	ctx := t.Context()
+	if r := memoryCapCheck("25%", nil); r != ok("%s", "25% per runner (systemd scope)") {
+		t.Errorf("usable = %+v", r)
+	}
+	if r := memoryCapCheck("25%", runner.ScopeProblem(ctx, "25%", "darwin")); r != ok("not available on macOS; runners share herdr's memory") {
+		t.Errorf("macOS = %+v", r)
+	}
+	if r := memoryCapCheck("off", runner.ScopeProblem(ctx, "off", "linux")); r != ok("off; runners share herdr's memory") {
+		t.Errorf("off = %+v", r)
+	}
+	t.Setenv("PATH", t.TempDir())
+	r := memoryCapCheck("16G", runner.ScopeProblem(ctx, "16G", "linux"))
+	if r.level != "warn" || r.detail != "busctl is not on PATH; runners share herdr's memory" || !strings.Contains(r.fix, "runnerMemoryMax: off") {
+		t.Errorf("no busctl = %+v", r)
 	}
 }

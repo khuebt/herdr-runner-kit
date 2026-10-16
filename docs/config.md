@@ -33,6 +33,7 @@ quotaFallback:            # tried in order when a runner hits a usage limit
 keepFor: 2h               # kept tabs close 2 hours after the task finished
 stallAfter: 15m           # nudge an agent that shows no progress for 15 minutes
 contextHandoffAt: 20      # ask a Codex, pi or omp runner to hand off at 20% context left
+runnerMemoryMax: 16G      # cap each runner at 16 GB (Linux with systemd)
 ```
 
 ## Keys
@@ -54,6 +55,7 @@ contextHandoffAt: 20      # ask a Codex, pi or omp runner to hand off at 20% con
 | `stallAfter` | `10m` | How long a `working` agent may show no visible progress before the kit nudges it, then interrupts it, then reports it `stalled` with the runner left open. `0` turns the check off; otherwise at least `2m`. See [commands.md](commands.md#what-wait-reports). |
 | `contextHandoff` | `true` | Lets the kit ask a runner near its context limit to hand off once to a fresh session of its task: a Claude runner at its first automatic compaction, a Codex runner at a turn end with little context left, and a pi or omp runner at either. `false` leaves runners to compact on their own. See [commands.md](commands.md#context-handoff). |
 | `contextHandoffAt` | `15` | For Codex, pi and omp runners: the context left, in percent of the window, at or below which a turn end asks for the handoff. Codex's footer shows it; for pi and omp the kit's runner extension sends it at each turn end. From 5 to 50. |
+| `runnerMemoryMax` | `25%` | Memory cap of each runner on Linux with systemd: a size such as `16G` or `8192M` (`K`, `M`, `G` or `T`), a share of RAM from `1%` to `100%`, or `off`. See [Runner memory cap](#runner-memory-cap). |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.
@@ -81,6 +83,32 @@ An explicit `--agent` or `--worktree` / `--no-worktree` on `spawn` always wins o
 Examples: `codex`, `codex:gpt-6-astra:xhigh`, `claude::max`, `claude:claude-sonnet-5-5`, `pi:openai-codex/gpt-6-luna:high`, `omp:openai-codex/gpt-6-luna:max`.
 
 pi's own `--model provider/id:thinking` shorthand does not apply: the spec's third field replaces it, so write `pi:openai-codex/gpt-6-luna:high`. A pi or omp model id may contain colons, as in `pi:ollama/qwen3:8b` or `omp:openrouter/vendor/model:free:high`: the last part is read as the effort only when it is an effort name, and an effort name the harness does not accept is an error.
+
+## Runner memory cap
+
+herdr runs every pane, and so every runner and the main session, inside its own service's memory group. Without a cap, one runner running several test suites at once can fill the machine's memory, and systemd-oomd then kills herdr with every session in it.
+
+On Linux, once a runner's agent has started and before its first prompt, the kit moves the agent into a new systemd scope capped at `runnerMemoryMax`. It asks the user's systemd manager over D-Bus with `busctl --user`, the same call `systemd-run --scope` makes:
+
+```
+busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
+  StartTransientUnit 'ssa(sv)a(sa(sv))' hrk-<task>-<attempt>-<unix seconds>.scope fail 6 \
+  PIDs au 1 <agent pid> MemoryMax t <bytes> MemorySwapMax t 0 CollectMode s inactive-or-failed \
+  Delegate b true OOMPolicy s continue 0
+```
+
+The scope starts with the agent alone, so a short-lived child that exits on the way cannot fail it. The processes the agent already started, such as its MCP servers, then join it one by one with `AttachProcessesToUnit`, which needs `Delegate`; the kit lists them again and moves the new ones, up to 3 rounds, until none is left outside. A process that exited meanwhile is skipped. Any still outside after that are counted in the `started` event, as `memory scope hrk-t3-1-1760000000.scope (2 of its processes stayed outside)`.
+
+Nothing is typed into the pane and the pane's shell stays where it is: only the agent and every command it starts from then on are in the scope. A share such as `25%` is taken of the machine's memory. Memory the agent used before the move stays counted against herdr's group; what it and its commands use from then on counts against the cap.
+
+- A command that goes over the cap is killed inside its runner only; `MemorySwapMax=0` keeps it from swapping instead. The kernel picks the largest process in the scope, usually the test worker, not the agent. Where systemd handles OOM kills in scopes, as Debian 12's 252.5 and later and Ubuntu 24.04's 255 do, a scope would stop, killing the agent too, so the kit asks for `OOMPolicy=continue`. When systemd rejects that property, the kit asks again without it and the `started` event says `systemd rejected OOMPolicy=continue, so an OOM kill may end the runner`: Ubuntu 22.04's 249 keeps such a scope running, but systemd 252.0 to 252.4, and other builds without the backport, end the whole scope, agent included.
+- The cap is per runner, not a total: four runners at `25%` can still fill memory together. Each runner is then its own group, so systemd-oomd kills the runner using the memory instead of herdr.
+- Each agent session, including a quota fallback or a context handoff, gets a new scope; processes the previous session left keep the old one, and systemd drops a scope once it is empty. The `started` event names it, as `memory scope hrk-t3-1-1760000000.scope`, and `systemctl --user status <scope>` shows its processes and limit.
+- When the scope cannot be made, the agent keeps running where herdr started it, and the `started` event says why, as `no memory scope: <reason>`. A launch never fails because of it.
+- The scopes are not part of herdr's service, so a herdr restart, or systemd-oomd killing herdr, no longer ends the commands a runner started. The kit never kills them: it reports the processes still running in the runner's scopes as `processes-left` news when it fails a runner as lost, when `stop` or `gc` closes one, even when herdr no longer has the runner's pane, and once when `wait` sees that herdr restarted a runner's pane, whose agent herdr then resumes outside the scope. See [commands.md](commands.md#closing-runners).
+- When herdr restores a pane after its own restart, herdr starts the agent again itself, outside any scope. That runner runs without a cap until its next agent session.
+
+On macOS, and with `runnerMemoryMax: off`, agents start exactly as before and share herdr's memory. `doctor` moves a short-lived process into a scope the same way to show the cap on its `runner memory cap` line, or why there is none.
 
 ## What runners are allowed to do
 

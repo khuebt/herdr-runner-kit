@@ -337,3 +337,53 @@ func TestMigrationBackupWithTrailingSlashAndAnOlderBackup(t *testing.T) {
 		t.Fatalf("backup inside the state folder: %v", inside)
 	}
 }
+
+func TestLockCursorNamesHolder(t *testing.T) {
+	s := openStore(t)
+	unlock, err := s.LockCursor("c", "hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.LockCursor("c", "wait")
+	var held *HeldError
+	if !errors.Is(err, ErrAlreadyWaiting) || !errors.As(err, &held) || held.Holder != "hook" || held.PID != os.Getpid() {
+		t.Fatalf("second lock: %v", err)
+	}
+	if want := fmt.Sprintf("already waiting: held by hook (pid %d)", os.Getpid()); err.Error() != want {
+		t.Fatalf("text %q, want %q", err, want)
+	}
+	unlock()
+	unlock, err = s.LockCursor("c", "wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+}
+
+func TestMainSessionsKeepTheNewest(t *testing.T) {
+	s := openStore(t)
+	if err := s.RecordMainSession(""); err != nil || s.IsMainSession("") {
+		t.Fatalf("empty id: %v", err)
+	}
+	for i := range 9 {
+		if err := s.RecordMainSession(fmt.Sprintf("id%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.IsMainSession("id0") || !s.IsMainSession("id1") || !s.IsMainSession("id8") {
+		t.Fatal("must keep the last 8 ids")
+	}
+	// Recording a kept id again moves it to the end instead of adding it.
+	if err := s.RecordMainSession("id1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordMainSession("id9"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsMainSession("id1") || s.IsMainSession("id2") {
+		t.Fatal("a re-recorded id must count as newest")
+	}
+	if !MainSessionListed(s.Dir(), "id1") || MainSessionListed(t.TempDir(), "id1") {
+		t.Fatal("MainSessionListed must read the state folder's list")
+	}
+}

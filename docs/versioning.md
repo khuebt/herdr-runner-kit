@@ -25,6 +25,6 @@ The project stays on 0.x until there is an explicit decision that the commands a
 1. Pull requests are squash-merged. The PR title becomes the commit message, so it must follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), which CI checks. `feat:` produces a minor bump. `fix:` and `perf:` produce a patch bump. A `!` after the type, or a `BREAKING CHANGE:` footer, marks an incompatible change.
 2. On every push to `main`, release-please updates one open release PR. That PR holds the next version and the generated `CHANGELOG.md` entries.
 3. Merging the release PR tags `vX.Y.Z` and creates the GitHub Release. GoReleaser then attaches Linux and macOS binaries for amd64 and arm64, plus `checksums.txt`.
-4. Release candidates (`vX.Y.Z-rc.N`) are tagged by hand. They are built by the release-candidate workflow and marked as prereleases.
+4. Release candidates (`vX.Y.Z-rc.N`) are tagged by hand. They are built by the release-candidate workflow and marked as prereleases. release-please writes notes only for stable releases, so the workflow sets a candidate's notes from `scripts/rc-notes.sh`: the commit subjects since the last stable tag, without release commits.
 
 `CHANGELOG.md` is generated, so never edit it by hand. To change what a release says, fix the commit message in the PR title before merging.

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -74,7 +75,18 @@ type Config struct {
 	// context left, in percent, at or below which a Codex runner is asked.
 	ContextHandoff   bool
 	ContextHandoffAt int
+	// RunnerMemoryMax caps each runner's memory, as a systemd size such as
+	// 16G or a share of RAM such as 25%, by running its agent in its own
+	// systemd scope. MemoryOff starts agents without one.
+	RunnerMemoryMax string
 }
+
+// MemoryOff is the runnerMemoryMax value that turns the memory cap off.
+const MemoryOff = "off"
+
+// memorySize matches the runnerMemoryMax values systemd's MemoryMax takes
+// that this kit accepts: a size in K, M, G or T, or 1 to 100 percent.
+var memorySize = regexp.MustCompile(`^(?:[1-9][0-9]*[KMGT]|(?:[1-9][0-9]?|100)%)$`)
 
 // The bounds of contextHandoffAt, in percent of the context left.
 const (
@@ -103,6 +115,7 @@ type fileConfig struct {
 	StallAfter           *string             `yaml:"stallAfter"`
 	ContextHandoff       *bool               `yaml:"contextHandoff"`
 	ContextHandoffAt     *int                `yaml:"contextHandoffAt"`
+	RunnerMemoryMax      *string             `yaml:"runnerMemoryMax"`
 }
 
 type fileFallback struct {
@@ -214,6 +227,9 @@ func Parse(data []byte) (Config, error) {
 	if file.ContextHandoffAt != nil {
 		cfg.ContextHandoffAt = *file.ContextHandoffAt
 	}
+	if file.RunnerMemoryMax != nil {
+		cfg.RunnerMemoryMax = strings.TrimSpace(*file.RunnerMemoryMax)
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -283,6 +299,9 @@ func (c Config) Validate() error {
 	}
 	if c.ContextHandoffAt < MinContextHandoffAt || c.ContextHandoffAt > MaxContextHandoffAt {
 		return fmt.Errorf("contextHandoffAt must be from %d to %d (percent of context left), got %d", MinContextHandoffAt, MaxContextHandoffAt, c.ContextHandoffAt)
+	}
+	if c.RunnerMemoryMax != MemoryOff && !memorySize.MatchString(c.RunnerMemoryMax) {
+		return fmt.Errorf("runnerMemoryMax must be a size such as 16G or 8192M, a share of RAM such as 25%%, or off, got %q", c.RunnerMemoryMax)
 	}
 	for _, ev := range c.Telegram.Notify {
 		if !slices.Contains(NotifyEvents, ev) {

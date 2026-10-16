@@ -1,15 +1,22 @@
 package cli
 
 import (
+	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/herdr"
+	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -134,5 +141,56 @@ func TestStopManyIDs(t *testing.T) {
 	}
 	if _, err := runCLI("stop", "t9"); err == nil || strings.Contains(err.Error(), "could not stop") {
 		t.Errorf("one bad id: %v", err)
+	}
+}
+
+// TestGCOwners closes only the finished runners of the selected owners:
+// by default this main session's and the projects', never another main
+// session's.
+func TestGCOwners(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		owners runner.Owners
+		want   []string
+	}{
+		{"default", runner.Owners{Owner: "/a", Projects: true}, []string{"t1", "t3"}},
+		{"owner", runner.Owners{Owner: "/b"}, []string{"t2"}},
+		{"all", runner.Owners{}, []string{"t1", "t2", "t3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := state.Open(filepath.Join(t.TempDir(), "state"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := time.Now().Add(-time.Hour)
+			for i, owner := range []string{"/a", "/b", "project:web"} {
+				tk := &task.Task{
+					Owner: owner, Status: task.Done, FinishedAt: done,
+					Herdr: task.Herdr{TabID: "tab" + strconv.Itoa(i), PaneID: "pane" + strconv.Itoa(i)},
+				}
+				if err := store.Create(tk); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := runner.New(store, config.Default(), "/usr/local/bin/hrk")
+			r.Herdr = &herdr.Client{Bin: "herdr", Exec: (&fakeHerdrExec{}).exec}
+			r.ProcTable = nil
+			r.Notify = nil
+			closed, err := r.GC(context.Background(), tc.owners, 0, false, false)
+			slices.Sort(closed)
+			if err != nil || !slices.Equal(closed, tc.want) {
+				t.Errorf("closed = %v, %v; want %v", closed, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGCOwnerAndAllExcludeEachOther(t *testing.T) {
+	cmd := newGCCommand()
+	cmd.SetArgs([]string{"--owner", "/a", "--all"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "[all owner] were all set") {
+		t.Errorf("err = %v", err)
 	}
 }

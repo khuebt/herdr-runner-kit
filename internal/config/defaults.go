@@ -36,5 +36,6 @@ func Default() Config {
 		// 2.1.300 and codex-cli 0.162.1.
 		ContextHandoff:   true,
 		ContextHandoffAt: 15,
+		RunnerMemoryMax:  "25%",
 	}
 }
