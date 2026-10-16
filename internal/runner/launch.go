@@ -81,6 +81,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	loc := herdr.Location{WorkspaceID: t.Herdr.WorkspaceID, TabID: t.Herdr.TabID, PaneID: t.Herdr.PaneID}
 	name := "hrk-" + t.ID
 	var carried []proc
+	var setup *setupResult
 	if takesOverPane(t) {
 		left, err := r.clearPane(ctx, t)
 		if err != nil {
@@ -113,6 +114,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 			}); err != nil {
 				return err
 			}
+		}
+		if t, setup, err = r.setUpWorktree(ctx, t); err != nil {
+			return err
 		}
 	}
 
@@ -147,6 +151,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if len(carried) > 0 {
 		prompt = strings.TrimSpace(prompt + "\n\n" + carriedNote(carried))
 	}
+	if setup != nil && setup.Failed != "" {
+		prompt = strings.TrimSpace(prompt + "\n\n" + setup.note())
+	}
 	text := adapter.FirstPrompt(t.Skill, prompt, contract)
 	// A dialog can open after the screen looked ready. Look once more, so
 	// the prompt and its Enter never land in one. An agent herdr sees as
@@ -164,7 +171,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		return err
 	}
 	if changed {
-		r.emit(t, "started", startedLine(t, spec, scope), "")
+		r.emit(t, "started", startedLine(t, spec, setup, scope), "")
 	}
 	if _, err := r.Herdr.AgentWait(ctx, loc.PaneID, 5*time.Second, "working"); err != nil {
 		r.emit(t, "prompt-unconfirmed", "prompt sent, but herdr saw no turn start within 5 s", "")
@@ -657,10 +664,13 @@ func errorLine(screen string) string {
 	return ""
 }
 
-func startedLine(t *task.Task, spec task.AgentSpec, scope string) string {
+func startedLine(t *task.Task, spec task.AgentSpec, setup *setupResult, scope string) string {
 	parts := []string{t.ID + " started", string(spec.Harness)}
 	if t.Worktree != nil && t.Worktree.Path != "" {
 		parts = append(parts, "worktree "+t.Worktree.Branch+" at "+t.Worktree.Path)
+	}
+	if setup != nil && setup.Failed == "" {
+		parts = append(parts, setup.summary())
 	}
 	if scope != "" {
 		parts = append(parts, scope)

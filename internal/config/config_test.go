@@ -156,6 +156,43 @@ func TestParseHeavySlots(t *testing.T) {
 	}
 }
 
+func TestParseWorktreeSetup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err := Parse([]byte(`
+worktreeSetup:
+  ~/Work/app/:
+    - cp "$HRK_REPO_ROOT/.env" .env
+    - npm ci
+  /srv/api:
+    - make deps
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := filepath.Join(home, "Work", "app")
+	if got := cfg.SetupFor(app); !slices.Equal(got, []string{`cp "$HRK_REPO_ROOT/.env" .env`, "npm ci"}) {
+		t.Errorf("app setup = %q", got)
+	}
+	if got := cfg.SetupFor("/srv/api"); !slices.Equal(got, []string{"make deps"}) {
+		t.Errorf("api setup = %q", got)
+	}
+	if cfg.SetupFor("/srv/other") != nil || cfg.SetupFor("") != nil {
+		t.Error("a repository without an entry got setup commands")
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(app, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(app, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorktreeSetup = map[string][]string{link: {"true"}}
+	if got := cfg.SetupFor(app); !slices.Equal(got, []string{"true"}) {
+		t.Errorf("a symlinked key did not match its target: %q", got)
+	}
+}
+
 func TestParseEmptyFile(t *testing.T) {
 	if _, err := Parse(nil); err != nil {
 		t.Fatal(err)
@@ -186,6 +223,10 @@ func TestParseErrors(t *testing.T) {
 		{"stallAfter: often\n", "stallAfter"},
 		{"contextHandoffAt: 4\n", "contextHandoffAt must be from 5 to 50"},
 		{"contextHandoffAt: 51\n", "contextHandoffAt must be from 5 to 50"},
+		{"worktreeSetup:\n  Work/app:\n    - npm ci\n", `worktreeSetup: "Work/app" is not an absolute path`},
+		{"worktreeSetup:\n  /srv/app: []\n", "worktreeSetup./srv/app: list at least one command"},
+		{"worktreeSetup:\n  /srv/app:\n    - \" \"\n", "worktreeSetup./srv/app[0] is empty"},
+		{"worktreeSetup:\n  /srv/app: npm ci\n", "cannot unmarshal"},
 	}
 	for _, tt := range tests {
 		_, err := Parse([]byte(tt.yaml))

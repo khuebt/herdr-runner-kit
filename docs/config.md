@@ -35,6 +35,10 @@ stallAfter: 15m           # nudge an agent that shows no progress for 15 minutes
 contextHandoffAt: 20      # ask a Codex, pi or omp runner to hand off at 20% context left
 runnerMemoryMax: 16G      # cap each runner at 16 GB (Linux with systemd)
 heavySlots: 1             # run one wrapped test, lint or build command at a time
+worktreeSetup:            # run in each new runner worktree of this repository
+  ~/Work/easify-cs-dashboard:
+    - cp "$HRK_REPO_ROOT/.env" .env
+    - npm ci
 ```
 
 ## Keys
@@ -58,6 +62,7 @@ heavySlots: 1             # run one wrapped test, lint or build command at a tim
 | `contextHandoffAt` | `15` | For Codex, pi and omp runners: the context left, in percent of the window, at or below which a turn end asks for the handoff. Codex's footer shows it; for pi and omp the kit's runner extension sends it at each turn end. From 5 to 50. |
 | `runnerMemoryMax` | `25%` | Memory cap of each runner on Linux with systemd: a size such as `16G` or `8192M` (`K`, `M`, `G` or `T`), a share of RAM from `1%` to `100%`, or `off`. See [Runner memory cap](#runner-memory-cap). |
 | `heavySlots` | `2` | How many commands wrapped in `hrk heavy` run at once across every runner and the main session; the others wait for a free slot. From 0 to 64; `0` runs them at once and drops the rule from the runner contract. See [commands.md](commands.md#heavy-commands). |
+| `worktreeSetup` | none | Shell commands, per repository, that run in each new runner worktree before its agent starts. Each key is a repository's main checkout, as an absolute or `~/` path; each value a list of at least one command. See [Worktree setup](#worktree-setup). |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.
@@ -85,6 +90,25 @@ An explicit `--agent` or `--worktree` / `--no-worktree` on `spawn` always wins o
 Examples: `codex`, `codex:gpt-6-astra:xhigh`, `claude::max`, `claude:claude-sonnet-5-5`, `pi:openai-codex/gpt-6-luna:high`, `omp:openai-codex/gpt-6-luna:max`.
 
 pi's own `--model provider/id:thinking` shorthand does not apply: the spec's third field replaces it, so write `pi:openai-codex/gpt-6-luna:high`. A pi or omp model id may contain colons, as in `pi:ollama/qwen3:8b` or `omp:openrouter/vendor/model:free:high`: the last part is read as the effort only when it is an effort name, and an effort name the harness does not accept is an error.
+
+## Worktree setup
+
+A new worktree holds only the repository's tracked files: no `node_modules`, no `.env`, nothing else git ignores. A runner's lint, typecheck and tests then fail with errors such as `eslint: not found`. `worktreeSetup` fills the worktree before the runner's agent starts:
+
+```yaml
+worktreeSetup:
+  ~/Work/easify-cs-dashboard:
+    - cp "$HRK_REPO_ROOT/.env" .env
+    - npm ci
+  /srv/api:
+    - ln -s "$HRK_REPO_ROOT/node_modules" node_modules
+```
+
+- **When.** Once per task, right after the kit creates the task's own worktree. A quota fallback, a context handoff, and a `plan run` phase that works in the run's first checkout get no setup, since their worktree already had it. A task without a worktree never gets one.
+- **How.** Each command runs in turn with `sh -c` in the worktree, with the runner's environment plus `HRK_REPO_ROOT` (the main checkout) and `HRK_WORKTREE` (the new worktree). Their output goes to `worktree-setup.log` in the task's out folder. The step holds one `heavySlots` slot while it runs, so parallel `npm ci` runs queue like tests, and it stops at the first command that fails. The whole step, the wait for a slot included, has 15 minutes; then its commands are killed.
+- **Result.** On success the `started` event says `setup: 2 steps, 41s`. On a failure the runner still starts: the event log gets a `worktree-setup-failed` event with the command, its exit code and the log path, and the runner's first prompt says the setup failed and asks it to fix that before running checks, or to report `needs-human`.
+- **Trust.** The commands come only from this file, never from the repository, so a cloned repository cannot make the kit run code. They run as given, as your own shell would run them.
+- **Cleanup.** Copied files that git ignores, such as `.env` and `node_modules`, do not keep `cleanup` from removing a merged worktree. Untracked files git does not ignore do, so list such a file in `.gitignore` before copying it in.
 
 ## Runner memory cap
 

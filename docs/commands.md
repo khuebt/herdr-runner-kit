@@ -20,7 +20,7 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 
 | Command | What it does |
 |---|---|
-| `spawn [flags] -- <prompt>` (alias `run`) | Records a task and returns at once. A detached launcher opens the runner in a new herdr tab, or a new worktree workspace, and sends the first prompt. When the agent fails to start, the runner's empty new worktree, its branch and its workspace are removed; a worktree with any change or commit is kept for `cleanup`. |
+| `spawn [flags] -- <prompt>` (alias `run`) | Records a task and returns at once. A detached launcher opens the runner in a new herdr tab, or a new worktree workspace, and sends the first prompt. When the agent fails to start, the runner's empty new worktree, its branch and its workspace are removed; a worktree with any change or commit is kept for `cleanup`. In a repository with `worktreeSetup` in the config, a new worktree first runs those commands, such as `npm ci`; see [config.md](config.md#worktree-setup). |
 | `wait` | Blocks until one of your tasks has news, prints one line per event and exits. Run it in the background and rerun it after each wake. |
 | `answer <id> <text>` | Answers a runner that reported `needs-human`. It continues in the same session. A runner waiting on Codex's hooks review takes `trust` or `skip` (see [startup dialogs](#startup-dialogs)); other startup dialogs are answered in the runner's tab. The id may name the runner's attempt, such as `t3a2`; an answer for an attempt that ended is refused. See [Context handoff](#context-handoff). |
 | `answer --from-telegram --stdin` | Routes a Telegram reply by its `#id` tag, or to the only waiting task. See [telegram.md](telegram.md). |

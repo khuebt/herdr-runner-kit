@@ -83,6 +83,10 @@ type Config struct {
 	// builds) wrapped in hrk heavy run at once across every runner and the
 	// main session. Zero runs them at once with no queue.
 	HeavySlots int
+	// WorktreeSetup maps a repository's main checkout, as a clean absolute
+	// path, to the shell commands that run in each new runner worktree of
+	// it before its agent starts.
+	WorktreeSetup map[string][]string
 }
 
 // MemoryOff is the runnerMemoryMax value that turns the memory cap off.
@@ -124,6 +128,7 @@ type fileConfig struct {
 	ContextHandoffAt     *int                `yaml:"contextHandoffAt"`
 	RunnerMemoryMax      *string             `yaml:"runnerMemoryMax"`
 	HeavySlots           *int                `yaml:"heavySlots"`
+	WorktreeSetup        map[string][]string `yaml:"worktreeSetup"`
 }
 
 type fileFallback struct {
@@ -241,6 +246,19 @@ func Parse(data []byte) (Config, error) {
 	if file.HeavySlots != nil {
 		cfg.HeavySlots = *file.HeavySlots
 	}
+	if file.WorktreeSetup != nil {
+		cfg.WorktreeSetup = make(map[string][]string, len(file.WorktreeSetup))
+		for repo, cmds := range file.WorktreeSetup {
+			key, err := expandHome(strings.TrimSpace(repo))
+			if err != nil {
+				return Config{}, fmt.Errorf("worktreeSetup: %w", err)
+			}
+			if key != "" {
+				key = filepath.Clean(key)
+			}
+			cfg.WorktreeSetup[key] = cmds
+		}
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -317,12 +335,55 @@ func (c Config) Validate() error {
 	if c.HeavySlots < 0 || c.HeavySlots > MaxHeavySlots {
 		return fmt.Errorf("heavySlots must be from 0 (off) to %d, got %d", MaxHeavySlots, c.HeavySlots)
 	}
+	for repo, cmds := range c.WorktreeSetup {
+		if !filepath.IsAbs(repo) {
+			return fmt.Errorf("worktreeSetup: %q is not an absolute path or ~/ path of a repository", repo)
+		}
+		if len(cmds) == 0 {
+			return fmt.Errorf("worktreeSetup.%s: list at least one command", repo)
+		}
+		for i, cmd := range cmds {
+			if strings.TrimSpace(cmd) == "" {
+				return fmt.Errorf("worktreeSetup.%s[%d] is empty", repo, i)
+			}
+		}
+	}
 	for _, ev := range c.Telegram.Notify {
 		if !slices.Contains(NotifyEvents, ev) {
 			return fmt.Errorf("telegram.notify: unknown event %q (known: %s)", ev, strings.Join(NotifyEvents, ", "))
 		}
 	}
 	return nil
+}
+
+// SetupFor returns the worktree setup commands of the repository whose main
+// checkout is root. A key that is a symlink to root matches too.
+func (c Config) SetupFor(root string) []string {
+	if root == "" {
+		return nil
+	}
+	for repo, cmds := range c.WorktreeSetup {
+		if repo == root {
+			return cmds
+		}
+		if resolved, err := filepath.EvalSymlinks(repo); err == nil && resolved == root {
+			return cmds
+		}
+	}
+	return nil
+}
+
+// expandHome replaces a leading ~/ in path with the home directory.
+func expandHome(path string) (string, error) {
+	rest, ok := strings.CutPrefix(path, "~/")
+	if !ok {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, rest), nil
 }
 
 // parseDuration reads a duration such as 4h or 90m; a bare 0 means none.
