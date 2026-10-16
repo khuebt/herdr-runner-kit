@@ -46,6 +46,7 @@ hrk doctor [--claude-config DIR]…
 - herdr's Claude, Codex, pi and omp integrations are current;
 - `claude`, `codex`, `pi`, `omp` and `git` are installed, the flags the kit passes still appear in their `--help`; the `ok` line shows the version;
 - pi and omp are optional: a missing binary or herdr integration is a `warn` that says "(not used by your config)", and a `fail` only when a kind or a `quotaFallback` entry in your config names that harness;
+- the runner memory cap (Linux only, see [config.md](config.md#runner-memory-cap)): `systemd-run --user --scope` works, so each runner gets its own scope capped at `runnerMemoryMax`; the `ok` line shows the cap. On Linux without a working `systemd-run --user` it is a `warn` with the reason, since runners then share herdr's memory; it never fails. On macOS, or with `runnerMemoryMax: off`, it is `ok` and says why there is no cap;
 - Telegram credentials are found;
 - for each Claude config folder:
   - the skill is installed by this version, and unedited;
