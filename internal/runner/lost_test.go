@@ -255,3 +255,34 @@ func TestLostRunnerReportsItsScopeProcesses(t *testing.T) {
 		}
 	}
 }
+
+func TestRestartedPaneReportsItsScopeProcessesOnce(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	path := scopeDir(t, "102\n")
+	tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes, t.ShellPID = []string{path}, 100; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ProcTable = procTables(runnerTree)
+	fake.on("agent get", ok(liveAgent))
+	shell := `{"result":{"process_info":{"shell_pid":100,"foreground_process_group_id":101}}}`
+	fake.on("pane process-info", func([]string) (string, error) { return shell, nil })
+	r.CheckLost(context.Background(), tk)
+	if n := len(eventsOf(t, r, tk.ID, "processes-left")); n != 0 {
+		t.Fatalf("same shell: %d reports", n)
+	}
+	// herdr restarted: the pane has a new shell and the agent came back
+	// outside the scope.
+	shell = `{"result":{"process_info":{"shell_pid":200,"foreground_process_group_id":201}}}`
+	for range 2 {
+		tk, _ = r.Store.Get(tk.ID)
+		r.CheckLost(context.Background(), tk)
+	}
+	left := eventsOf(t, r, tk.ID, "processes-left")
+	if len(left) != 1 || left[0].Summary != "1 process the runner started still run after herdr restarted its pane: 102 `python3 -m http.server 8765` (stop them yourself if not needed)" {
+		t.Errorf("processes-left = %+v", left)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman || got.ShellPID != 200 {
+		t.Errorf("task = %s, shell %d", got.Status, got.ShellPID)
+	}
+}

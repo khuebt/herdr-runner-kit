@@ -281,12 +281,42 @@ func (r *Runner) CheckLost(ctx context.Context, t *task.Task) {
 	}
 	reason, lost := r.lostReason(ctx, t)
 	if !lost {
+		r.checkRestarted(ctx, t)
 		return
 	}
 	if r.switchable(t) && r.usageLimited(ctx, t) && r.switchAgent(t, false) == nil {
 		return
 	}
 	r.failLost(ctx, t.ID, reason)
+}
+
+// checkRestarted reports, once per herdr restart, the processes still
+// running in the memory scopes of a runner whose pane herdr restored: its
+// agent came back outside them, so they would otherwise go unnoticed until
+// the runner closes. A pane shell other than the one the latest scope was
+// made under means herdr restarted the pane. It never signals them.
+func (r *Runner) checkRestarted(ctx context.Context, t *task.Task) {
+	if r.ProcTable == nil || len(t.Scopes) == 0 || t.ShellPID == 0 {
+		return
+	}
+	info, err := r.Herdr.PaneProcessInfo(ctx, t.Herdr.PaneID)
+	if err != nil || info.ShellPID <= 0 || info.ShellPID == t.ShellPID {
+		return
+	}
+	left, err := r.scopeLeft(ctx, t)
+	if err != nil {
+		return // looked at again in a minute
+	}
+	cur, err := r.Store.Update(t.ID, func(cur *task.Task) error {
+		if cur.ShellPID != t.ShellPID {
+			return errors.New("another check took this restart")
+		}
+		cur.ShellPID = info.ShellPID
+		return nil
+	})
+	if err == nil && len(left) > 0 {
+		r.emit(cur, "processes-left", survivorSummary(left, "after herdr restarted its pane"), "")
+	}
 }
 
 // lostReason reports whether t's runner is gone from herdr, and why.

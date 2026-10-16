@@ -214,8 +214,8 @@ func TestLaunchMovesTheAgentIntoAScope(t *testing.T) {
 		t.Errorf("entered %q with %d and %v", unit, agent, children)
 	}
 	if !strings.Contains(started, "memory scope "+unit+" (1 of its processes stayed outside)") ||
-		!slices.Equal(tk.Scopes, []string{"/user.slice/app.slice/" + unit}) {
-		t.Errorf("started %q, scopes %q", started, tk.Scopes)
+		!slices.Equal(tk.Scopes, []string{"/user.slice/app.slice/" + unit}) || tk.ShellPID != 100 {
+		t.Errorf("started %q, scopes %q, shell %d", started, tk.Scopes, tk.ShellPID)
 	}
 	if n := fake.count("pane", "run"); n != 0 {
 		t.Errorf("%d pane runs typed", n)

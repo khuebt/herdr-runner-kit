@@ -268,17 +268,18 @@ func memTotal() (uint64, error) {
 // processes it started into a new memory-capped scope, so a runaway command
 // meets its runner's cap instead of the memory every session shares. Each
 // agent session gets its own; systemd drops a scope once it is empty. It
-// records the scope on t and returns what the started
+// records the scope and the pane's shell on t and returns what the started
 // event says about it. When no scope can be made, the agent keeps running
 // where it is.
 func (r *Runner) enterScope(ctx context.Context, t *task.Task, pane string) string {
 	if r.EnterScope == nil {
 		return ""
 	}
-	sc, err := r.scopeAgent(ctx, t, pane)
+	sc, shell, err := r.scopeAgent(ctx, t, pane)
 	if err == nil {
 		_, err = r.Store.Update(t.ID, func(t *task.Task) error {
 			t.Scopes = append(t.Scopes, sc.Path)
+			t.ShellPID = shell
 			return nil
 		})
 	}
@@ -292,14 +293,14 @@ func (r *Runner) enterScope(ctx context.Context, t *task.Task, pane string) stri
 	return line
 }
 
-func (r *Runner) scopeAgent(ctx context.Context, t *task.Task, pane string) (Scope, error) {
+func (r *Runner) scopeAgent(ctx context.Context, t *task.Task, pane string) (Scope, int, error) {
 	info, err := r.Herdr.PaneProcessInfo(ctx, pane)
 	if err != nil {
-		return Scope{}, err
+		return Scope{}, 0, err
 	}
 	agent := info.ForegroundPGID
 	if agent <= 0 || agent == info.ShellPID {
-		return Scope{}, errors.New("herdr names no agent process in the pane")
+		return Scope{}, 0, errors.New("herdr names no agent process in the pane")
 	}
 	children := func() []int {
 		if r.ProcTable == nil {
@@ -315,7 +316,8 @@ func (r *Runner) scopeAgent(ctx context.Context, t *task.Task, pane string) (Sco
 		}
 		return pids
 	}
-	return r.EnterScope(ctx, scopeUnit(t.ID, task.AttemptOf(t), time.Now()), agent, children)
+	sc, err := r.EnterScope(ctx, scopeUnit(t.ID, task.AttemptOf(t), time.Now()), agent, children)
+	return sc, info.ShellPID, err
 }
 
 // scopedProcs returns the processes of table that run in the cgroups of

@@ -197,6 +197,9 @@ type Task struct {
 	// Scopes are the cgroups of the memory-capped systemd scopes the task's
 	// agent sessions ran in, oldest first.
 	Scopes []string `json:"scopes,omitempty"`
+	// ShellPID is the pane shell's pid when the latest scope was made. A
+	// different one means herdr restarted the pane.
+	ShellPID int `json:"shellPid,omitempty"`
 	// Keep holds a finished runner's tab open: gc leaves it until keep is
 	// turned off or the task is stopped.
 	Keep bool `json:"keep,omitempty"`
