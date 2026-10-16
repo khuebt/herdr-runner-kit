@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -198,24 +199,34 @@ func TestWhileAliveEndsWithItsParent(t *testing.T) {
 }
 
 func TestStartedByMain(t *testing.T) {
-	claude := func() int { return 123 }
+	// The hook's shell 300 runs under Claude 200, which a wrapper 123 that
+	// hrk main ran as started.
+	chain := func() []int { return []int{300, 200, 123} }
 	cases := []struct {
 		name, hrkMain string
+		ancestors     func() []int
 		want          bool
 	}{
-		{"started by hrk main --exec", "123", true},
-		{"a claude started from the main session's shell", "123", false},
-		{"the printed command names no process", "1", true},
-		{"no HRK_MAIN", "", false},
+		{"started by hrk main --exec", "200", chain, true},
+		{"under a wrapper that does not exec", "123", chain, true},
+		{"a claude started from the main session's shell", "123", func() []int { return []int{400, 450, 77} }, false},
+		{"the printed command names no process", "1", chain, true},
+		{"no HRK_MAIN", "", chain, false},
 	}
-	for i, c := range cases {
-		pid := claude
-		if i == 1 {
-			pid = func() int { return 456 }
-		}
-		if got := startedByMain(c.hrkMain, pid); got != c.want {
+	for _, c := range cases {
+		if got := startedByMain(c.hrkMain, c.ancestors); got != c.want {
 			t.Errorf("%s: startedByMain = %v", c.name, got)
 		}
+	}
+}
+
+func TestAncestors(t *testing.T) {
+	ps := "  1     0\n 77     1\n123    77\n200   123\n300   200\n310   300\n"
+	if got := ancestors(ps, 310, 6); !slices.Equal(got, []int{300, 200, 123, 77}) {
+		t.Errorf("ancestors = %v", got)
+	}
+	if got := ancestors(ps, 310, 2); !slices.Equal(got, []int{300, 200}) {
+		t.Errorf("two levels = %v", got)
 	}
 }
 

@@ -113,7 +113,7 @@ func newAutoarmCommand() *cobra.Command {
 			if os.Getenv("HRK_TASK") != "" {
 				return nil // a runner has its own turn-end hook
 			}
-			byMain := startedByMain(main, hookClaude)
+			byMain := startedByMain(main, hookAncestors)
 			if !byMain {
 				// Every Claude session runs this hook, so ask the session list
 				// before opening the state, which may migrate it.
@@ -150,16 +150,55 @@ const autoarmHolder = "hook"
 // started. Only that session consumes news here: another Claude session in
 // the same folder would take the cursor and hide news from main. Its session
 // id is recorded too, because a resume (herdr restoring it, or claude
-// --resume) loses the environment but keeps the id. HRK_MAIN holds the
-// main Claude's pid, so a claude started from the main session's shell,
-// which inherits it, does not count; the printed command's HRK_MAIN=1 names
-// no process and counts as is.
-func startedByMain(env string, claudePID func() int) bool {
+// --resume) loses the environment but keeps the id. HRK_MAIN holds the pid
+// hrk main ran as, which is the main Claude or, under a wrapper that does
+// not exec, one of its ancestors; a claude started from the main session's
+// shell inherits HRK_MAIN but descends from no such process. The printed
+// command's HRK_MAIN=1 names no process and counts as is.
+func startedByMain(env string, ancestors func() []int) bool {
 	if env == "" {
 		return false
 	}
 	pid, err := strconv.Atoi(env)
-	return err != nil || pid <= 1 || claudePID() == pid
+	return err != nil || pid <= 1 || slices.Contains(ancestors(), pid)
+}
+
+// ancestorLevels is how far up from the hook hookAncestors looks: the
+// hook's shell, Claude, and a few wrappers above it.
+const ancestorLevels = 6
+
+// hookAncestors returns the pids above the hook process, nearest first.
+func hookAncestors() []int {
+	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=").Output()
+	if err != nil {
+		return nil
+	}
+	return ancestors(string(out), os.Getpid(), ancestorLevels)
+}
+
+// ancestors walks `ps -o pid=,ppid=` output up from pid, at most levels
+// steps.
+func ancestors(ps string, pid, levels int) []int {
+	parent := map[int]int{}
+	for line := range strings.SplitSeq(ps, "\n") {
+		if f := strings.Fields(line); len(f) == 2 {
+			p, err1 := strconv.Atoi(f[0])
+			pp, err2 := strconv.Atoi(f[1])
+			if err1 == nil && err2 == nil {
+				parent[p] = pp
+			}
+		}
+	}
+	var out []int
+	for range levels {
+		pp, ok := parent[pid]
+		if !ok || pp <= 1 {
+			break
+		}
+		out = append(out, pp)
+		pid = pp
+	}
+	return out
 }
 
 // mainPID is the PID of the main session's Claude process: HRK_MAIN when it
