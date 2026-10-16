@@ -283,7 +283,7 @@ func (r *Runner) CheckLost(ctx context.Context, t *task.Task) {
 	if r.switchable(t) && r.usageLimited(ctx, t) && r.switchAgent(t, false) == nil {
 		return
 	}
-	r.failLost(t.ID, reason)
+	r.failLost(ctx, t.ID, reason)
 }
 
 // lostReason reports whether t's runner is gone from herdr, and why.
@@ -347,8 +347,8 @@ func (r *Runner) goneReason(ctx context.Context, t *task.Task) string {
 }
 
 // failLost fails a running or waiting task whose runner is gone, and its
-// dependents.
-func (r *Runner) failLost(id, reason string) {
+// dependents, then names the processes still running in its memory scopes.
+func (r *Runner) failLost(ctx context.Context, id, reason string) {
 	t, changed, err := r.Store.Transition(id, task.Failed, []task.Status{task.Running, task.NeedsHuman}, func(t *task.Task) {
 		t.Error = reason
 	})
@@ -357,6 +357,7 @@ func (r *Runner) failLost(id, reason string) {
 	}
 	r.emit(t, "failed", reason, "")
 	_ = r.failDependents(t)
+	r.reportScopeLeft(ctx, t)
 }
 
 // errIfLost returns an error naming where t's work is when its runner is
@@ -366,7 +367,7 @@ func (r *Runner) errIfLost(ctx context.Context, t *task.Task) error {
 	if !lost {
 		return nil
 	}
-	r.failLost(t.ID, reason)
+	r.failLost(ctx, t.ID, reason)
 	return fmt.Errorf("%s's runner is gone (%s); its worktree and branch are in hrk show %s", t.ID, reason, t.ID)
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -61,9 +62,10 @@ type Runner struct {
 	// entries, so a close finds the processes a runner started that left
 	// its process tree. Nil, or an error, leaves only the tree.
 	ProcEnv func(pid int) ([]byte, error)
-	// Scope returns the memory cap each agent session runs under, in its
-	// own systemd scope, or "" to start agents as they are. Nil is "".
-	Scope func(context.Context) string
+	// EnterScope moves pids into a new memory-capped systemd scope named
+	// unit and returns its cgroup path. Nil starts agents where herdr puts
+	// them.
+	EnterScope func(ctx context.Context, unit string, pids []int) (string, error)
 }
 
 // New returns a Runner for the real environment.
@@ -71,6 +73,7 @@ func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	r := &Runner{
 		Store: store, Config: cfg, Herdr: herdr.New(), Telegram: telegram.New(),
 		Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep, ProcTable: psTable, ProcEnv: procEnviron,
+		EnterScope: SystemScope(cfg.RunnerMemoryMax, runtime.GOOS),
 	}
 	r.Notify = r.startDetachedNotify
 	r.StartLauncher = func(id string) (int, error) { return r.startDetached(id, "__launch", "launch.log") }

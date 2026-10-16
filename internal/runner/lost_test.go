@@ -210,3 +210,20 @@ func TestRelaunchDuringTheConfirmationKeepsTheRunner(t *testing.T) {
 		}
 	}
 }
+
+func TestLostRunnerReportsItsScopeProcesses(t *testing.T) {
+	r, fake, tk, _ := waitingRunner(t)
+	path := scopeDir(t, "102\n")
+	tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes = []string{path}; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ProcTable = procTables(runnerTree)
+	fake.on("agent get", herdrErr("pane_not_found"))
+	fake.on("pane read", herdrErr("pane_not_found"))
+	r.CheckLost(context.Background(), tk)
+	left := eventsOf(t, r, tk.ID, "processes-left")
+	if len(left) != 1 || left[0].Summary != "1 process the runner started still run after its runner was lost: 102 `python3 -m http.server 8765` (stop them yourself if not needed)" {
+		t.Errorf("processes-left = %+v", left)
+	}
+}

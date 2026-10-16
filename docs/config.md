@@ -88,22 +88,25 @@ pi's own `--model provider/id:thinking` shorthand does not apply: the spec's thi
 
 herdr runs every pane, and so every runner and the main session, inside its own service's memory group. Without a cap, one runner running several test suites at once can fill the machine's memory, and systemd-oomd then kills herdr with every session in it.
 
-On Linux, the kit starts each runner's agent in its own systemd scope, capped at `runnerMemoryMax`:
+On Linux, once a runner's agent has started and before its first prompt, the kit moves the agent, with the processes it already started, into a new systemd scope capped at `runnerMemoryMax`. It asks the user's systemd manager over D-Bus with `busctl --user`, the same call `systemd-run --scope` makes:
 
 ```
-systemd-run --user --scope --quiet --collect --unit=hrk-<task>-<attempt>-<unix seconds> \
-  -p MemoryMax=<runnerMemoryMax> -p MemorySwapMax=0 -p OOMPolicy=continue -- "$SHELL"
+busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
+  StartTransientUnit 'ssa(sv)a(sa(sv))' hrk-<task>-<attempt>-<unix seconds>.scope fail 5 \
+  PIDs au 1 <agent pid> MemoryMax t <bytes> MemorySwapMax t 0 CollectMode s inactive-or-failed \
+  OOMPolicy s continue 0
 ```
 
-herdr starts only an agent's own executable, so the kit types this into the runner's pane just before it starts the agent: the pane's shell starts again inside the scope, with the same process id and environment, and the agent and every command it runs inherit the cap.
+Nothing is typed into the pane and the pane's shell stays where it is: only the agent and every command it starts from then on are in the scope. A share such as `25%` is taken of the machine's memory.
 
-- A command that goes over the cap is killed inside its runner only; `MemorySwapMax=0` keeps it from swapping instead. The kernel picks the largest process in the scope, usually the test worker, not the agent, and `OOMPolicy=continue` keeps the agent running so it can report.
+- A command that goes over the cap is killed inside its runner only; `MemorySwapMax=0` keeps it from swapping instead. The kernel picks the largest process in the scope, usually the test worker, not the agent. From systemd 253 on, a scope would stop, killing the agent too, when the kernel kills one of its processes, so the kit adds `OOMPolicy=continue` there; older versions, such as systemd 249 on Ubuntu 22.04, do not accept it for scopes and never stop one that way.
 - The cap is per runner, not a total: four runners at `25%` can still fill memory together. Each runner is then its own group, so systemd-oomd kills the runner using the memory instead of herdr.
-- Each agent session, including a quota fallback or a context handoff, gets a new scope; processes the previous session left keep the old one. The `started` event names it, as `memory scope hrk-t3-1-1760000000.scope`, and `systemctl --user status <scope>` shows its processes and limit.
-- `stop` and `gc` still only report the processes a runner left running. Their scope stays until they exit, then systemd drops it.
+- Each agent session, including a quota fallback or a context handoff, gets a new scope; processes the previous session left keep the old one, and systemd drops a scope once it is empty. The `started` event names it, as `memory scope hrk-t3-1-1760000000.scope`, and `systemctl --user status <scope>` shows its processes and limit.
+- When the scope cannot be made, the agent keeps running where herdr started it, and the `started` event says why, as `no memory scope: <reason>`. A launch never fails because of it.
+- The scopes are not part of herdr's service, so a herdr restart, or systemd-oomd killing herdr, no longer ends the commands a runner started. The kit never kills them: when it fails a runner as lost, and when `stop` or `gc` closes one, it reports the processes still running in the runner's scopes as `processes-left` news, even when herdr no longer has the runner's pane. See [commands.md](commands.md#closing-runners).
 - When herdr restores a pane after its own restart, herdr starts the agent again itself, outside any scope. That runner runs without a cap until its next agent session.
 
-The kit checks once per process, on its first launch, that `systemd-run --user --scope` works. When it does not, and on macOS, or with `runnerMemoryMax: off`, agents start exactly as before and share herdr's memory. `doctor` shows the cap on its `runner memory cap` line, or why there is none.
+On macOS, and with `runnerMemoryMax: off`, agents start exactly as before and share herdr's memory. `doctor` moves a short-lived process into a scope the same way to show the cap on its `runner memory cap` line, or why there is none.
 
 ## What runners are allowed to do
 

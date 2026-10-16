@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -133,18 +134,20 @@ func survivors(before, table []proc) []proc {
 // snapshotProcs records the processes the runner's pane started, before its
 // agent quits: once the agent exits, its children lose their parent and can
 // no longer be traced to the runner through the tree, only through the
-// runner environment they inherited. ok is false when there is nothing to
-// check later, and a failure is recorded as process-check-skipped.
+// runner environment they inherited, or the memory scopes they run in. The
+// scopes still name them when herdr lost the pane, as after its restart. ok
+// is false when there is nothing to check later, and a failure is recorded
+// as process-check-skipped.
 func (r *Runner) snapshotProcs(ctx context.Context, t *task.Task) ([]proc, bool) {
 	if r.ProcTable == nil {
 		return nil, false
 	}
-	info, err := r.Herdr.PaneProcessInfo(ctx, t.Herdr.PaneID)
-	if err == nil && info.ShellPID <= 0 {
-		err = fmt.Errorf("herdr named no shell for %s", t.Herdr.PaneID)
+	info, paneErr := r.Herdr.PaneProcessInfo(ctx, t.Herdr.PaneID)
+	if paneErr == nil && info.ShellPID <= 0 {
+		paneErr = fmt.Errorf("herdr named no shell for %s", t.Herdr.PaneID)
 	}
-	if err != nil {
-		r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(err.Error(), 160), "")
+	if paneErr != nil && len(t.Scopes) == 0 {
+		r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(paneErr.Error(), 160), "")
 		return nil, false
 	}
 	table, err := r.ProcTable(ctx)
@@ -152,7 +155,17 @@ func (r *Runner) snapshotProcs(ctx context.Context, t *task.Task) ([]proc, bool)
 		r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(err.Error(), 160), "")
 		return nil, false
 	}
-	return append(descendants(table, info.ShellPID), r.markedProcs(table, t, info.ShellPID)...), true
+	scoped := scopedProcs(table, t.Scopes)
+	if paneErr != nil {
+		return scoped, true
+	}
+	procs := append(descendants(table, info.ShellPID), r.markedProcs(table, t, info.ShellPID)...)
+	for _, p := range scoped {
+		if !slices.ContainsFunc(procs, func(q proc) bool { return q.PID == p.PID }) {
+			procs = append(procs, p)
+		}
+	}
+	return procs, true
 }
 
 // procEnviron reads a process's environment where the system shows it, in
@@ -218,7 +231,24 @@ func hasEnv(env []byte, entries [][]byte) bool {
 // signals them: they may be a dev server the user still wants.
 func (r *Runner) reportSurvivors(ctx context.Context, t *task.Task, before []proc) {
 	if left := r.waitSurvivors(ctx, t, before); len(left) > 0 {
-		r.emit(t, "processes-left", survivorSummary(left), "")
+		r.emit(t, "processes-left", survivorSummary(left, "after its tab closed"), "")
+	}
+}
+
+// reportScopeLeft names the processes still running in t's memory scopes
+// once its runner is lost. Those outlive a herdr restart or an OOM kill of
+// herdr: the scopes are not part of herdr's service. It never signals them.
+func (r *Runner) reportScopeLeft(ctx context.Context, t *task.Task) {
+	if r.ProcTable == nil || len(t.Scopes) == 0 {
+		return
+	}
+	table, err := r.ProcTable(ctx)
+	if err != nil {
+		r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(err.Error(), 160), "")
+		return
+	}
+	if left := scopedProcs(table, t.Scopes); len(left) > 0 {
+		r.emit(t, "processes-left", survivorSummary(left, "after its runner was lost"), "")
 	}
 }
 
@@ -243,13 +273,14 @@ func (r *Runner) waitSurvivors(ctx context.Context, t *task.Task, before []proc)
 }
 
 // survivorSummary names up to maxNamedSurvivors leftover processes, with
-// their commands redacted, and counts the rest.
-func survivorSummary(left []proc) string {
+// their commands redacted, and counts the rest. when says after what they
+// still run.
+func survivorSummary(left []proc, when string) string {
 	noun := "processes"
 	if len(left) == 1 {
 		noun = "process"
 	}
-	return fmt.Sprintf("%d %s the runner started still run after its tab closed: %s (stop them yourself if not needed)", len(left), noun, procList(left))
+	return fmt.Sprintf("%d %s the runner started still run %s: %s (stop them yourself if not needed)", len(left), noun, when, procList(left))
 }
 
 // procList names up to maxNamedSurvivors processes by pid and redacted

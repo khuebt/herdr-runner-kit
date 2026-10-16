@@ -194,6 +194,9 @@ type Task struct {
 	// runner launched, and PhaseCheck what the kit found once it was done.
 	PhaseStart string      `json:"phaseStart,omitempty"`
 	PhaseCheck *PhaseCheck `json:"phaseCheck,omitempty"`
+	// Scopes are the cgroups of the memory-capped systemd scopes the task's
+	// agent sessions ran in, oldest first.
+	Scopes []string `json:"scopes,omitempty"`
 	// Keep holds a finished runner's tab open: gc leaves it until keep is
 	// turned off or the task is stopped.
 	Keep bool `json:"keep,omitempty"`

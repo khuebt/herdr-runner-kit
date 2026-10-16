@@ -96,7 +96,7 @@ func newDoctorCommand() *cobra.Command {
 				show(c.Bin, gate(a, checkHelp(ctx, c.Bin, c.Flags...)))
 			}
 			show("git", checkHelp(ctx, "git"))
-			show("runner memory cap", memoryCapCheck(cfg.RunnerMemoryMax, scopeProblem(ctx, cfg.RunnerMemoryMax, runtime.GOOS)))
+			show("runner memory cap", memoryCapCheck(cfg.RunnerMemoryMax, runner.ScopeProblem(ctx, cfg.RunnerMemoryMax, runtime.GOOS)))
 			creds, tokenSource := checkTelegramCreds()
 			show("telegram credentials", creds)
 			for _, dir := range targets {
@@ -297,7 +297,7 @@ func checkHelp(ctx context.Context, name string, flags ...string) checkResult {
 }
 
 // memoryCapCheck reports whether each runner runs under its own memory
-// cap, given the reason it cannot from scopeProblem.
+// cap, given the reason it cannot from runner.ScopeProblem.
 func memoryCapCheck(memoryMax string, problem error) checkResult {
 	const shared = "runners share herdr's memory"
 	switch {
@@ -305,11 +305,11 @@ func memoryCapCheck(memoryMax string, problem error) checkResult {
 		return ok("%s per runner (systemd scope)", memoryMax)
 	case memoryMax == config.MemoryOff:
 		return ok("off; %s", shared)
-	case errors.Is(problem, errNoSystemd):
+	case errors.Is(problem, runner.ErrNoSystemd):
 		return ok("%s; %s", problem, shared)
 	}
 	return warn(problem.Error()+"; "+shared,
-		"make `systemd-run --user --scope true` work in herdr's panes, or set runnerMemoryMax: off to silence this")
+		"make `busctl --user status` reach the systemd user manager where herdr runs, or set runnerMemoryMax: off to silence this")
 }
 
 // checkTelegramCreds also returns the file the kit reads the token from.
