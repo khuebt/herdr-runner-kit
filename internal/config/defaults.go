@@ -37,5 +37,6 @@ func Default() Config {
 		ContextHandoff:   true,
 		ContextHandoffAt: 15,
 		RunnerMemoryMax:  "25%",
+		HeavySlots:       2,
 	}
 }

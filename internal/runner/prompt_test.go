@@ -17,7 +17,7 @@ func TestPreambleOnlyForProjectTasks(t *testing.T) {
 	}
 	plain := &task.Task{ID: "t1", Cwd: "/work/other"}
 	got, err := r.contract(plain, "/out", task.Claude)
-	if err != nil || got != Contract(plain, r.Bin, "/out") {
+	if err != nil || got != Contract(plain, r.Bin, "/out")+heavyRule(r.Bin) {
 		t.Errorf("a task without a project got more than the contract: %v\n%s", err, got)
 	}
 	staged := &task.Task{ID: "t2", Project: "demo-app", Stage: "ux", RepoRoot: "/work/demo-app", Cwd: "/work/demo-app"}
@@ -30,7 +30,7 @@ func TestPreambleOnlyForProjectTasks(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, want := range []string{
-			Contract(staged, r.Bin, "/out") + "\n\nProject rules.",
+			Contract(staged, r.Bin, "/out") + heavyRule(r.Bin) + "\n\nProject rules.",
 			"stage ux", "handbook/product/discovery/ux/", "Stitch on", tt.want,
 		} {
 			if !strings.Contains(got, want) {

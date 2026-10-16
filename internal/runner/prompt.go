@@ -39,11 +39,20 @@ Rules:
 	return contract
 }
 
+// heavyRule is the contract rule that sends heavy commands through hrk
+// heavy, added while heavySlots is on.
+func heavyRule(bin string) string {
+	return "\n- Run tests, lint, typecheck and builds as " + bin + " heavy -- <command>; it waits for a free slot shared by every runner and the main session."
+}
+
 // contract returns t's report contract and, for a project task, the
 // project's preamble in the skill syntax of harness h. A record that cannot
 // be read still yields the preamble, with sharing off and no context pack.
 func (r *Runner) contract(t *task.Task, outDir string, h task.Harness) (string, error) {
 	contract := Contract(t, r.Bin, outDir)
+	if r.Config.HeavySlots > 0 {
+		contract += heavyRule(r.Bin)
+	}
 	if t.Project == "" {
 		return contract, nil
 	}

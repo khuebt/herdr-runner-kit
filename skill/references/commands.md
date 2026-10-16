@@ -22,6 +22,8 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `cleanup [id]... [--yes]` | List finished worktrees and branches left behind, yours and every project's: merged (squash and rebase merges included), unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
 | `events --learning [--task ID] [--project NAME]` | Use it when the user asks how much steering tasks took. Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish) and time waited on a human after the spawn. |
+| `heavy -- <command> [args...]` | Run your own tests, lint, typecheck and builds this way too: it waits for one of `heavySlots` slots (2 by default) shared with every runner, then runs the command and exits with its code. |
+| `heavy [--json]` | Who holds each heavy slot and who waits, with command and age. Use it when a runner, or your own check, seems to wait. |
 | `sync <id> [--from REF] [--no-send]` | Merge origin's default branch (such as `origin/main`), or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent, background work, an agent herdr cannot check, or a dirty worktree, and fetches only after those checks; a conflict is aborted and the text to `send` is printed. When it suggests `--from main`, local main has commits origin lacks. |
 
 ## Projects

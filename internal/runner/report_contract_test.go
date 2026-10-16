@@ -321,3 +321,17 @@ func TestReportHidesSecrets(t *testing.T) {
 		t.Errorf("decision keeps a secret: %q %q", got.Decisions, ev.Decisions)
 	}
 }
+
+func TestContractHeavyRuleFollowsHeavySlots(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	tk := &task.Task{ID: "t1", Cwd: "/work/other"}
+	rule := "\n- Run tests, lint, typecheck and builds as " + r.Bin + " heavy -- <command>; it waits for a free slot shared by every runner and the main session."
+	got, err := r.contract(tk, "/out", task.Claude)
+	if err != nil || !strings.HasSuffix(got, rule) || !strings.Contains(got, "report contract v3)") {
+		t.Errorf("heavySlots %d: contract lacks the heavy rule: %v\n%s", r.Config.HeavySlots, err, got)
+	}
+	r.Config.HeavySlots = 0
+	if got, err = r.contract(tk, "/out", task.Claude); err != nil || strings.Contains(got, " heavy -- ") {
+		t.Errorf("heavySlots 0: contract has the heavy rule: %v\n%s", err, got)
+	}
+}

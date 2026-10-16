@@ -34,6 +34,7 @@ keepFor: 2h               # kept tabs close 2 hours after the task finished
 stallAfter: 15m           # nudge an agent that shows no progress for 15 minutes
 contextHandoffAt: 20      # ask a Codex, pi or omp runner to hand off at 20% context left
 runnerMemoryMax: 16G      # cap each runner at 16 GB (Linux with systemd)
+heavySlots: 1             # run one wrapped test, lint or build command at a time
 ```
 
 ## Keys
@@ -56,6 +57,7 @@ runnerMemoryMax: 16G      # cap each runner at 16 GB (Linux with systemd)
 | `contextHandoff` | `true` | Lets the kit ask a runner near its context limit to hand off once to a fresh session of its task: a Claude runner at its first automatic compaction, a Codex runner at a turn end with little context left, and a pi or omp runner at either. `false` leaves runners to compact on their own. See [commands.md](commands.md#context-handoff). |
 | `contextHandoffAt` | `15` | For Codex, pi and omp runners: the context left, in percent of the window, at or below which a turn end asks for the handoff. Codex's footer shows it; for pi and omp the kit's runner extension sends it at each turn end. From 5 to 50. |
 | `runnerMemoryMax` | `25%` | Memory cap of each runner on Linux with systemd: a size such as `16G` or `8192M` (`K`, `M`, `G` or `T`), a share of RAM from `1%` to `100%`, or `off`. See [Runner memory cap](#runner-memory-cap). |
+| `heavySlots` | `2` | How many commands wrapped in `hrk heavy` run at once across every runner and the main session; the others wait for a free slot. From 0 to 64; `0` runs them at once and drops the rule from the runner contract. See [commands.md](commands.md#heavy-commands). |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.

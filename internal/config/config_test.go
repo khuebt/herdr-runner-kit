@@ -139,6 +139,23 @@ func TestParseRunnerMemoryMax(t *testing.T) {
 	}
 }
 
+func TestParseHeavySlots(t *testing.T) {
+	if cfg := Default(); cfg.HeavySlots != 2 {
+		t.Errorf("default heavySlots = %d", cfg.HeavySlots)
+	}
+	for v, want := range map[string]int{"0": 0, "1": 1, "64": 64} {
+		cfg, err := Parse([]byte("heavySlots: " + v + "\n"))
+		if err != nil || cfg.HeavySlots != want {
+			t.Errorf("Parse(%s) = %d, %v", v, cfg.HeavySlots, err)
+		}
+	}
+	for _, v := range []string{"-1", "65", "two"} {
+		if _, err := Parse([]byte("heavySlots: " + v + "\n")); err == nil || !strings.Contains(err.Error(), "heavySlots") && !strings.Contains(err.Error(), "cannot unmarshal") {
+			t.Errorf("Parse(%q) error = %v", v, err)
+		}
+	}
+}
+
 func TestParseEmptyFile(t *testing.T) {
 	if _, err := Parse(nil); err != nil {
 		t.Fatal(err)

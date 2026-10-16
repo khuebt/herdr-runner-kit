@@ -108,6 +108,13 @@ func (r *Runner) checkProgress(ctx context.Context, t *task.Task, now time.Time)
 		r.saveProgress(t.ID, st)
 		return
 	}
+	if r.Store.HeavyWaiting(t.ID) {
+		// Queued for a heavy command slot: the wait is someone else's
+		// command, so it never nudges or interrupts this runner.
+		st.Since, st.Samples = now, 0
+		r.saveProgress(t.ID, st)
+		return
+	}
 	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, progressScreenLines)
 	if err != nil {
 		return

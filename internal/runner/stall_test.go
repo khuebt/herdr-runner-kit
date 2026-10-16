@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -209,5 +210,37 @@ func TestStallLadderAfterRecoveredWork(t *testing.T) {
 	p := kitPrompts(fake)
 	if fake.count("agent", "send-keys") != 0 || len(p) != 2 || !strings.HasPrefix(p[1], "No visible progress for 10 minutes.") {
 		t.Errorf("after recovered work: prompts %q, keys %d", p, fake.count("agent", "send-keys"))
+	}
+}
+
+func TestStallSkipsAWaitForAHeavySlot(t *testing.T) {
+	r, fake, tk, _ := stallRunner(t, harnessFixture(t, "working-claude-1.txt"))
+	release, err := r.Store.AcquireHeavy(context.Background(), 1, state.HeavyRecord{Task: "main"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	waited := make(chan struct{})
+	go func() {
+		defer close(waited)
+		_, _ = r.Store.AcquireHeavy(ctx, 1, state.HeavyRecord{Task: tk.ID}, nil)
+	}()
+	for deadline := time.Now().Add(5 * time.Second); !r.Store.HeavyWaiting(tk.ID); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the runner never queued")
+		}
+	}
+	start := time.Now()
+	sampleEvery(t, r, tk.ID, start, 0, 40)
+	if p := kitPrompts(fake); len(p) != 0 || fake.count("agent", "send-keys") != 0 {
+		t.Fatalf("a queued runner was nudged: prompts %q, keys %d", p, fake.count("agent", "send-keys"))
+	}
+	cancel()
+	<-waited
+	release()
+	// Out of the queue, the same quiet screen climbs the ladder again.
+	sampleEvery(t, r, tk.ID, start, 41, 51)
+	if p := kitPrompts(fake); len(p) != 1 {
+		t.Errorf("prompts after the queue = %q", p)
 	}
 }

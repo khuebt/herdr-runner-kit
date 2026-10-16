@@ -79,6 +79,10 @@ type Config struct {
 	// 16G or a share of RAM such as 25%, by running its agent in its own
 	// systemd scope. MemoryOff starts agents without one.
 	RunnerMemoryMax string
+	// HeavySlots is how many heavy commands (tests, lint, typecheck,
+	// builds) wrapped in hrk heavy run at once across every runner and the
+	// main session. Zero runs them at once with no queue.
+	HeavySlots int
 }
 
 // MemoryOff is the runnerMemoryMax value that turns the memory cap off.
@@ -93,6 +97,9 @@ const (
 	MinContextHandoffAt = 5
 	MaxContextHandoffAt = 50
 )
+
+// MaxHeavySlots is the most heavySlots accepts.
+const MaxHeavySlots = 64
 
 // MinStallAfter is the shortest stallAfter: the progress check samples once
 // a minute and needs a few samples before it acts.
@@ -116,6 +123,7 @@ type fileConfig struct {
 	ContextHandoff       *bool               `yaml:"contextHandoff"`
 	ContextHandoffAt     *int                `yaml:"contextHandoffAt"`
 	RunnerMemoryMax      *string             `yaml:"runnerMemoryMax"`
+	HeavySlots           *int                `yaml:"heavySlots"`
 }
 
 type fileFallback struct {
@@ -230,6 +238,9 @@ func Parse(data []byte) (Config, error) {
 	if file.RunnerMemoryMax != nil {
 		cfg.RunnerMemoryMax = strings.TrimSpace(*file.RunnerMemoryMax)
 	}
+	if file.HeavySlots != nil {
+		cfg.HeavySlots = *file.HeavySlots
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -302,6 +313,9 @@ func (c Config) Validate() error {
 	}
 	if c.RunnerMemoryMax != MemoryOff && !memorySize.MatchString(c.RunnerMemoryMax) {
 		return fmt.Errorf("runnerMemoryMax must be a size such as 16G or 8192M, a share of RAM such as 25%%, or off, got %q", c.RunnerMemoryMax)
+	}
+	if c.HeavySlots < 0 || c.HeavySlots > MaxHeavySlots {
+		return fmt.Errorf("heavySlots must be from 0 (off) to %d, got %d", MaxHeavySlots, c.HeavySlots)
 	}
 	for _, ev := range c.Telegram.Notify {
 		if !slices.Contains(NotifyEvents, ev) {
