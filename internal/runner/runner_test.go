@@ -570,7 +570,7 @@ func TestLaunchCodexWaitsForLateHooksReview(t *testing.T) {
 	for i, c := range fake.calls {
 		switch strings.Join(c[:2], " ") {
 		case "agent send-keys":
-			if keys < 0 && slices.Equal(c[3:], []string{"2"}) {
+			if keys < 0 && slices.Equal(c[3:], []string{"2", "enter"}) {
 				keys = i
 			}
 		case "agent prompt":

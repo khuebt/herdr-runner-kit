@@ -396,7 +396,7 @@ func TestCodexStartupDialogScreens(t *testing.T) {
 		}
 	}
 	d, _ := DetectDialog(a, "Hooks need review")
-	if d.Action != Ask || !d.IdleWhileShown || !slices.Equal(d.Answers["trust"], []string{"2"}) || !slices.Equal(d.Answers["skip"], []string{"esc"}) || len(d.Answers) != 2 {
+	if d.Action != Ask || !d.IdleWhileShown || !slices.Equal(d.Answers["trust"], []string{"2", "enter"}) || !slices.Equal(d.Answers["skip"], []string{"esc"}) || len(d.Answers) != 2 {
 		t.Errorf("hooks review = %+v", d)
 	}
 }

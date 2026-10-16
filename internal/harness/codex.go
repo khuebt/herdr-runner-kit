@@ -69,14 +69,15 @@ func (codex) Dialogs() []Dialog {
 		{Name: "codex-update", Match: "Skip until next version", Action: SendKeys, Keys: []string{"esc"}},
 		// Trusting hooks lets them run outside the sandbox in every Codex
 		// session, so the user decides. herdr reports the screen as idle. A
-		// digit picks its option at once; Esc continues without trusting,
-		// for this session only. "1. Review hooks" is not used: Esc from the
+		// digit only moves the selection to its option, so Enter confirms
+		// it (codex-cli 0.162.1); Esc continues without trusting, for this
+		// session only. "1. Review hooks" is not used: Esc from the
 		// review closes the dialog as a skip. codex-cli 0.162.1 opened it
 		// 0.6 to 1.2 s after its input showed, and queues a prompt sent in
 		// between behind it.
 		{
 			Name: "codex-hooks-review", Match: "Hooks need review", Action: Ask, IdleWhileShown: true, OpensLate: 3 * time.Second,
-			Answers:  map[string][]string{"trust": {"2"}, "skip": {"esc"}},
+			Answers:  map[string][]string{"trust": {"2", "enter"}, "skip": {"esc"}},
 			Question: codexHooksQuestion,
 		},
 	}
