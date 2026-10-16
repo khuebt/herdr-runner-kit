@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +98,10 @@ func newDoctorCommand() *cobra.Command {
 			}
 			show("git", checkHelp(ctx, "git"))
 			show("runner memory cap", memoryCapCheck(cfg.RunnerMemoryMax, runner.ScopeProblem(ctx, cfg.RunnerMemoryMax, runtime.GOOS)))
+			if runtime.GOOS == "linux" {
+				unit, pref, err := herdrOOMPreference(ctx)
+				show("herdr oomd", oomPreferenceCheck(runtime.GOOS, unit, pref, err))
+			}
 			creds, tokenSource := checkTelegramCreds()
 			show("telegram credentials", creds)
 			for _, dir := range targets {
@@ -310,6 +315,117 @@ func memoryCapCheck(memoryMax string, problem error) checkResult {
 	}
 	return warn(problem.Error()+"; "+shared,
 		"make `busctl --user status` reach the systemd user manager where herdr runs, or set runnerMemoryMax: off to silence this")
+}
+
+// oomPreferenceCheck reports whether systemd-oomd is told to spare herdr's
+// unit. unit is "" when herdr does not run as a systemd service. Off Linux
+// it returns the zero result, which doctor does not print.
+func oomPreferenceCheck(goos, unit, preference string, err error) checkResult {
+	switch {
+	case goos != "linux":
+		return checkResult{}
+	case err != nil:
+		return warn("could not read herdr's oomd preference: "+err.Error(), "check that `systemctl --user` reaches the systemd user manager where herdr runs")
+	case unit == "":
+		return ok("herdr does not run as a systemd service; nothing to check")
+	case preference == "avoid" || preference == "omit":
+		return ok("%s: ManagedOOMPreference=%s", unit, preference)
+	}
+	return warn(unit+" has no ManagedOOMPreference; under memory pressure systemd-oomd may kill herdr and every session in it",
+		"systemctl --user edit "+unit+", add `[Service]` and `ManagedOOMPreference=avoid`, then systemctl --user daemon-reload (applies at the next herdr restart)")
+}
+
+// herdrOOMPreference finds the systemd unit of the herdr server that owns
+// the socket herdr reports, and reads its ManagedOOMPreference. unit is ""
+// when the server does not run in a .service cgroup. Linux only.
+func herdrOOMPreference(ctx context.Context) (unit, preference string, err error) {
+	status, _ := output(ctx, "herdr", "status", "server")
+	var socket string
+	for line := range strings.SplitSeq(status, "\n") {
+		if v, found := strings.CutPrefix(line, "socket:"); found {
+			socket = strings.TrimSpace(v)
+		}
+	}
+	if socket == "" {
+		return "", "", errors.New("`herdr status server` names no socket")
+	}
+	pid, err := socketOwner(socket)
+	if err != nil {
+		return "", "", err
+	}
+	cgroup, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return "", "", err
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(cgroup)), "\n") {
+		if path, found := strings.CutPrefix(line, "0::"); found {
+			unit = filepath.Base(path)
+		}
+	}
+	if !strings.HasSuffix(unit, ".service") {
+		return "", "", nil
+	}
+	// systemctl over busctl: busctl needs the unit's escaped object path.
+	out, err := output(ctx, "systemctl", "--user", "show", unit, "-p", "LoadState", "-p", "ManagedOOMPreference")
+	if err != nil {
+		return unit, "", fmt.Errorf("systemctl --user show %s: %s", unit, firstLine(out, err))
+	}
+	props := map[string]string{}
+	for line := range strings.SplitSeq(out, "\n") {
+		if k, v, found := strings.Cut(line, "="); found {
+			props[k] = strings.TrimSpace(v)
+		}
+	}
+	if props["LoadState"] != "loaded" {
+		// A system service or a gone unit: the user manager only reports defaults.
+		return unit, "", fmt.Errorf("%s is not a loaded user unit (LoadState=%s)", unit, props["LoadState"])
+	}
+	return unit, props["ManagedOOMPreference"], nil
+}
+
+// socketOwner returns the pid of a process holding a socket bound to path:
+// every socket in /proc/net/unix with that path belongs to the server that
+// listens there. ponytail: scans every /proc/<pid>/fd; SO_PEERCRED would
+// need a Linux-only file.
+func socketOwner(path string) (int, error) {
+	data, err := os.ReadFile("/proc/net/unix")
+	if err != nil {
+		return 0, err
+	}
+	inodes := map[string]bool{}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if f := strings.Fields(line); len(f) == 8 && f[7] == path {
+			inodes["socket:["+f[6]+"]"] = true
+		}
+	}
+	if len(inodes) == 0 {
+		return 0, fmt.Errorf("no socket is bound to %s", path)
+	}
+	procs, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, err
+	}
+	for _, p := range procs {
+		pid, err := strconv.Atoi(p.Name())
+		if err != nil {
+			continue
+		}
+		fds, _ := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid)) // other users' processes are unreadable
+		for _, fd := range fds {
+			if link, _ := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, fd.Name())); inodes[link] {
+				return pid, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("no readable process holds %s", path)
+}
+
+// firstLine is a command's first output line, or its error when it printed nothing.
+func firstLine(out string, err error) string {
+	if line, _, _ := strings.Cut(strings.TrimSpace(out), "\n"); line != "" {
+		return line
+	}
+	return err.Error()
 }
 
 // checkTelegramCreds also returns the file the kit reads the token from.

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -193,5 +194,38 @@ func TestMemoryCapCheck(t *testing.T) {
 	r := memoryCapCheck("16G", runner.ScopeProblem(ctx, "16G", "linux"))
 	if r.level != "warn" || r.detail != "busctl is not on PATH; runners share herdr's memory" || !strings.Contains(r.fix, "runnerMemoryMax: off") {
 		t.Errorf("no busctl = %+v", r)
+	}
+}
+
+func TestOOMPreferenceCheck(t *testing.T) {
+	for _, c := range []struct {
+		name, goos, unit, pref string
+		err                    error
+		level, detail          string
+	}{
+		{name: "macOS", goos: "darwin", unit: "herdr.service", pref: "none"},
+		{name: "no service", goos: "linux", level: "ok", detail: "herdr does not run as a systemd service; nothing to check"},
+		{name: "avoid", goos: "linux", unit: "herdr.service", pref: "avoid", level: "ok", detail: "herdr.service: ManagedOOMPreference=avoid"},
+		{name: "omit", goos: "linux", unit: "herdr.service", pref: "omit", level: "ok", detail: "herdr.service: ManagedOOMPreference=omit"},
+		{
+			name: "none", goos: "linux", unit: "herdr.service", pref: "none", level: "warn",
+			detail: "herdr.service has no ManagedOOMPreference; under memory pressure systemd-oomd may kill herdr and every session in it",
+		},
+		{
+			name: "empty", goos: "linux", unit: "herdr.service", level: "warn",
+			detail: "herdr.service has no ManagedOOMPreference; under memory pressure systemd-oomd may kill herdr and every session in it",
+		},
+		{
+			name: "read error", goos: "linux", unit: "herdr.service", err: errors.New("boom"), level: "warn",
+			detail: "could not read herdr's oomd preference: boom",
+		},
+	} {
+		r := oomPreferenceCheck(c.goos, c.unit, c.pref, c.err)
+		if r.level != c.level || r.detail != c.detail {
+			t.Errorf("%s = %+v", c.name, r)
+		}
+		if wantFix := c.level == "warn" && c.err == nil; wantFix != strings.Contains(r.fix, "ManagedOOMPreference=avoid") {
+			t.Errorf("%s fix = %q", c.name, r.fix)
+		}
 	}
 }
