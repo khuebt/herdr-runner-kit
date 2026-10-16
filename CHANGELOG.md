@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.10.0...v0.11.0) (2026-10-16)
+
+
+### Features
+
+* run runners on pi and omp ([#39](https://github.com/khuebt/herdr-runner-kit/issues/39)) ([3a8bd61](https://github.com/khuebt/herdr-runner-kit/commit/3a8bd6140fafeaad943387a372aed3340e73f2ca))
+
+
+### Bug Fixes
+
+* close a runner's workspace once its worktree is gone ([#46](https://github.com/khuebt/herdr-runner-kit/issues/46)) ([4c42d7e](https://github.com/khuebt/herdr-runner-kit/commit/4c42d7e78c6579291a7de8dc815d9ec49f69e8ff))
+* fail a runner whose agent exited back to its shell after a herdr restart ([#44](https://github.com/khuebt/herdr-runner-kit/issues/44)) ([4c42d7e](https://github.com/khuebt/herdr-runner-kit/commit/4c42d7e78c6579291a7de8dc815d9ec49f69e8ff))
+* limit gc to the current main session and project runners by default ([#45](https://github.com/khuebt/herdr-runner-kit/issues/45)) ([4c42d7e](https://github.com/khuebt/herdr-runner-kit/commit/4c42d7e78c6579291a7de8dc815d9ec49f69e8ff))
+* publish release candidates with notes ([#47](https://github.com/khuebt/herdr-runner-kit/issues/47)) ([4c42d7e](https://github.com/khuebt/herdr-runner-kit/commit/4c42d7e78c6579291a7de8dc815d9ec49f69e8ff))
+* resubmit a first prompt whose Enter was lost ([#49](https://github.com/khuebt/herdr-runner-kit/issues/49)) ([4c42d7e](https://github.com/khuebt/herdr-runner-kit/commit/4c42d7e78c6579291a7de8dc815d9ec49f69e8ff))
+* run each runner's agent in its own memory-capped systemd scope on Linux ([#43](https://github.com/khuebt/herdr-runner-kit/issues/43)) ([4c42d7e](https://github.com/khuebt/herdr-runner-kit/commit/4c42d7e78c6579291a7de8dc815d9ec49f69e8ff))
+* show the shared plan-run worktree in show and list ([#48](https://github.com/khuebt/herdr-runner-kit/issues/48)) ([4c42d7e](https://github.com/khuebt/herdr-runner-kit/commit/4c42d7e78c6579291a7de8dc815d9ec49f69e8ff))
+* wake the main session again after herdr restores it with claude --resume ([#42](https://github.com/khuebt/herdr-runner-kit/issues/42)) ([4c42d7e](https://github.com/khuebt/herdr-runner-kit/commit/4c42d7e78c6579291a7de8dc815d9ec49f69e8ff))
+
 ## [0.10.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.9.0...v0.10.0) (2026-10-15)
 
 
