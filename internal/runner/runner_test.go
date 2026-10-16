@@ -492,6 +492,106 @@ func TestLaunchCodexWorktree(t *testing.T) {
 	}
 }
 
+// busyStart makes herdr's agent start fail with codes, one per call, then
+// succeed, and reports the pane's shell as back when shellBack.
+func busyStart(fake *fakeHerdr, shellBack bool, codes ...string) {
+	fake.on("agent start", func([]string) (string, error) {
+		if len(codes) > 0 {
+			code := codes[0]
+			codes = codes[1:]
+			return "", herdrError(code)
+		}
+		return `{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`, nil
+	})
+	fg := 101
+	if shellBack {
+		fg = 100
+	}
+	fake.on("pane process-info", ok(fmt.Sprintf(`{"result":{"process_info":{"shell_pid":100,"foreground_process_group_id":%d}}}`, fg)))
+}
+
+func TestLaunchRetriesOnceOnBusyPane(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	busyStart(fake, true, herdr.CodeAgentPaneBusy)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running {
+		t.Errorf("status = %s", got.Status)
+	}
+	if n := fake.count("agent", "start"); n != 2 {
+		t.Errorf("agent start called %d times, want 2", n)
+	}
+	if n := fake.count("pane", "process-info"); n != 1 {
+		t.Errorf("process-info called %d times, want 1: the shell was back", n)
+	}
+}
+
+func TestLaunchFailsOnSecondBusyPane(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	busyStart(fake, true, herdr.CodeAgentPaneBusy, herdr.CodeAgentPaneBusy)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err == nil || !strings.Contains(err.Error(), "start agent: ") || !strings.Contains(err.Error(), herdr.CodeAgentPaneBusy) {
+		t.Fatalf("err = %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Failed {
+		t.Errorf("status = %s", got.Status)
+	}
+	if n := fake.count("agent", "start"); n != 2 {
+		t.Errorf("agent start called %d times, want 2", n)
+	}
+}
+
+func TestLaunchDoesNotRetryOtherStartErrors(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	busyStart(fake, true, "pane_not_found")
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err == nil {
+		t.Fatal("want error")
+	}
+	if n, m := fake.count("agent", "start"), fake.count("pane", "process-info"); n != 1 || m != 0 {
+		t.Errorf("agent start called %d times, process-info %d", n, m)
+	}
+}
+
+func TestBusyPaneWaitGivesUpAtItsCap(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	var slept time.Duration
+	r.Sleep = func(d time.Duration) { slept += d }
+	busyStart(fake, false, herdr.CodeAgentPaneBusy)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := fake.count("pane", "process-info"); n != int(busyShellWait/shellPollEvery) {
+		t.Errorf("process-info called %d times", n)
+	}
+	if slept < busyShellWait || fake.count("agent", "start") != 2 {
+		t.Errorf("slept %v, agent start called %d times", slept, fake.count("agent", "start"))
+	}
+}
+
+func TestExportWaitsForTheShell(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	polls := 0
+	fake.on("pane process-info", func([]string) (string, error) {
+		polls++
+		fg := 101 // the shell still runs what was typed
+		if polls == 3 {
+			fg = 100
+		}
+		return fmt.Sprintf(`{"result":{"process_info":{"shell_pid":100,"foreground_process_group_id":%d}}}`, fg), nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: gitRepo(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if polls != 3 {
+		t.Errorf("polled %d times, want 3", polls)
+	}
+}
+
 func TestLaunchWaitsForHumanAtTrustDialog(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))

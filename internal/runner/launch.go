@@ -26,6 +26,13 @@ const (
 	// herdr saw as not ready to turn idle before it calls the screen an
 	// unknown startup dialog.
 	unknownDialogIdleWait = 5 * time.Second
+	// shellPollEvery is how often waitShell looks at a pane's shell.
+	shellPollEvery = 250 * time.Millisecond
+	// exportShellWait caps the wait for the shell after the runner's
+	// environment is typed into it, and busyShellWait the wait after herdr
+	// found the pane busy.
+	exportShellWait = 3 * time.Second
+	busyShellWait   = 10 * time.Second
 )
 
 // errHandled means the launch ended in a state that is already recorded.
@@ -209,6 +216,12 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 	}
 	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID)})
 	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
+	if herdr.HasCode(err, herdr.CodeAgentPaneBusy) {
+		// The shell is still reading its startup files, or still running
+		// what was typed into it. Start once more when it is back.
+		r.waitShell(ctx, pane, busyShellWait)
+		_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
+	}
 	if err := r.settleStartup(ctx, t, adapter, pane, err); err != nil {
 		return spec, nil, "", err
 	}
@@ -387,8 +400,21 @@ func (r *Runner) exportEnv(ctx context.Context, pane string, t *task.Task, reset
 	if err := r.Herdr.PaneRun(ctx, pane, cmd+"; clear"); err != nil {
 		return fmt.Errorf("set runner environment: %w", err)
 	}
-	r.Sleep(300 * time.Millisecond) // let the shell return to its prompt
+	r.waitShell(ctx, pane, exportShellWait)
 	return nil
+}
+
+// waitShell waits until pane's shell is the foreground process group again,
+// which is what herdr asks of a pane an agent starts in, for at most limit.
+func (r *Runner) waitShell(ctx context.Context, pane string, limit time.Duration) {
+	for range int(limit / shellPollEvery) {
+		// Wait first: the shell may not have read what was just typed.
+		r.Sleep(shellPollEvery)
+		info, err := r.Herdr.PaneProcessInfo(ctx, pane)
+		if (err == nil && info.ShellPID > 0 && info.ForegroundPGID == info.ShellPID) || ctx.Err() != nil {
+			return
+		}
+	}
 }
 
 // prepareTrust makes sure the agent trusts the folder spawn ran in, so the
