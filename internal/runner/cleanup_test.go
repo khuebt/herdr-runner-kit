@@ -297,15 +297,20 @@ func TestQueuedTaskRechecksBranchAtLaunch(t *testing.T) {
 	}
 }
 
-func TestPaneRunFailureKeepsWorktreeRecord(t *testing.T) {
-	r, fake, _ := newTestRunner(t)
+// failFirstStart launches a code task whose worktree herdr creates for real
+// and whose environment cannot be set, after write has run in the new
+// worktree. It returns the failed task, its repository and its worktree.
+func failFirstStart(t *testing.T, r *Runner, fake *fakeHerdr, write func(t *testing.T, wt string)) (*task.Task, string, string) {
+	t.Helper()
 	repo := gitRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
+	herdrOwnsWorktree(fake, repo, wt)
 	fake.on("worktree create", func(args []string) (string, error) {
 		branch := args[slices.Index(args, "--branch")+1]
 		if out, err := exec.Command("git", "-C", repo, "worktree", "add", "-q", "-b", branch, wt).CombinedOutput(); err != nil {
 			return "", fmt.Errorf("%v: %s", err, out)
 		}
+		write(t, wt)
 		return fmt.Sprintf(`{"result":{"root_pane":{"pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"},"worktree":{"path":%q}}}`, wt), nil
 	})
 	fake.on("pane run", herdrErr("pane_not_found"))
@@ -316,11 +321,90 @@ func TestPaneRunFailureKeepsWorktreeRecord(t *testing.T) {
 	}
 	got, _ := r.Store.Get(tk.ID)
 	if got.Status != task.Failed || got.Worktree.Path != wt || !got.Worktree.OwnsBranch() ||
-		got.Worktree.BranchCreated == nil || got.Herdr.WorkspaceID != "w2" || got.Herdr.PaneID != "w2:p1" {
+		got.Herdr.WorkspaceID != "w2" || got.Herdr.PaneID != "w2:p1" {
 		t.Fatalf("task = %+v, worktree = %+v", got, got.Worktree)
 	}
-	if it := cleanable(t, r, repo); it.Task.ID != tk.ID || !it.Worktree || !it.Branch {
-		t.Errorf("cleanable = %+v", it)
+	return got, repo, wt
+}
+
+func TestFailedFirstStartRemovesEmptyWorktree(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk, repo, wt := failFirstStart(t, r, fake, func(*testing.T, string) {})
+	if isDir(wt) || BranchExists(context.Background(), repo, tk.Worktree.Branch) {
+		t.Error("worktree or branch left")
+	}
+	if !tk.Worktree.Removed || !tk.Worktree.BranchDeleted || !tk.Herdr.Closed {
+		t.Errorf("worktree = %+v", tk.Worktree)
+	}
+	if n := fake.count("worktree", "remove"); n != 1 {
+		t.Errorf("herdr worktree remove called %d times; it closes the workspace", n)
+	}
+	cleaned := eventsOf(t, r, tk.ID, "cleaned")
+	if len(cleaned) != 1 || cleaned[0].Summary != "never started; removed its empty worktree and branch" {
+		t.Errorf("cleaned = %+v", cleaned)
+	}
+	if items, _ := r.Cleanable(context.Background(), Owners{Owner: repo}, false); len(items) != 0 {
+		t.Errorf("left after the failed start: %+v", items)
+	}
+}
+
+func TestFailedFirstStartKeepsWrittenWorktree(t *testing.T) {
+	for name, write := range map[string]func(t *testing.T, wt string){
+		"commit": func(t *testing.T, wt string) {
+			writeFile(t, filepath.Join(wt, "a.txt"))
+			git(t, wt, "add", "a.txt")
+			git(t, wt, "commit", "-q", "-m", "feat: a")
+		},
+		"untracked": func(t *testing.T, wt string) { writeFile(t, filepath.Join(wt, "notes.txt")) },
+		"plan file": func(t *testing.T, wt string) { writeFile(t, filepath.Join(wt, "plans", "notes.md")) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			tk, repo, wt := failFirstStart(t, r, fake, write)
+			if !isDir(wt) || !BranchExists(context.Background(), repo, tk.Worktree.Branch) || tk.Worktree.Removed {
+				t.Errorf("worktree = %+v", tk.Worktree)
+			}
+			if fake.count("worktree", "remove") != 0 || len(eventsOf(t, r, tk.ID, "cleaned")) != 0 {
+				t.Error("removed or reported cleaned")
+			}
+			if it := cleanable(t, r, repo); it.Task.ID != tk.ID || !it.Worktree || !it.Branch {
+				t.Errorf("cleanable = %+v", it)
+			}
+		})
+	}
+}
+
+func TestFailedRelaunchKeepsWorktree(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	repo, wt := worktreeRepo(t, "hrk/t1-x")
+	tk := &task.Task{
+		Kind: "code", Agent: "gemini", Prompt: "x", Cwd: repo, Owner: repo, RepoRoot: repo,
+		UseWorktree: true, Worktree: &task.Worktree{Path: wt, Branch: "hrk/t1-x", BranchCreated: new(true)},
+		Gate: task.GateAuto, Status: task.Starting, FallbackFrom: []string{"codex"},
+		Herdr: task.Herdr{WorkspaceID: "w2", PaneID: "w2:p1"},
+	}
+	if err := r.Store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+	herdrOwnsWorktree(fake, repo, wt)
+	if err := r.Launch(context.Background(), tk.ID); err == nil {
+		t.Fatal("want error")
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Failed || got.Worktree.Removed || !isDir(wt) || !BranchExists(context.Background(), repo, "hrk/t1-x") {
+		t.Errorf("task = %+v, worktree = %+v", got, got.Worktree)
+	}
+}
+
+func TestFailedTabStartRemovesNothing(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr("pane_not_found"))
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err == nil {
+		t.Fatal("want error")
+	}
+	if fake.count("worktree", "remove") != 0 || fake.count("workspace", "close") != 0 || len(eventsOf(t, r, tk.ID, "cleaned")) != 0 {
+		t.Error("a tab task's failed start removed something")
 	}
 }
 

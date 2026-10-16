@@ -55,10 +55,21 @@ func (r *Runner) Launch(ctx context.Context, id string) error {
 		return err
 	}
 	if err := r.launch(ctx, t); err != nil && !errors.Is(err, errHandled) {
+		if !takesOverPane(t) {
+			r.removeUnstarted(ctx, id)
+		}
 		r.fail(id, err.Error())
 		return err
 	}
 	return nil
+}
+
+// takesOverPane reports whether t's launch starts its agent in the pane and
+// checkout an earlier session of it used: the agent hit its usage limit, or
+// neared its context limit, and its fallback, or a fresh session, takes
+// over.
+func takesOverPane(t *task.Task) bool {
+	return t.Herdr.PaneID != "" && (len(t.FallbackFrom) > 0 || t.Attempt > 1)
 }
 
 func (r *Runner) launch(ctx context.Context, t *task.Task) error {
@@ -69,10 +80,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	loc := herdr.Location{WorkspaceID: t.Herdr.WorkspaceID, TabID: t.Herdr.TabID, PaneID: t.Herdr.PaneID}
 	name := "hrk-" + t.ID
 	var carried []proc
-	if t.Herdr.PaneID != "" && (len(t.FallbackFrom) > 0 || t.Attempt > 1) {
-		// The agent hit its usage limit, or neared its context limit: its
-		// fallback, or a fresh session, takes over the same pane and
-		// checkout.
+	if takesOverPane(t) {
 		left, err := r.clearPane(ctx, t)
 		if err != nil {
 			return err
