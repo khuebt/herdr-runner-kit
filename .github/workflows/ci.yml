@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: shellcheck install.sh scripts/test-install.sh
+      - run: shellcheck install.sh scripts/test-install.sh scripts/rc-notes.sh
 
   install:
     strategy:

@@ -166,9 +166,13 @@ func printNotes(ctx context.Context, out io.Writer, c *upgrade.Client, current s
 }
 
 // releaseNotes is a release's notes under one heading. release-please notes
-// open with their own "## 0.1.0 (date)" heading, so only others get one.
+// open with their own "## 0.1.0 (date)" heading, so only others get one. A
+// release published without notes, such as an early candidate, says so.
 func releaseNotes(r upgrade.Release) string {
 	body := strings.TrimSpace(r.Body)
+	if body == "" {
+		body = "(no release notes)"
+	}
 	if strings.HasPrefix(body, "#") {
 		return body
 	}
