@@ -262,16 +262,8 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 			case <-time.After(max(time.Until(due), time.Until(retry))):
 			}
 			retry = time.Now().Add(runner.GCRetry)
-			owners := []string{owner}
-			for _, t := range tasks {
-				if !slices.Contains(owners, t.Owner) {
-					owners = append(owners, t.Owner)
-				}
-			}
-			for _, o := range owners {
-				if _, err := r.GC(ctx, o, runner.GCAge, false, false); err != nil {
-					return 0
-				}
+			if _, err := r.GC(ctx, runner.Owners{Owner: owner, Projects: true}, runner.GCAge, false, false); err != nil {
+				return 0
 			}
 		case res.TimedOut:
 		default:

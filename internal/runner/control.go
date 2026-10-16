@@ -238,9 +238,9 @@ func (r *Runner) Keep(ctx context.Context, id string, on bool) (*task.Task, erro
 
 // GC closes runners whose tasks finished more than olderThan ago, so their
 // agents stop using memory. A kept runner closes once it finished keepFor
-// ago, or with kept or removeWorktree like any other. An empty owner means
-// every owner's tasks. It returns the ids it closed.
-func (r *Runner) GC(ctx context.Context, owner string, olderThan time.Duration, removeWorktree, kept bool) ([]string, error) {
+// ago, or with kept or removeWorktree like any other. It closes only the
+// tasks of owners. It returns the ids it closed.
+func (r *Runner) GC(ctx context.Context, owners Owners, olderThan time.Duration, removeWorktree, kept bool) ([]string, error) {
 	tasks, err := r.Store.List()
 	if err != nil {
 		return nil, err
@@ -258,7 +258,7 @@ func (r *Runner) GC(ctx context.Context, owner string, olderThan time.Duration, 
 		}
 	}
 	for _, t := range tasks {
-		if (owner != "" && t.Owner != owner) || !collectable(t, removeWorktree) || finishedAt(t).After(c.cutoffFor(t)) {
+		if !owners.Has(t.Owner) || !collectable(t, removeWorktree) || finishedAt(t).After(c.cutoffFor(t)) {
 			continue
 		}
 		err := r.closeRunner(ctx, t, removeWorktree, c)

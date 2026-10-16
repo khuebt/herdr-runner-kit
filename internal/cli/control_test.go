@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -175,11 +176,21 @@ func TestGCOwners(t *testing.T) {
 			r.Herdr = &herdr.Client{Bin: "herdr", Exec: (&fakeHerdrExec{}).exec}
 			r.ProcTable = nil
 			r.Notify = nil
-			closed, err := gcOwners(context.Background(), r, tc.owners, 0, false, false)
+			closed, err := r.GC(context.Background(), tc.owners, 0, false, false)
 			slices.Sort(closed)
 			if err != nil || !slices.Equal(closed, tc.want) {
 				t.Errorf("closed = %v, %v; want %v", closed, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestGCOwnerAndAllExcludeEachOther(t *testing.T) {
+	cmd := newGCCommand()
+	cmd.SetArgs([]string{"--owner", "/a", "--all"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "[all owner] were all set") {
+		t.Errorf("err = %v", err)
 	}
 }

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,7 +181,7 @@ func newGCCommand() *cobra.Command {
 			case !all:
 				owners = runner.Owners{Owner: currentOwner(cmd), Projects: true}
 			}
-			closed, err := gcOwners(cmd.Context(), r, owners, olderThan, removeWorktree, kept)
+			closed, err := r.GC(cmd.Context(), owners, olderThan, removeWorktree, kept)
 			if len(closed) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "closed %s\n", strings.Join(closed, ", "))
 			} else if err == nil {
@@ -196,32 +195,8 @@ func newGCCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&kept, "kept", false, "also close kept runners whose task finished at least --older-than ago")
 	cmd.Flags().BoolVar(&all, "all", false, "close runners of every main session")
 	cmd.Flags().StringVar(&owner, "owner", "", "close runners of this main session only (default: git top-level of the current folder, plus the tasks of every project)")
+	cmd.MarkFlagsMutuallyExclusive("owner", "all")
 	return cmd
-}
-
-// gcOwners runs GC for each owner that owners selects. The zero Owners
-// selects every owner in one GC call.
-func gcOwners(ctx context.Context, r *runner.Runner, owners runner.Owners, olderThan time.Duration, removeWorktree, kept bool) ([]string, error) {
-	if owners == (runner.Owners{}) {
-		return r.GC(ctx, "", olderThan, removeWorktree, kept)
-	}
-	tasks, err := r.Store.List()
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var closed []string
-	var errs []error
-	for _, t := range tasks {
-		if t.Owner == "" || seen[t.Owner] || !owners.Has(t.Owner) {
-			continue
-		}
-		seen[t.Owner] = true
-		ids, err := r.GC(ctx, t.Owner, olderThan, removeWorktree, kept)
-		closed = append(closed, ids...)
-		errs = append(errs, err)
-	}
-	return closed, errors.Join(errs...)
 }
 
 func newCleanupCommand() *cobra.Command {

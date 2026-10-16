@@ -188,7 +188,7 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			gcAfter = time.Now().Add(runner.GCRetry)
 			go func(owners []string) {
 				for _, owner := range owners {
-					_, _ = r.GC(ctx, owner, runner.GCAge, false, false)
+					_, _ = r.GC(ctx, runner.Owners{Owner: owner}, runner.GCAge, false, false)
 				}
 			}(o.owners(tasks))
 		}
