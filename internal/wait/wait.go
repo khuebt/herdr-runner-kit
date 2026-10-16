@@ -53,8 +53,11 @@ type Options struct {
 	Projects bool
 	Tasks    []string // empty means every task of the owners
 	Cursor   string   // cursor name; default derived from Owner
-	Timeout  time.Duration
-	Window   time.Duration
+	// Holder names this wait in the cursor lock, so a refused wait can say
+	// who holds it; default "wait".
+	Holder  string
+	Timeout time.Duration
+	Window  time.Duration
 }
 
 // Result is what one wait returns.
@@ -78,7 +81,10 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	if o.Window <= 0 {
 		o.Window = BurstWindow
 	}
-	unlock, err := r.Store.LockCursor(o.Cursor)
+	if o.Holder == "" {
+		o.Holder = "wait"
+	}
+	unlock, err := r.Store.LockCursor(o.Cursor, o.Holder)
 	if err != nil {
 		return Result{}, err
 	}

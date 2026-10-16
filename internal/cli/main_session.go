@@ -104,29 +104,25 @@ func newAutoarmCommand() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Only the main session consumes news here. Another Claude session
-			// in the same folder would take the cursor and hide news from main,
-			// and a runner has its own turn-end hook.
-			main := os.Getenv("HRK_MAIN")
-			if main == "" || os.Getenv("HRK_TASK") != "" {
-				return nil
-			}
 			var payload struct {
-				Cwd string `json:"cwd"`
+				Cwd       string `json:"cwd"`
+				SessionID string `json:"session_id"`
 			}
 			_ = json.NewDecoder(io.LimitReader(cmd.InOrStdin(), 1<<20)).Decode(&payload)
+			main := os.Getenv("HRK_MAIN")
+			if os.Getenv("HRK_TASK") != "" || main == "" && payload.SessionID == "" {
+				return nil // not the main session; skip opening the state
+			}
 			if payload.Cwd == "" {
 				payload.Cwd, _ = os.Getwd()
 			}
 			r, err := openRunner()
-			if err != nil {
+			if err != nil || !isMainSession(os.Getenv, payload.SessionID, r.Store) {
 				return nil
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 			defer stop()
-			if pid, err := strconv.Atoi(main); err == nil && pid > 1 {
-				ctx = whileAlive(ctx, pid)
-			}
+			ctx = whileAlive(ctx, mainPID(main))
 			if code := autoarm(ctx, r, runner.CallerOwner(ctx, payload.Cwd), cmd.ErrOrStderr()); code != 0 {
 				os.Exit(code)
 			}
@@ -135,13 +131,52 @@ func newAutoarmCommand() *cobra.Command {
 	}
 }
 
+// autoarmHolder names the hook in the cursor lock.
+const autoarmHolder = "hook"
+
+// isMainSession reports whether the hook runs in the main session. Only it
+// consumes news here: another Claude session in the same folder would take
+// the cursor and hide news from main, and a runner has its own turn-end hook.
+// The session hrk main starts has HRK_MAIN, and its Claude session id is
+// recorded; a resume (herdr restoring it, or claude --resume) loses the
+// environment but keeps the id.
+func isMainSession(getenv func(string) string, sessionID string, s *state.Store) bool {
+	if getenv("HRK_TASK") != "" {
+		return false
+	}
+	if getenv("HRK_MAIN") != "" {
+		_ = s.RecordMainSession(sessionID)
+		return true
+	}
+	return s.IsMainSession(sessionID)
+}
+
+// mainPID is the PID of the main session's Claude process: HRK_MAIN when it
+// holds one, else the parent of the hook's shell. It returns 0 when neither
+// is known, and then whileAlive watches only the shell.
+func mainPID(env string) int {
+	if pid, err := strconv.Atoi(env); err == nil && pid > 1 {
+		return pid
+	}
+	out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(os.Getppid())).Output()
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || pid <= 1 {
+		return 0
+	}
+	return pid
+}
+
 // aliveEvery is how often whileAlive looks for its process.
 var aliveEvery = 5 * time.Second
 
 // whileAlive cancels ctx once process pid is gone, or once the hook's own
 // shell is, which happens when Claude kills only the shell on its timeout. A
 // hook that outlived either would otherwise hold the cursor lock, and swallow
-// the news it can no longer deliver.
+// the news it can no longer deliver. A pid of 1 or less watches only the
+// shell.
 func whileAlive(ctx context.Context, pid int) context.Context {
 	ctx, cancel := context.WithCancel(ctx)
 	parent := os.Getppid()
@@ -153,7 +188,7 @@ func whileAlive(ctx context.Context, pid int) context.Context {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				if os.Getppid() != parent || errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+				if os.Getppid() != parent || (pid > 1 && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)) {
 					cancel()
 					return
 				}
@@ -179,7 +214,7 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 	var gcLock func()
 	var retry time.Time
 	for {
-		res, err := wait.Run(ctx, r, wait.Options{Owner: owner, Projects: true})
+		res, err := wait.Run(ctx, r, wait.Options{Owner: owner, Projects: true, Holder: autoarmHolder})
 		switch {
 		case err != nil:
 			return 0
@@ -188,7 +223,7 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 			// left to watch, one hook per owner stays to close them on
 			// time; every turn starts a hook, and the others leave.
 			if gcLock == nil {
-				if gcLock, err = r.Store.LockCursor(state.CursorName(owner) + "-gc"); err != nil {
+				if gcLock, err = r.Store.LockCursor(state.CursorName(owner)+"-gc", "gc"); err != nil {
 					return 0
 				}
 				defer gcLock()

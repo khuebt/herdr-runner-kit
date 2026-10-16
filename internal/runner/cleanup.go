@@ -331,7 +331,7 @@ func checkedOut(ctx context.Context, root, branch string) bool {
 // user. It runs at most once per CleanupCheckEvery for an owner, and never
 // alongside another check for that owner.
 func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
-	unlock, err := r.Store.LockCursor(state.CursorName(owner) + "-cleanup")
+	unlock, err := r.Store.LockCursor(state.CursorName(owner)+"-cleanup", "cleanup")
 	if err != nil {
 		return // another wait is checking, or the lock is unusable
 	}

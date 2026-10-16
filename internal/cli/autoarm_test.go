@@ -72,7 +72,7 @@ func TestAutoarm(t *testing.T) {
 	if err := r.Store.Create(t2); err != nil {
 		t.Fatal(err)
 	}
-	unlock, err := r.Store.LockCursor(state.CursorName("/repo"))
+	unlock, err := r.Store.LockCursor(state.CursorName("/repo"), "wait")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,4 +194,44 @@ func TestWhileAliveEndsWithItsParent(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("the orphaned watch did not end")
+}
+
+func TestIsMainSession(t *testing.T) {
+	r := testRunner(t)
+	if err := r.Store.RecordMainSession("main-id"); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, hrkMain, hrkTask, id string
+		want, recorded             bool
+	}{
+		{"started by hrk main records its id", "123", "", "new-id", true, true},
+		{"resumed main session", "", "", "main-id", true, true},
+		{"another session in the folder", "", "", "other-id", false, false},
+		{"runner, even with a main id", "123", "t1", "runner-id", false, false},
+		{"no session id", "", "", "", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]string{"HRK_MAIN": c.hrkMain, "HRK_TASK": c.hrkTask}
+			if got := isMainSession(func(k string) string { return env[k] }, c.id, r.Store); got != c.want {
+				t.Fatalf("isMainSession = %v, want %v", got, c.want)
+			}
+			if got := r.Store.IsMainSession(c.id); got != c.recorded {
+				t.Fatalf("recorded = %v, want %v", got, c.recorded)
+			}
+		})
+	}
+}
+
+func TestAlreadyWaitingNamesTheHolder(t *testing.T) {
+	for holder, want := range map[string]string{
+		"hook": "already waiting: the main session's auto re-arm hook holds this cursor (pid 7); it wakes you on news",
+		"wait": "already waiting: another hrk wait holds this cursor (pid 7)",
+		"":     "already waiting: another wait holds this cursor",
+	} {
+		if got := alreadyWaiting(&state.HeldError{Holder: holder, PID: 7}); got != want {
+			t.Errorf("%q: got %q", holder, got)
+		}
+	}
 }

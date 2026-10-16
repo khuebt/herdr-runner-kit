@@ -164,7 +164,7 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 - A `done` line lists the runner's own decisions as `decided: …` right after the title, and a round of questions spans a header and one numbered line per question. See [report-contract.md](report-contract.md#question-rounds).
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.
-- It only sees tasks of its owners: the git top-level of the current folder and every `project:` owner by default, or only `--owner`. So several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`.
+- It only sees tasks of its owners: the git top-level of the current folder and every `project:` owner by default, or only `--owner`. So several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`, naming the holder and its pid: the main session's auto re-arm hook, which wakes the agent on news, or another `hrk wait`.
 - When every task has finished, it exits with an `idle:` line. A task that is `needs-human` or `held` keeps it waiting, because the answer or release can come from another main session's Telegram or from the runner's tab. It waits up to a second after the latest status change first, so news written right after that change is not lost.
 - After 30 minutes without news it prints `timeout` and exits 0 (`--timeout` changes this).
 

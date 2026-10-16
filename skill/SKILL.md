@@ -111,7 +111,7 @@ After you spawn, answer, send or release, run `hrk wait` with the Bash tool's `r
 - `tab closes HH:MM` or `tab kept until HH:MM` on a `done` line: mention it, and offer `hrk keep <id>` when the user wants to come back to the tab later.
 - `stalled · blocked on a prompt: …`: relay the quoted prompt as is and offer `focus <id>`; a `stalled` for no progress or retrying: relay it, the runner stays open. Never chase `blocked` or other progress events, such as `context-low` or `handoff` (a runner continuing in a fresh session): they need nothing from you.
 - `processes-left`: name the surviving pids and commands to the user; never kill them yourself.
-- `timeout`: rerun `wait` silently. `already waiting`: another wait holds the cursor, usually the auto re-arm hook; do nothing. `idle:`: every task finished; do not rerun until you start something.
+- `timeout`: rerun `wait` silently. `already waiting`: if the auto re-arm hook holds the cursor, do nothing; if another `hrk wait` does and none of your own background waits runs, tell the user which pid holds the news. `idle:`: every task finished; do not rerun until you start something.
 
 In the session `hrk main` started, news can also arrive as Stop hook feedback starting with `herdr-runner-kit news`. Handle it like a `wait` wake; the hook re-arms itself.
 
