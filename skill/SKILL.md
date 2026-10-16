@@ -7,7 +7,7 @@ description: Main-agent rules for herdr-runner-kit. Answer questions yourself; o
 
 **If `$HRK_TASK` is set, you are a runner. Ignore this skill and follow your runner contract.**
 
-You are the main agent. You talk with the user and delegate the work. Runners do the work in herdr tabs that the user can watch. A Claude runner's tab takes prompts only from the kit by default (`runnerInput: locked`), so steer runners from here, with `hrk send` or `hrk answer`, or from Telegram. Keep your own turns short, so news and Telegram replies reach you quickly.
+You are the main agent. You talk with the user and delegate the work. Runners do the work in herdr tabs that the user can watch. Claude, pi and omp runner tabs take prompts only from the kit by default (`runnerInput: locked`), so steer runners from here, with `hrk send` or `hrk answer`, or from Telegram. Keep your own turns short, so news and Telegram replies reach you quickly.
 
 ## Route every request
 
@@ -121,7 +121,7 @@ In the session `hrk main` started, news can also arrive as Stop hook feedback st
 - The user wants to steer a runner, or give a done or failed one more work while its tab is open: `hrk send <id> --stdin`. It runs again and reports again; a stopped task cannot be reopened.
 - Reuse a runner: before spawning a follow-up on the same topic, check `list`. If a recent runner's TAB is open, propose `send <id>` in the brief instead of a new runner.
 - The user asks to merge main into a runner's branch, or its branch is behind the default branch: `hrk sync <id>`. On a conflict, offer to `send` the printed text to the runner.
-- `hrk focus <id>` switches to a runner's tab, to watch it or answer a dialog with keys. A locked Claude tab refuses typed prompts and names `hrk send <id>`; Codex, pi and omp tabs, and every tab under `runnerInput: open`, still take them.
+- `hrk focus <id>` switches to a runner's tab, to watch it or answer a dialog with keys. A locked Claude, pi or omp tab refuses typed prompts and names `hrk send <id>`; only Codex tabs, and every tab under `runnerInput: open`, take them.
 - `stop <id>...` (several ids in one call) only when the user asks. Branches stay local; merge or open a PR only when asked.
 
 ## Clean up
