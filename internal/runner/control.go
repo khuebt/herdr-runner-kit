@@ -37,10 +37,30 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	head := roundHead(t) // a new round begins with this prompt
-	// A done the agent held before a message sent while it works does not
-	// answer the message, so its turn end must not finish the task.
-	queued := doneAtTurnEnd(t) && r.agentWorking(ctx, t)
+	// A done held before a message sent while the agent works, or while it
+	// still holds a done, does not answer the message, so the turn end must
+	// not finish the task with it. The send is recorded before the prompt
+	// is typed, so a done the agent reports on the message is never taken
+	// for an earlier one, and taken back when the prompt fails.
+	var sent, prevSent time.Time
+	if doneAtTurnEnd(t) && (t.PendingDone != nil || r.agentWorking(ctx, t)) {
+		sent = time.Now().UTC()
+		if _, err := r.Store.Update(id, func(t *task.Task) error {
+			prevSent, t.QueuedSend = t.QueuedSend, sent
+			return nil
+		}); err != nil {
+			return false, err
+		}
+	}
 	if err := r.typePrompt(ctx, t, t.Herdr.PaneID, text); err != nil {
+		if !sent.IsZero() {
+			_, _ = r.Store.Update(id, func(t *task.Task) error {
+				if t.QueuedSend.Equal(sent) {
+					t.QueuedSend = prevSent
+				}
+				return nil
+			})
+		}
 		return false, err
 	}
 	errClosing, errStopped := errors.New("closing"), errors.New("stopped")
@@ -60,9 +80,6 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		if t.Status.Terminal() {
 			t.Status, t.FinishedAt, t.Error = task.Running, time.Time{}, ""
 			t.PendingDone = nil
-		}
-		if queued {
-			t.QueuedSend = time.Now().UTC()
 		}
 		return nil
 	}); errors.Is(err, errClosing) {

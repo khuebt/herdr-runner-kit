@@ -351,3 +351,52 @@ func TestSupersededDoneOfAGoneAgentFails(t *testing.T) {
 		t.Errorf("status %s, done events %d", got.Status, len(doneEvents(t, r, tk.ID)))
 	}
 }
+
+func TestSendIsQueuedBeforeThePromptIsTyped(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	var after []string
+	tk := codexRunning(t, r, gitRepo(t), &after)
+	fake.on("pane read", ok(codexWorkingScreen))
+	var atPrompt time.Time
+	fake.on("agent prompt", func([]string) (string, error) {
+		cur, _ := r.Store.Get(tk.ID)
+		atPrompt = cur.QueuedSend
+		return "{}", nil
+	})
+	if _, err := r.Send(context.Background(), tk.ID, "also the docs"); err != nil {
+		t.Fatal(err)
+	}
+	if atPrompt.IsZero() {
+		t.Error("the send was not recorded before the prompt was typed")
+	}
+}
+
+func TestSendToAnIdleCodexHoldingADoneSupersedesIt(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	var after []string
+	tk := codexRunning(t, r, gitRepo(t), &after)
+	runnerDone(t, r, tk.ID, "first") // its turn end was lost
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}`))
+	if _, err := r.Send(context.Background(), tk.ID, "one more thing"); err != nil {
+		t.Fatal(err)
+	}
+	codexTurnEnd(t, r, tk.ID)
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Running || got.PendingDone == nil || !got.PendingDone.Superseded || len(doneEvents(t, r, tk.ID)) != 0 || len(after) != 0 {
+		t.Fatalf("the old done answered the message: %+v", got)
+	}
+}
+
+func TestFailedSendTakesItsQueuedMarkBack(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	var after []string
+	tk := codexRunning(t, r, gitRepo(t), &after)
+	runnerDone(t, r, tk.ID, "first")
+	fake.on("agent prompt", herdrErr("pane_busy"))
+	if _, err := r.Send(context.Background(), tk.ID, "lost"); err == nil {
+		t.Fatal("send succeeded")
+	}
+	if got, _ := r.Store.Get(tk.ID); !got.QueuedSend.IsZero() {
+		t.Error("a send that never went in left the held done to be superseded")
+	}
+}
