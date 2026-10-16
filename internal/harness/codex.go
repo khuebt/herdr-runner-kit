@@ -398,6 +398,14 @@ func (codex) ShowsWorking(screen string) bool {
 	return anyLineMatches(lastLines(screen, statusLines), codexWorking)
 }
 
+// LocksInput is false: a per-run prompt hook loads, but Codex skips it
+// until the user trusts its hash, which would add a trust step for every
+// Codex user.
+func (codex) LocksInput() bool                        { return false }
+func (codex) ClearInputKeys() []string                { return nil }
+func (codex) GatePrompt([]byte) (string, bool, error) { return "", false, nil }
+func (codex) GateBlock(string) string                 { return "" }
+
 func (codex) Checks() Checks {
 	return Checks{
 		Bin:         "codex",

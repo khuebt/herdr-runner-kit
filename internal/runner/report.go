@@ -114,7 +114,7 @@ func (r *Runner) report(id string, o ReportOptions, finish int) (*task.Task, err
 		question = task.JoinQuestions(o.Questions)
 	}
 	// A report while the runner's question is still open means the user
-	// answered it in the runner's tab.
+	// answered it in the runner's tab, which a locked tab never takes.
 	var answered, held bool
 	t, err := r.Store.Update(id, func(t *task.Task) error {
 		if err := staleAttempt(t, o.Attempt); err != nil {
@@ -138,7 +138,7 @@ func (r *Runner) report(id string, o ReportOptions, finish int) (*task.Task, err
 			t.Unreported = 0
 			return nil
 		}
-		answered = t.Status == task.NeedsHuman && t.Question != ""
+		answered = t.Status == task.NeedsHuman && t.Question != "" && !InputLocked(t)
 		t.Status = o.Status
 		t.Summary, t.Outputs, t.Question, t.Decisions = o.Summary, o.Outputs, question, o.Decisions
 		t.Unreported = 0

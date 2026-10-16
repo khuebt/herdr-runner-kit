@@ -37,6 +37,8 @@ type LaunchOptions struct {
 type FilesInput struct {
 	Bin      string // absolute path of the kit binary the hooks call
 	Contract string // the report contract text
+	// InputLocked adds the prompt gate, for an adapter that LocksInput.
+	InputLocked bool
 }
 
 // File is one per-task runner file, written into the task folder with mode
@@ -224,6 +226,22 @@ type Adapter interface {
 	// of a running turn. The kit reads it only for an adapter whose done
 	// waits for the turn end; the others answer false.
 	ShowsWorking(screen string) bool
+	// LocksInput reports whether the kit can lock the agent's input: a
+	// prompt-submit hook calls `hrk __prompt-gate`, which lets through only
+	// the prompts the kit typed and the agent's own.
+	LocksInput() bool
+	// ClearInputKeys are the herdr keys that empty the agent's input box
+	// without interrupting a running turn. The kit sends them before it
+	// types into a locked runner: the agent puts a prompt the gate blocked
+	// back into the box, and the kit's prompt would be joined to it.
+	ClearInputKeys() []string
+	// GatePrompt reads a prompt-submit hook's payload: the prompt, and
+	// whether it is the agent's own, such as a note that background work
+	// ended, which the gate always lets through.
+	GatePrompt(payload []byte) (prompt string, synthetic bool, err error)
+	// GateBlock is what the prompt gate prints to refuse a prompt, showing
+	// reason to the human.
+	GateBlock(reason string) string
 	// Checks lists what doctor checks.
 	Checks() Checks
 }

@@ -167,7 +167,7 @@ func (r *Runner) climb(ctx context.Context, t *task.Task, step int, idle time.Du
 	case stepNudged:
 		// Queued, never waited on: the agent reads it after its current step.
 		text := fmt.Sprintf("No visible progress for %d minutes. If a command or network call is hanging, stop it and continue; otherwise say what you are waiting for.", minutes)
-		if err := r.Herdr.AgentPrompt(ctx, pane, text); err != nil {
+		if err := r.typePrompt(ctx, t, pane, text); err != nil {
 			return
 		}
 		r.emit(t, "nudged", fmt.Sprintf("no visible progress for %d min; nudged", minutes), "")
@@ -180,7 +180,7 @@ func (r *Runner) climb(ctx context.Context, t *task.Task, step int, idle time.Du
 		summary := fmt.Sprintf("no visible progress for %d min after a nudge; interrupted", minutes)
 		if cur, err := r.Store.Get(t.ID); err == nil && cur.Unreported == before {
 			text := fmt.Sprintf("You were interrupted after %d minutes without visible progress. Continue the task; run a command that may hang with a timeout, or skip it and say so in your report.", minutes)
-			if r.Herdr.AgentPrompt(ctx, pane, text) == nil {
+			if r.typePrompt(ctx, t, pane, text) == nil {
 				summary += " and resumed"
 			}
 		}

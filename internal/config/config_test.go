@@ -156,6 +156,23 @@ func TestParseHeavySlots(t *testing.T) {
 	}
 }
 
+func TestParseRunnerInput(t *testing.T) {
+	if cfg := Default(); cfg.RunnerInput != InputLocked {
+		t.Errorf("default runnerInput = %q, want locked", cfg.RunnerInput)
+	}
+	for _, v := range []string{"locked", "open"} {
+		cfg, err := Parse([]byte("runnerInput: " + v + "\n"))
+		if err != nil || cfg.RunnerInput != v {
+			t.Errorf("Parse(%s) = %q, %v", v, cfg.RunnerInput, err)
+		}
+	}
+	for _, v := range []string{`""`, "closed", "true"} {
+		if _, err := Parse([]byte("runnerInput: " + v + "\n")); err == nil || !strings.Contains(err.Error(), "runnerInput") {
+			t.Errorf("Parse(%s) error = %v", v, err)
+		}
+	}
+}
+
 func TestParseWorktreeSetup(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

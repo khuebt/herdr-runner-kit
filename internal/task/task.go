@@ -187,6 +187,9 @@ type Task struct {
 	Handoffs []string `json:"handoffs,omitempty"`
 	// Stalled is set while herdr reports the agent blocked on a prompt.
 	Stalled bool `json:"stalled,omitempty"`
+	// InputLocked says the runner takes prompts only from the kit, when its
+	// agent can lock its input: the runnerInput config at spawn.
+	InputLocked bool `json:"inputLocked,omitempty"`
 	// Language is the language the runner writes its report summaries and
 	// questions in. Empty leaves it to the runner.
 	Language string `json:"language,omitempty"`

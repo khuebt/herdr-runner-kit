@@ -87,7 +87,17 @@ type Config struct {
 	// path, to the shell commands that run in each new runner worktree of
 	// it before its agent starts.
 	WorktreeSetup map[string][]string
+	// RunnerInput is InputLocked or InputOpen: whether a runner whose agent
+	// can lock its input takes prompts only from the kit, so text typed in
+	// its tab never reaches the model.
+	RunnerInput string
 }
+
+// The runnerInput values.
+const (
+	InputLocked = "locked"
+	InputOpen   = "open"
+)
 
 // MemoryOff is the runnerMemoryMax value that turns the memory cap off.
 const MemoryOff = "off"
@@ -129,6 +139,7 @@ type fileConfig struct {
 	RunnerMemoryMax      *string             `yaml:"runnerMemoryMax"`
 	HeavySlots           *int                `yaml:"heavySlots"`
 	WorktreeSetup        map[string][]string `yaml:"worktreeSetup"`
+	RunnerInput          *string             `yaml:"runnerInput"`
 }
 
 type fileFallback struct {
@@ -246,6 +257,9 @@ func Parse(data []byte) (Config, error) {
 	if file.HeavySlots != nil {
 		cfg.HeavySlots = *file.HeavySlots
 	}
+	if file.RunnerInput != nil {
+		cfg.RunnerInput = strings.TrimSpace(*file.RunnerInput)
+	}
 	if file.WorktreeSetup != nil {
 		cfg.WorktreeSetup = make(map[string][]string, len(file.WorktreeSetup))
 		for repo, cmds := range file.WorktreeSetup {
@@ -334,6 +348,9 @@ func (c Config) Validate() error {
 	}
 	if c.HeavySlots < 0 || c.HeavySlots > MaxHeavySlots {
 		return fmt.Errorf("heavySlots must be from 0 (off) to %d, got %d", MaxHeavySlots, c.HeavySlots)
+	}
+	if c.RunnerInput != InputLocked && c.RunnerInput != InputOpen {
+		return fmt.Errorf("runnerInput must be %s or %s, got %q", InputLocked, InputOpen, c.RunnerInput)
 	}
 	for repo, cmds := range c.WorktreeSetup {
 		if !filepath.IsAbs(repo) {

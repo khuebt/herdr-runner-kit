@@ -113,9 +113,13 @@ func newTestRunner(t *testing.T) (*Runner, *fakeHerdr, env) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	fake := newFakeHerdr()
 	e := env{"HERDR_ENV": "1", "HERDR_WORKSPACE_ID": "w1", "CLAUDE_CONFIG_DIR": t.TempDir()}
+	// Open input types every prompt as before the lock: the tests that list
+	// the exact herdr calls hold for it, and the lock has tests of its own.
+	cfg := config.Default()
+	cfg.RunnerInput = config.InputOpen
 	r := &Runner{
 		Store:         store,
-		Config:        config.Default(),
+		Config:        cfg,
 		Herdr:         &herdr.Client{Bin: "herdr", Exec: fake.exec},
 		Bin:           "/usr/local/bin/hrk",
 		Getenv:        e.get,

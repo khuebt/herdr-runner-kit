@@ -94,7 +94,7 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 			nudge = r.handoffRequest(t)
 		}
 		if !adapter.NudgeInHook() {
-			if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, nudge); err != nil {
+			if err := r.typePrompt(ctx, t, t.Herdr.PaneID, nudge); err != nil {
 				return "", fmt.Errorf("nudge: %w", err)
 			}
 		}

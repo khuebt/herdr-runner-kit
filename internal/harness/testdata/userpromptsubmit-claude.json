@@ -1,0 +1,10 @@
+{
+  "session_id": "b21a76f8-c836-43d1-9cd6-bf1b270a9a3f",
+  "transcript_path": "/home/u/.claude/projects/-home-u-repo/b21a76f8-c836-43d1-9cd6-bf1b270a9a3f.jsonl",
+  "cwd": "/home/u/repo",
+  "scratchpad_dir": "/tmp/claude-1000/-home-u-repo/b21a76f8-c836-43d1-9cd6-bf1b270a9a3f/scratchpad",
+  "prompt_id": "ee7faa03-2987-4610-855f-be82f12d472e",
+  "permission_mode": "auto",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "human typed text"
+}

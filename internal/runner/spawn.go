@@ -409,6 +409,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 		MainWorkspace: workspace, ClaudeConfigDir: configDir, Language: language,
 		Project: project.Name, Stage: stage, Keep: o.Keep,
 		Plan: o.Plan, Phase: o.Phase, CheckoutOf: o.CheckoutOf,
+		InputLocked: r.Config.RunnerInput == config.InputLocked,
 		// Queued until spawn decides: a task with no pending parents moves on
 		// to held or starting at once.
 		Status: task.Queued,

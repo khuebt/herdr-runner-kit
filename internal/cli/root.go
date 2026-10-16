@@ -38,6 +38,7 @@ func NewRootCommand() *cobra.Command {
 		newAfterCommand(),
 		newTurnEndCommand(),
 		newContextCommand(),
+		newPromptGateCommand(),
 		newWaitCommand(),
 		newHeavyCommand(),
 		newAnswerCommand(),

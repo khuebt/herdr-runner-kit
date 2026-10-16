@@ -40,7 +40,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	// A done the agent held before a message sent while it works does not
 	// answer the message, so its turn end must not finish the task.
 	queued := doneAtTurnEnd(t) && r.agentWorking(ctx, t)
-	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
+	if err := r.typePrompt(ctx, t, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
 	errClosing, errStopped := errors.New("closing"), errors.New("stopped")
@@ -113,7 +113,7 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	head := roundHead(t)
-	if err := r.Herdr.AgentPrompt(ctx, t.Herdr.PaneID, text); err != nil {
+	if err := r.typePrompt(ctx, t, t.Herdr.PaneID, text); err != nil {
 		return false, err
 	}
 	nt, changed, err := r.Store.Transition(id, task.Running, []task.Status{task.NeedsHuman}, func(t *task.Task) {

@@ -21,7 +21,10 @@ type learning struct {
 	waited                           time.Duration
 	waitingSince                     time.Time
 	awaitingAnswer                   bool
-	lastStatus                       task.Status
+	// locked says the runner's tab takes no prompts, so it never counts an
+	// answer given there.
+	locked     bool
+	lastStatus task.Status
 	// active sums the working rounds, from a start, send or answer to the
 	// next report or stop; roundSince is the open round's start.
 	active     time.Duration
@@ -129,11 +132,12 @@ func (l *learning) endStall(ts time.Time) {
 
 // tabAnswer counts a question the user answered in the runner's tab: the
 // runner moved on after needs-human with no answer or send from the kit.
+// A locked tab takes no answer, so its runner moved on by itself.
 func (l *learning) tabAnswer() {
-	if l.awaitingAnswer {
+	if l.awaitingAnswer && !l.locked {
 		l.answers++
-		l.awaitingAnswer = false
 	}
+	l.awaitingAnswer = false
 }
 
 // printLearning prints, per task with events, how much steering it took:
@@ -164,6 +168,9 @@ func printLearning(out io.Writer, events []state.Event, tasks []*task.Task, ids 
 		l := rows[ev.Task]
 		if l == nil {
 			l = &learning{}
+			if t := byID[ev.Task]; t != nil {
+				l.locked = runner.InputLocked(t)
+			}
 			rows[ev.Task] = l
 			order = append(order, ev.Task)
 		}

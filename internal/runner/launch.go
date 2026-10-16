@@ -163,7 +163,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if err := r.settleDialogs(ctx, t, adapter, loc.PaneID, err == nil && a.Status == "blocked"); err != nil {
 		return err
 	}
-	if err := r.Herdr.AgentPrompt(ctx, loc.PaneID, text); err != nil {
+	if err := r.typePrompt(ctx, t, loc.PaneID, text); err != nil {
 		return fmt.Errorf("send first prompt: %w", err)
 	}
 	t, changed, err := r.Store.SetStatus(t.ID, task.Running, task.Starting, task.NeedsHuman)
@@ -261,7 +261,7 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (string
 	if err != nil {
 		return "", err
 	}
-	files, err := adapter.Files(harness.FilesInput{Bin: r.Bin, Contract: contract})
+	files, err := adapter.Files(harness.FilesInput{Bin: r.Bin, Contract: contract, InputLocked: t.InputLocked})
 	if err != nil {
 		return "", err
 	}
@@ -674,6 +674,10 @@ func startedLine(t *task.Task, spec task.AgentSpec, setup *setupResult, scope st
 	}
 	if scope != "" {
 		parts = append(parts, scope)
+	}
+	if t.InputLocked && !InputLocked(t) {
+		name := string(spec.Harness)
+		parts = append(parts, fmt.Sprintf("input open (%s cannot lock it yet)", strings.ToUpper(name[:1])+name[1:]))
 	}
 	parts = append(parts, fmt.Sprintf("tab %q", t.ID+" · "+t.Title))
 	return strings.Join(parts, " · ")

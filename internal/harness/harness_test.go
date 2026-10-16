@@ -431,7 +431,7 @@ func TestShows(t *testing.T) {
 }
 
 func TestClaudeSettings(t *testing.T) {
-	data, err := ClaudeSettings("/home/u/bin/hrk")
+	data, err := ClaudeSettings("/home/u/bin/hrk", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,12 +474,80 @@ func TestClaudeSettings(t *testing.T) {
 	if len(start) != 1 || start[0].Matcher != "compact" || len(start[0].Hooks) != 1 || start[0].Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
 		t.Errorf("SessionStart hooks = %s", data)
 	}
-	data, _ = ClaudeSettings("/opt/it's here/hrk")
+	if strings.Contains(string(data), "UserPromptSubmit") {
+		t.Errorf("open input has a prompt gate: %s", data)
+	}
+	data, _ = ClaudeSettings("/opt/it's here/hrk", false)
 	if !strings.Contains(string(data), `'/opt/it'\\''s here/hrk' __turn-end`) {
 		t.Errorf("unsafe quoting: %s", data)
 	}
-	if _, err := ClaudeSettings("hrk"); err == nil {
+	if _, err := ClaudeSettings("hrk", false); err == nil {
 		t.Error("relative binary accepted")
+	}
+}
+
+func TestClaudeSettingsPromptGate(t *testing.T) {
+	data, err := ClaudeSettings("/home/u/bin/hrk", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Hooks struct {
+			Stop, UserPromptSubmit []struct {
+				Matcher string
+				Hooks   []struct{ Type, Command string }
+			}
+		}
+	}
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatal(err)
+	}
+	gate := s.Hooks.UserPromptSubmit
+	if len(gate) != 1 || gate[0].Matcher != "" || len(gate[0].Hooks) != 1 ||
+		gate[0].Hooks[0].Type != "command" || gate[0].Hooks[0].Command != "/home/u/bin/hrk __prompt-gate --harness claude" {
+		t.Errorf("UserPromptSubmit hooks = %s", data)
+	}
+	if len(s.Hooks.Stop) != 1 {
+		t.Errorf("the gate replaced the other hooks: %s", data)
+	}
+	files, err := claude{}.Files(FilesInput{Bin: "/home/u/bin/hrk", Contract: "C", InputLocked: true})
+	if err != nil || len(files) == 0 || !strings.Contains(string(files[0].Data), "__prompt-gate") {
+		t.Errorf("locked Claude files = %q, %v", files, err)
+	}
+}
+
+func TestInputLockMethods(t *testing.T) {
+	for _, a := range All() {
+		locks := a.Harness() == task.Claude
+		if a.LocksInput() != locks {
+			t.Errorf("%s: LocksInput = %v", a.Harness(), a.LocksInput())
+		}
+		if !locks && (a.ClearInputKeys() != nil || a.GateBlock("x") != "") {
+			t.Errorf("%s: an open adapter clears or blocks", a.Harness())
+		}
+	}
+	keys := claude{}.ClearInputKeys()
+	if len(keys) != 2*claudeClearLines || keys[0] != "ctrl+u" || keys[1] != "backspace" || slices.Contains(keys, "esc") {
+		t.Errorf("Claude clear keys = %q", keys)
+	}
+	if got := (claude{}).GateBlock(`t1 is a runner: "hrk send"`); got != `{"decision":"block","reason":"t1 is a runner: \"hrk send\""}` {
+		t.Errorf("Claude block = %s", got)
+	}
+	for file, want := range map[string]bool{
+		"userpromptsubmit-claude.json":                   false,
+		"userpromptsubmit-task-notification-claude.json": true,
+	} {
+		payload, err := os.ReadFile(filepath.Join("testdata", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		prompt, got, err := (claude{}).GatePrompt(payload)
+		if err != nil || got != want || prompt == "" {
+			t.Errorf("%s: synthetic = %v, %v (prompt %q); want %v", file, got, err, prompt, want)
+		}
+	}
+	if _, _, err := (claude{}).GatePrompt([]byte("not json")); err == nil {
+		t.Error("an unreadable payload was read")
 	}
 }
 

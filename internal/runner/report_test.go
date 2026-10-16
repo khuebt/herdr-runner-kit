@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -534,5 +535,22 @@ func TestReportNotesWarnWithoutRefusing(t *testing.T) {
 	}
 	if notes := r.ReportNotes(tk.ID, ReportOptions{Status: task.Done, Summary: "ok", Outputs: []string{inside}}); len(notes) != 0 {
 		t.Errorf("a short summary with an output in out/ got notes: %q", notes)
+	}
+}
+
+func TestReportInALockedTabIsNoTabAnswer(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	r.Config.RunnerInput = config.InputLocked
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	if _, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Questions: []string{"Drop it?"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Nobody can answer in a locked tab: the runner moved on by itself.
+	if _, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "Kept it."}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"spawned", "needs-human", "done"}
+	if got := events(t, r, tk.ID); !slices.Equal(got, want) {
+		t.Errorf("events = %v, want %v", got, want)
 	}
 }

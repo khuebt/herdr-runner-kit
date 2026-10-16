@@ -38,5 +38,6 @@ func Default() Config {
 		ContextHandoffAt: 15,
 		RunnerMemoryMax:  "25%",
 		HeavySlots:       2,
+		RunnerInput:      InputLocked,
 	}
 }

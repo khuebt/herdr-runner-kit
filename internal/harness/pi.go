@@ -271,6 +271,13 @@ func (pi) ShowsWorking(string) bool { return false }
 // Checks keeps pi and omp optional, so a config without them sees warnings
 // only. The flags are long forms: doctor matches them as substrings of
 // --help, where "-e" would match anything.
+// LocksInput is false for now: pi and omp see the kit's typed prompt and
+// a human's with the same source.
+func (pi) LocksInput() bool                        { return false }
+func (pi) ClearInputKeys() []string                { return nil }
+func (pi) GatePrompt([]byte) (string, bool, error) { return "", false, nil }
+func (pi) GateBlock(string) string                 { return "" }
+
 func (p pi) Checks() Checks {
 	flags := []string{"--model", "--thinking", p.approve, "--append-system-prompt", "--extension"}
 	if p.overlay != "" { // omp

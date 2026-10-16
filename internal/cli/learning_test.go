@@ -153,3 +153,36 @@ func TestLearningActiveStalledAndIdleKept(t *testing.T) {
 		}
 	}
 }
+
+func TestLearningCountsNoTabAnswerInALockedTab(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ev := func(s int, id, typ string, st task.Status) state.Event {
+		return state.Event{TS: t0.Add(time.Duration(s) * time.Second), Task: id, Type: typ, Status: st}
+	}
+	var events []state.Event
+	for _, id := range []string{"t1", "t2", "t3"} {
+		// The runner asks, then moves on without an answer from the kit.
+		events = append(events, ev(0, id, "spawned", task.Starting), ev(5, id, "started", task.Running),
+			ev(10, id, "needs-human", task.NeedsHuman), ev(50, id, "done", task.Done))
+	}
+	tasks := []*task.Task{
+		{ID: "t1", Kind: "code", Agent: "claude", InputLocked: true, Status: task.Done},
+		// Codex cannot lock its tab, so its user may have answered there.
+		{ID: "t2", Kind: "code", Agent: "codex", InputLocked: true, Status: task.Done},
+		{ID: "t3", Kind: "code", Agent: "claude", Status: task.Done},
+	}
+	var out strings.Builder
+	if err := printLearning(&out, events, tasks, nil, "", t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n")[1:] {
+		f := strings.Fields(line)
+		want := "1"
+		if f[0] == "t1" {
+			want = "0"
+		}
+		if f[8] != want { // ANSWERS
+			t.Errorf("%s answers = %s, want %s\n%s", f[0], f[8], want, out.String())
+		}
+	}
+}
