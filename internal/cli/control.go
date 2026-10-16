@@ -338,8 +338,12 @@ func newListCommand() *cobra.Command {
 				if note := compactionNote(r.Compactions(t.ID)); note != "" {
 					lastAge += ", " + note
 				}
+				title := t.Title
+				if t.CheckoutOf != "" {
+					title += " (in " + t.CheckoutOf + "'s worktree)"
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Kind, t.Agent, t.Status, state,
-					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), lastAge, t.Title)
+					tabState(t, now, r.Config.KeepFor), age(t.CreatedAt), lastAge, title)
 			}
 			return w.Flush()
 		},
@@ -499,7 +503,11 @@ func newShowCommand() *cobra.Command {
 					Events []state.Event `json:"events"`
 				}{t, mine})
 			}
-			_, err = fmt.Fprint(out, showText(t, mine, r.Store.TaskDir(id), r.Config.KeepFor, r.Compactions(id), withPrompt))
+			var anchor *task.Task
+			if t.CheckoutOf != "" {
+				anchor, _ = r.Store.Get(t.CheckoutOf) // unreadable: showText names the id only
+			}
+			_, err = fmt.Fprint(out, showText(t, anchor, mine, r.Store.TaskDir(id), r.Config.KeepFor, r.Compactions(id), withPrompt))
 			return err
 		},
 	}
@@ -513,9 +521,10 @@ func newShowCommand() *cobra.Command {
 // summary is printed whole.
 const maxShowField = 400
 
-// showText is the compact view of a task that show prints. compactions is
+// showText is the compact view of a task that show prints. anchor is the
+// task whose worktree t works in (t.CheckoutOf), or nil. compactions is
 // how many times its runner's sessions compacted their context.
-func showText(t *task.Task, events []state.Event, dir string, keepFor time.Duration, compactions int, withPrompt bool) string {
+func showText(t *task.Task, anchor *task.Task, events []state.Event, dir string, keepFor time.Duration, compactions int, withPrompt bool) string {
 	var b strings.Builder
 	field := func(name, value string) {
 		if value != "" {
@@ -549,13 +558,22 @@ func showText(t *task.Task, events []state.Event, dir string, keepFor time.Durat
 	}
 	field("time", when)
 	field("context", contextNote(t, compactions))
-	if w := t.Worktree; w != nil && w.Path != "" {
+	worktree := func(w *task.Worktree) string {
 		where := w.Path + " on " + w.Branch
 		if w.Removed {
 			where += " (removed)"
 		}
-		field("worktree", where)
-	} else {
+		return where
+	}
+	switch {
+	case t.Worktree != nil && t.Worktree.Path != "":
+		field("worktree", worktree(t.Worktree))
+	case t.CheckoutOf != "" && anchor != nil && anchor.Worktree != nil && anchor.Worktree.Path != "":
+		field("worktree", worktree(anchor.Worktree)+" (of "+t.CheckoutOf+")")
+	case t.CheckoutOf != "":
+		field("worktree", "shared with "+t.CheckoutOf)
+		field("cwd", t.Cwd)
+	default:
 		field("cwd", t.Cwd)
 	}
 	if t.Git != nil {
