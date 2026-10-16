@@ -323,6 +323,9 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 // long a kept tab stays open.
 func Line(ev state.Event, t *task.Task, keepFor time.Duration) string {
 	parts := []string{ev.Task + " " + ev.Type}
+	if ev.Type == "cleanable" && ev.Status != "" && ev.Status != task.Done {
+		parts = append(parts, string(ev.Status)) // a cleanable task that failed never reads as done
+	}
 	if t != nil && t.Title != "" {
 		parts = append(parts, t.Title)
 	}

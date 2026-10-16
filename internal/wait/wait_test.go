@@ -221,6 +221,33 @@ func TestIdleAndTimeout(t *testing.T) {
 }
 
 func TestIdleWaitOffersMergedWorktree(t *testing.T) {
+	r, repo := mergedBranchTask(t, task.Done, "")
+	got, err := Run(context.Background(), r, Options{Owner: repo})
+	if err != nil || len(got.Lines) != 1 || !strings.HasPrefix(got.Lines[0], "t1 cleanable") {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if want := "t1 cleanable · fix login · branch hrk/t1-a is merged into main; cleanup removes the branch"; got.Lines[0] != want {
+		t.Errorf("line = %q, want %q", got.Lines[0], want)
+	}
+	if got, _ := Run(context.Background(), r, Options{Owner: repo}); got.Idle == "" {
+		t.Errorf("second wait = %+v, want idle", got)
+	}
+}
+
+func TestCleanableNeverStartedReadsFailed(t *testing.T) {
+	r, repo := mergedBranchTask(t, task.Failed, "start agent: herdr agent start: agent_pane_busy: pane busy\nmore")
+	got, err := Run(context.Background(), r, Options{Owner: repo})
+	want := "t1 cleanable · failed · fix login · never started (start agent: herdr agent start: agent_pane_busy: pane busy); cleanup removes the branch"
+	if err != nil || len(got.Lines) != 1 || got.Lines[0] != want {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+// mergedBranchTask makes a task with status and error whose worktree is
+// gone and whose branch holds nothing beyond main, and returns its
+// repository.
+func mergedBranchTask(t *testing.T, status task.Status, reason string) (*runner.Runner, string) {
+	t.Helper()
 	r, _ := newTestRunner(t)
 	repo := t.TempDir()
 	for _, args := range [][]string{
@@ -232,21 +259,16 @@ func TestIdleWaitOffersMergedWorktree(t *testing.T) {
 			t.Fatalf("git %v: %v %s", args, err, out)
 		}
 	}
-	tk := addTask(t, r, task.Done, repo)
+	tk := addTask(t, r, status, repo)
 	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.Error = reason
 		t.RepoRoot = repo
 		t.Worktree = &task.Worktree{Path: repo + "-wt", Branch: "hrk/t1-a", Removed: true, BranchCreated: new(true)}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Run(context.Background(), r, Options{Owner: repo})
-	if err != nil || len(got.Lines) != 1 || !strings.HasPrefix(got.Lines[0], "t1 cleanable") {
-		t.Fatalf("got %+v, %v", got, err)
-	}
-	if got, _ := Run(context.Background(), r, Options{Owner: repo}); got.Idle == "" {
-		t.Errorf("second wait = %+v, want idle", got)
-	}
+	return r, repo
 }
 
 func TestAgentGoneFailsTask(t *testing.T) {

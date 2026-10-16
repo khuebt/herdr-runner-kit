@@ -410,6 +410,7 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 		return
 	}
 	errOffered := errors.New("offered")
+	started, startedErr := r.startedTasks()
 	for _, it := range items {
 		if it.Verdict != Merged {
 			continue
@@ -426,9 +427,17 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 		case !it.Worktree:
 			removes = "the branch"
 		}
+		summary := "branch " + t.Worktree.Branch + " is " + it.Detail
+		if startedErr == nil && !started[t.ID] && t.Status != task.Done {
+			// A branch with no commits counts as merged; say why it has none.
+			summary = "never started"
+			if reason, _, _ := strings.Cut(t.Error, "\n"); reason != "" {
+				summary += " (" + reason + ")"
+			}
+		}
 		ev := state.Event{
 			Task: t.ID, Owner: t.Owner, Type: "cleanable", Status: t.Status,
-			Summary: "branch " + t.Worktree.Branch + " is " + it.Detail + "; cleanup removes " + removes,
+			Summary: summary + "; cleanup removes " + removes,
 		}
 		if err := r.record(ev); err != nil {
 			// Not marked offered, so the next check offers it again.

@@ -145,7 +145,7 @@ A worktree removed outside the kit, such as with `git worktree remove`, is marke
 
 `cleanup` without `--owner` covers the current folder's owner and every project, as `list` does. Pass `--owner DIR` for one main session only.
 
-While `wait` runs, it fetches origin at most every 10 minutes and reports each newly merged worktree once as `cleanable` news, so the main agent can ask you. Nothing is removed until you agree.
+While `wait` runs, it fetches origin at most every 10 minutes and reports each newly merged worktree once as `cleanable` news, so the main agent can ask you. Nothing is removed until you agree. The news names the status of a task that did not finish as done, and a task whose agent never started says `never started` with its error, such as `t3 cleanable · failed · … · never started (start agent: …); cleanup removes the worktree and branch`.
 
 ## What `wait` reports
 
