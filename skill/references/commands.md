@@ -161,6 +161,8 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--cwd DIR` | Folder the task works in; by default the current folder, or the project's folder with `--project`. |
 | `--project NAME` | Registered project the task works for. It opens in the project's workspace and reports to `project:NAME`. Default: the project holding the task's folder, if any. |
 
+Picking an agent: the brief names each runner's harness, model and effort with one reason. Go below the kind's default for simple work, such as `--agent claude:claude-sonnet-5-5:low` for a doc edit, a rename or a one-line fix. Use a strong model and high effort only for multi-file design, root-cause hunts or live experiments, such as `--agent claude:claude-opus-5-5:high` for a cross-module refactor.
+
 ## Task statuses
 
 `queued` (waiting for parents) → `held` (human gate) → `starting` → `running` → `done`, `needs-human`, `failed` or `stopped`. A `needs-human` task returns to `running` after `answer`.

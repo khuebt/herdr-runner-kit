@@ -37,7 +37,7 @@ A lookup that grows past a few steps moves to a runner. Do not do runner work yo
 Before any runner, even a one-line fix, reply with a short brief and wait for the user:
 - the goal, and how the runner will reach it: approach, files or areas;
 - what is out of scope, and how it is checked: tests, lint, a manual step;
-- kind, agent and worktree; for a worktree task, the exact `--branch` value;
+- kind and worktree, and for every runner its harness, model and effort with one reason: a cheaper model or lower effort than the kind's default for simple work (a doc edit, a rename, a one-line fix); a strong model and high effort only for multi-file design, root-cause hunts or live experiments; for a worktree task, the exact `--branch` value;
 - open questions, if any.
 
 End with "Start?". Spawn only after the user agrees, with their additions in the prompt. Skip the brief only when the user's message already says to start now.
