@@ -129,6 +129,19 @@ type Dialog struct {
 	IdleWhileShown bool
 }
 
+// InputState is an adapter's reading of the agent's input box.
+type InputState int
+
+// Input states. InputUnknown is the safe answer: the launcher never
+// resubmits on it.
+const (
+	InputUnknown InputState = iota
+	// InputEmpty says the input box holds nothing.
+	InputEmpty
+	// InputHolds says the input box still holds the prompt that was sent.
+	InputHolds
+)
+
 // Adapter describes one agent CLI.
 type Adapter interface {
 	Harness() task.Harness
@@ -147,6 +160,11 @@ type Adapter interface {
 	// error line the agent itself draws when its account hit a usage limit.
 	// Conversation text and tool output never count.
 	ShowsUsageLimit(screen string) bool
+	// InputState reads screen's input box against prompt, the first prompt
+	// the kit sent. It answers InputHolds only when the box shows that
+	// prompt, so one extra Enter submits it; an agent whose input cannot be
+	// read reliably answers InputUnknown.
+	InputState(screen, prompt string) InputState
 	// ProgressText returns the part of a working agent's screen that
 	// changes only when the agent makes progress: the agent's own animated
 	// status lines, input box and footer are dropped, and the elapsed-time

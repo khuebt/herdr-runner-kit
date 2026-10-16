@@ -107,6 +107,10 @@ func (codex) ProgressText(screen string) string {
 	return joinLines(out)
 }
 
+// InputState is always unknown: Codex can report a stale state after
+// skipped hooks, and its input line is not read.
+func (codex) InputState(string, string) InputState { return InputUnknown }
+
 func (codex) ShowsRetry(screen string) bool {
 	return anyLineMatches(lastLines(screen, statusLines), codexRetry)
 }

@@ -1,0 +1,9 @@
+
+                                                                        ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /ak:research queues in the billing service and
+  report which ones can drop messages
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 medium fast off │ ⌂ Org: Acme │ ~/Work/demo-app
+  ctx █░░░░░░░░░ 0% 0K/1.0M │ 5h 13% ↻3h43m │ $0.00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
