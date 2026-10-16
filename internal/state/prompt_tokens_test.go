@@ -71,3 +71,44 @@ func TestPromptTokensConcurrentAddAndTake(t *testing.T) {
 		t.Fatalf("took %d tokens, want the %d added", taken, n)
 	}
 }
+
+func TestPromptTokenUnusedPastItsExpiryStaysPending(t *testing.T) {
+	s := openStore(t)
+	id := newTask(t, s).ID
+	now := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+
+	if p, err := s.PromptPending(id); err != nil || p {
+		t.Fatalf("pending with no token = %v, %v", p, err)
+	}
+	if err := s.AddPromptToken(id); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(PromptTokenTTL)
+	if p, _ := s.PromptPending(id); !p {
+		t.Fatal("an expired, unused token is not pending")
+	}
+	// A failed prompt takes back its own token only.
+	if err := s.AddPromptToken(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReturnPromptToken(id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.TakePromptToken(id); ok {
+		t.Fatal("a returned token let a submit through")
+	}
+	if p, _ := s.PromptPending(id); !p {
+		t.Fatal("a returned token dropped the expired one")
+	}
+	// A submit the gate lets through carries the box, so nothing is pending.
+	if err := s.AddPromptToken(id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.TakePromptToken(id); !ok {
+		t.Fatal("take = false")
+	}
+	if p, _ := s.PromptPending(id); p {
+		t.Fatal("pending after a submit went through")
+	}
+}

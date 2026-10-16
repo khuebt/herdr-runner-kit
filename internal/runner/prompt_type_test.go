@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -27,8 +29,16 @@ func tokens(t *testing.T, r *Runner, id string) int {
 	return len(strings.Fields(string(data)))
 }
 
+func writeTokens(t *testing.T, r *Runner, id, data string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(r.Store.TaskDir(id), "prompt-tokens"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // promptLog records, for each prompt herdr was asked to type, the call
-// just before it and the tokens on disk at that moment.
+// just before it and the tokens on disk at that moment. Each prompt is then
+// submitted through the gate, which takes its token.
 type promptLog struct {
 	prev   [][]string
 	tokens []int
@@ -42,6 +52,7 @@ func watchPrompts(t *testing.T, r *Runner, fake *fakeHerdr, id *string) *promptL
 		log.prev = append(log.prev, fake.calls[len(fake.calls)-2])
 		fake.mu.Unlock()
 		log.tokens = append(log.tokens, tokens(t, r, *id))
+		_, _ = r.Store.TakePromptToken(*id)
 		return "{}", nil
 	})
 	return log
@@ -78,9 +89,8 @@ func TestLockedClaudeRunnerClearsThenTokensThenPrompts(t *testing.T) {
 		if !clearKeys(prev) {
 			t.Errorf("prompt %d: the input was not cleared just before it: %q", i, prev)
 		}
-		// The fake runs no gate, so tokens add up: one per prompt.
-		if log.tokens[i] != i+1 {
-			t.Errorf("prompt %d went in with %d tokens, want %d", i, log.tokens[i], i+1)
+		if log.tokens[i] != 1 {
+			t.Errorf("prompt %d went in with %d tokens, want 1", i, log.tokens[i])
 		}
 	}
 	if got, _ := r.Store.Get(id); !InputLocked(got) {
@@ -129,6 +139,39 @@ func TestLockedPromptFailureTakesItsTokenBack(t *testing.T) {
 	}
 	if fake.count("agent", "send-keys") != 1 {
 		t.Error("the input was not cleared before the prompt")
+	}
+}
+
+func TestLockedPromptKeepsAnEarlierOneWhoseEnterWasLost(t *testing.T) {
+	r, fake := lockedRunner(t)
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	_, _ = r.Store.TakePromptToken(tk.ID) // the first prompt went in
+	clears := func() int { return fake.count("agent", "send-keys") }
+
+	// The send's Enter is lost: its token is never taken, and outlives
+	// its expiry.
+	if _, err := r.Send(context.Background(), tk.ID, "first"); err != nil {
+		t.Fatal(err)
+	}
+	before := clears()
+	expired := strconv.FormatInt(time.Now().Add(-time.Minute).UnixNano(), 10) + "\n"
+	writeTokens(t, r, tk.ID, expired)
+	if _, err := r.Send(context.Background(), tk.ID, "second"); err != nil {
+		t.Fatal(err)
+	}
+	if clears() != before {
+		t.Error("the input was cleared over a kit prompt that never reached the gate")
+	}
+
+	// The joined prompt goes through the gate; the next one clears again.
+	if taken, _ := r.Store.TakePromptToken(tk.ID); !taken {
+		t.Fatal("the second prompt left no token")
+	}
+	if _, err := r.Send(context.Background(), tk.ID, "third"); err != nil {
+		t.Fatal(err)
+	}
+	if clears() != before+1 {
+		t.Error("the input was not cleared once the gate let a prompt through")
 	}
 }
 

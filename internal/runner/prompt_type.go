@@ -21,15 +21,17 @@ func InputLocked(t *task.Task) bool {
 // typePrompt types text into t's agent in pane as a prompt; every prompt
 // the kit types goes through it. Into a runner with locked input it first
 // clears the input box, where the agent puts back a prompt the gate
-// blocked, and then lets one prompt through the gate. A prompt that fails
-// takes its token back, so no window stays open for a prompt typed in the
-// tab.
+// blocked, and then lets one prompt through the gate. The box is left as
+// it is while an earlier kit prompt never reached the gate, as when its
+// Enter was lost: that prompt still sits there, and goes in with this one.
+// A prompt that fails takes its token back, so no window stays open for a
+// prompt typed in the tab.
 func (r *Runner) typePrompt(ctx context.Context, t *task.Task, pane, text string) error {
 	if !InputLocked(t) {
 		return r.Herdr.AgentPrompt(ctx, pane, text)
 	}
 	adapter, _ := adapterOf(t)
-	if keys := adapter.ClearInputKeys(); len(keys) > 0 {
+	if keys := adapter.ClearInputKeys(); len(keys) > 0 && !r.promptPending(t.ID) {
 		// Best effort: a prompt joined to leftover text is blocked and
 		// stays visible in the tab.
 		_ = r.Herdr.AgentSendKeys(ctx, pane, keys...)
@@ -38,10 +40,17 @@ func (r *Runner) typePrompt(ctx context.Context, t *task.Task, pane, text string
 		return fmt.Errorf("let the prompt through the input lock: %w", err)
 	}
 	if err := r.Herdr.AgentPrompt(ctx, pane, text); err != nil {
-		_, _ = r.Store.TakePromptToken(t.ID)
+		_ = r.Store.ReturnPromptToken(t.ID)
 		return err
 	}
 	return nil
+}
+
+// promptPending reports whether task id's last kit prompt never reached
+// the gate. An error counts as none, so the box is cleared as usual.
+func (r *Runner) promptPending(id string) bool {
+	pending, err := r.Store.PromptPending(id)
+	return err == nil && pending
 }
 
 // blockedHead is how many characters of a blocked prompt the input-blocked
