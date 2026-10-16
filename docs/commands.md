@@ -120,7 +120,7 @@ hrk heavy: waiting for a slot (2 in use: t105 npm test 3m, main go test ./... 1m
 
 `hrk heavy` with no command shows the slots and the waiters, with each one's task (`main` for the main session), command, age, pid and folder; `--json` prints the same for scripts. With `heavySlots: 0` it prints `heavySlots: 0 (off)`, and `heavy --` runs the command at once.
 
-- Each slot is a `flock` on `heavy/slot-<n>.lock` in the state folder, held by the `hrk heavy` process. The kernel drops it when that process dies, so a crashed or killed holder frees its slot at once, and records of processes that are gone are never shown.
+- Each slot is a `flock` on `heavy/slot-<n>.lock` in the state folder, held by the `hrk heavy` process and by the command it runs, which gets the lock file as file descriptor 3. The kernel drops it when both are gone, so a crashed holder frees its slot at once, while a killed `hrk heavy` whose command still runs keeps the slot until the command exits. When the command ends, `hrk heavy` unlocks the slot, also for a daemon the command left behind with that descriptor open. A slot counts as held while its flock is, whatever the holder's pid; records of waiters that are gone are removed when read.
 - The first waiter is not always served first: every waiter tries the slots each second.
 - The runner contract asks runners to wrap their heavy commands this way; nothing enforces it. A runner waiting for a slot is never nudged or interrupted for showing no progress.
 - A record hides anything in the command that looks like a secret and keeps its first 80 characters.

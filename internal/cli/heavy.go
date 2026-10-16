@@ -109,7 +109,7 @@ func runHeavy(ctx context.Context, store *state.Store, slots int, args []string,
 	}
 	cwd, _ := os.Getwd()
 	rec := state.HeavyRecord{Task: task, Cwd: cwd, Command: truncate(redact.Secrets(strings.Join(args, " ")), heavyCommandRunes)}
-	release, err := store.AcquireHeavy(ctx, slots, rec, func(st state.HeavyStatus) {
+	release, lock, err := store.AcquireHeavy(ctx, slots, rec, func(st state.HeavyStatus) {
 		fmt.Fprintln(stderr, waitingLine(st))
 	})
 	if err != nil {
@@ -121,6 +121,11 @@ func runHeavy(ctx context.Context, store *state.Store, slots int, args []string,
 		}
 	}
 	defer release()
+	if lock != nil {
+		// The command holds the slot too, so it stays held while the
+		// command runs even if this process is killed.
+		child.ExtraFiles = []*os.File{lock}
+	}
 	if err := child.Start(); err != nil {
 		fmt.Fprintf(stderr, "hrk heavy: %v\n", err)
 		return 126, nil

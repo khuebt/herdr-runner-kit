@@ -102,7 +102,7 @@ func (r *Runner) runWorktreeSetup(ctx context.Context, t *task.Task, cmds []stri
 	}
 	defer func() { _ = log.Close() }()
 
-	release, err := r.Store.AcquireHeavy(ctx, r.Config.HeavySlots,
+	release, _, err := r.Store.AcquireHeavy(ctx, r.Config.HeavySlots,
 		state.HeavyRecord{Task: t.ID, Cwd: t.Worktree.Path, Command: "worktree setup"}, nil)
 	if err != nil {
 		if ctx.Err() != nil {

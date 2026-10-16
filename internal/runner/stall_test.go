@@ -215,7 +215,7 @@ func TestStallLadderAfterRecoveredWork(t *testing.T) {
 
 func TestStallSkipsAWaitForAHeavySlot(t *testing.T) {
 	r, fake, tk, _ := stallRunner(t, harnessFixture(t, "working-claude-1.txt"))
-	release, err := r.Store.AcquireHeavy(context.Background(), 1, state.HeavyRecord{Task: "main"}, nil)
+	release, _, err := r.Store.AcquireHeavy(context.Background(), 1, state.HeavyRecord{Task: "main"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestStallSkipsAWaitForAHeavySlot(t *testing.T) {
 	waited := make(chan struct{})
 	go func() {
 		defer close(waited)
-		_, _ = r.Store.AcquireHeavy(ctx, 1, state.HeavyRecord{Task: tk.ID}, nil)
+		_, _, _ = r.Store.AcquireHeavy(ctx, 1, state.HeavyRecord{Task: tk.ID}, nil)
 	}()
 	for deadline := time.Now().Add(5 * time.Second); !r.Store.HeavyWaiting(tk.ID); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {

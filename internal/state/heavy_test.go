@@ -34,7 +34,7 @@ func heavyHelper(spec string) int {
 		return 2
 	}
 	HeavyPoll = 10 * time.Millisecond
-	release, err := s.AcquireHeavy(context.Background(), slots, HeavyRecord{Task: parts[2], Command: "sleep"}, nil)
+	release, _, err := s.AcquireHeavy(context.Background(), slots, HeavyRecord{Task: parts[2], Command: "sleep"}, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -128,7 +128,7 @@ func TestHeavyKilledHolderFreesItsSlot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	waited := false
-	release, err := s.AcquireHeavy(ctx, 1, HeavyRecord{Task: "b"}, func(HeavyStatus) { waited = true })
+	release, _, err := s.AcquireHeavy(ctx, 1, HeavyRecord{Task: "b"}, func(HeavyStatus) { waited = true })
 	if err != nil || waited {
 		t.Fatalf("slot of a killed holder not free: waited %v, %v", waited, err)
 	}
@@ -160,7 +160,7 @@ func TestHeavyStatusSkipsDeadProcesses(t *testing.T) {
 
 func TestHeavyOffNeverWaits(t *testing.T) {
 	s := openStore(t)
-	release, err := s.AcquireHeavy(context.Background(), 0, HeavyRecord{Task: "main"}, func(HeavyStatus) { t.Error("waited with slots off") })
+	release, _, err := s.AcquireHeavy(context.Background(), 0, HeavyRecord{Task: "main"}, func(HeavyStatus) { t.Error("waited with slots off") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestHeavyOffNeverWaits(t *testing.T) {
 
 func TestHeavyWaiterLeavesOnCancel(t *testing.T) {
 	s := openStore(t)
-	release, err := s.AcquireHeavy(context.Background(), 1, HeavyRecord{Task: "a"}, nil)
+	release, _, err := s.AcquireHeavy(context.Background(), 1, HeavyRecord{Task: "a"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestHeavyWaiterLeavesOnCancel(t *testing.T) {
 	done := make(chan error, 1)
 	var notes []HeavyStatus
 	go func() {
-		_, err := s.AcquireHeavy(ctx, 1, HeavyRecord{Task: "b"}, func(st HeavyStatus) { notes = append(notes, st) })
+		_, _, err := s.AcquireHeavy(ctx, 1, HeavyRecord{Task: "b"}, func(st HeavyStatus) { notes = append(notes, st) })
 		done <- err
 	}()
 	waitFor(t, "b to wait", func() bool { return s.HeavyWaiting("b") })
@@ -194,5 +194,50 @@ func TestHeavyWaiterLeavesOnCancel(t *testing.T) {
 	}
 	if len(notes) != 1 || tasksOf(notes[0].Holders) != "a" {
 		t.Errorf("notes = %+v", notes)
+	}
+}
+
+func TestHeavyStatusReadsTheSlotLockNotThePid(t *testing.T) {
+	s := openStore(t)
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(s.heavyDir(), "waiting"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A killed holder whose command still has the slot's lock file open.
+	lock, ok, err := s.lockHeavySlot(1)
+	if err != nil || !ok {
+		t.Fatalf("lock = %v, %v", ok, err)
+	}
+	rec := HeavyRecord{Slot: 1, Task: "t9", PID: dead.Process.Pid, Command: "go test", Since: time.Now()}
+	if err := writeJSON(s.slotPath(1, ".json"), rec); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := s.HeavyStatus(1); tasksOf(st.Holders) != "t9" {
+		t.Fatalf("holders = %+v, want the held slot", st.Holders)
+	}
+	_ = lock.Close()
+	if st, _ := s.HeavyStatus(1); len(st.Holders) != 0 || exists(s.slotPath(1, ".json")) {
+		t.Errorf("a free slot is listed or keeps its record: %+v", st.Holders)
+	}
+}
+
+func TestHeavyDeadWaiterRecordIsRemoved(t *testing.T) {
+	s := openStore(t)
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(s.heavyDir(), "waiting"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := s.waitingPath(dead.Process.Pid)
+	if err := writeJSON(path, HeavyRecord{Task: "t9", PID: dead.Process.Pid}); err != nil {
+		t.Fatal(err)
+	}
+	if s.HeavyWaiting("t9") || exists(path) {
+		t.Error("a dead waiter's record outlived a read, for a reused pid to revive")
 	}
 }

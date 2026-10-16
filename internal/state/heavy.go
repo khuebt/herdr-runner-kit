@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -22,8 +21,11 @@ import (
 //	slot-<n>.json       who holds slot n
 //	waiting/<pid>.json  one hrk heavy process waiting for a slot
 //
-// The kernel drops a flock when its process dies, so a crashed holder frees
-// its slot at once. Readers skip records whose pid is gone.
+// The kernel drops a flock when the last fd of its open file goes, so a
+// crashed holder frees its slot at once, unless the command it runs got the
+// fd: then the slot stays held until that command exits too. Readers list a
+// holder while its slot's flock is held, whatever its pid, and drop the
+// records of waiters whose pid is gone.
 
 // HeavyPoll is how often a waiter tries the slots again, and HeavyNotify
 // how often it says it still waits. Variables so tests can shorten them.
@@ -57,18 +59,21 @@ func (s *Store) waitingPath(pid int) string {
 }
 
 // AcquireHeavy takes one of slots heavy command slots for rec, waiting while
-// all are taken, and returns the function that frees it. It fills rec's pid
-// and start time. While it waits it lists rec as waiting and calls notify at
-// once and every HeavyNotify. With slots 0 or less it never waits.
+// all are taken, and returns the function that frees it and the slot's
+// locked file. A command given that file holds the slot until it exits,
+// even when the caller dies first; release frees the slot for it too. It
+// fills rec's pid and start time. While it waits it lists rec as waiting
+// and calls notify at once and every HeavyNotify. With slots 0 or less it
+// never waits, and the file is nil.
 //
 // ponytail: polling with no fairness; add a ticket queue if starvation is
 // ever seen.
-func (s *Store) AcquireHeavy(ctx context.Context, slots int, rec HeavyRecord, notify func(HeavyStatus)) (func(), error) {
+func (s *Store) AcquireHeavy(ctx context.Context, slots int, rec HeavyRecord, notify func(HeavyStatus)) (release func(), lock *os.File, err error) {
 	if slots <= 0 {
-		return func() {}, nil
+		return func() {}, nil, nil
 	}
 	if err := os.MkdirAll(filepath.Join(s.heavyDir(), "waiting"), dirPerm); err != nil {
-		return nil, fmt.Errorf("create heavy dir: %w", err)
+		return nil, nil, fmt.Errorf("create heavy dir: %w", err)
 	}
 	rec.PID = os.Getpid()
 	var notified time.Time
@@ -80,16 +85,16 @@ func (s *Store) AcquireHeavy(ctx context.Context, slots int, rec HeavyRecord, no
 	}()
 	for {
 		for n := 1; n <= slots; n++ {
-			release, err := s.tryHeavySlot(n, rec)
+			release, lock, err := s.tryHeavySlot(n, rec)
 			if err != nil || release != nil {
-				return release, err
+				return release, lock, err
 			}
 		}
 		now := time.Now()
 		if !waiting {
 			rec.Since = now
 			if err := writeJSON(s.waitingPath(rec.PID), rec); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			waiting = true
 		}
@@ -101,7 +106,7 @@ func (s *Store) AcquireHeavy(ctx context.Context, slots int, rec HeavyRecord, no
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		case <-time.After(HeavyPoll):
 		}
 	}
@@ -109,11 +114,36 @@ func (s *Store) AcquireHeavy(ctx context.Context, slots int, rec HeavyRecord, no
 
 // tryHeavySlot takes slot n for rec if it is free. It returns a nil release
 // when the slot is taken.
-func (s *Store) tryHeavySlot(n int, rec HeavyRecord) (func(), error) {
-	path := filepath.Join(s.heavyDir(), fmt.Sprintf("slot-%d.lock", n))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, filePerm)
+func (s *Store) tryHeavySlot(n int, rec HeavyRecord) (func(), *os.File, error) {
+	f, ok, err := s.lockHeavySlot(n)
+	if err != nil || !ok {
+		return nil, nil, err
+	}
+	rec.Slot, rec.Since = n, time.Now()
+	holder := s.slotPath(n, ".json")
+	if err := writeJSON(holder, rec); err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	return func() {
+		_ = os.Remove(holder)
+		// Unlocking frees the slot also for a command that still has the
+		// file open, such as a daemon the heavy command left behind.
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, f, nil
+}
+
+func (s *Store) slotPath(n int, ext string) string {
+	return filepath.Join(s.heavyDir(), fmt.Sprintf("slot-%d%s", n, ext))
+}
+
+// lockHeavySlot opens slot n's lock file and takes its flock without
+// waiting. It reports false, with no file, when the slot is taken.
+func (s *Store) lockHeavySlot(n int) (*os.File, bool, error) {
+	f, err := os.OpenFile(s.slotPath(n, ".lock"), os.O_CREATE|os.O_RDWR, filePerm)
 	if err != nil {
-		return nil, fmt.Errorf("open heavy slot: %w", err)
+		return nil, false, fmt.Errorf("open heavy slot: %w", err)
 	}
 	for {
 		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
@@ -124,62 +154,78 @@ func (s *Store) tryHeavySlot(n int, rec HeavyRecord) (func(), error) {
 	if err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("lock heavy slot: %w", err)
+		return nil, false, fmt.Errorf("lock heavy slot: %w", err)
 	}
-	rec.Slot, rec.Since = n, time.Now()
-	holder := strings.TrimSuffix(path, ".lock") + ".json"
-	if err := writeJSON(holder, rec); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return func() {
-		_ = os.Remove(holder)
-		_ = f.Close() // closing the last fd drops the flock
-	}, nil
+	return f, true, nil
 }
 
-// HeavyStatus reads the live holders of slots 1 to slots and the live
-// waiters.
+// HeavyStatus reads the holders of slots 1 to slots and the live waiters.
 func (s *Store) HeavyStatus(slots int) (HeavyStatus, error) {
 	st := HeavyStatus{Slots: slots, Holders: []HeavyRecord{}, Waiting: []HeavyRecord{}}
 	for n := 1; n <= slots; n++ {
-		if rec, ok := readHeavy(filepath.Join(s.heavyDir(), fmt.Sprintf("slot-%d.json", n))); ok {
+		if rec, ok := s.heavyHolder(n); ok {
 			st.Holders = append(st.Holders, rec)
 		}
 	}
+	waiting, err := s.heavyWaiters()
+	st.Waiting = waiting
+	return st, err
+}
+
+// heavyHolder reads who holds slot n. The slot's flock, not the holder's
+// pid, says whether it is held: a killed holder's command may hold it
+// still. A free slot's leftover record is removed.
+func (s *Store) heavyHolder(n int) (HeavyRecord, bool) {
+	path := s.slotPath(n, ".json")
+	f, free, err := s.lockHeavySlot(n)
+	if err != nil {
+		return HeavyRecord{}, false
+	}
+	if free {
+		_ = os.Remove(path)
+		_ = f.Close()
+		return HeavyRecord{}, false
+	}
+	return readHeavy(path)
+}
+
+// heavyWaiters reads the live waiters, oldest first, and removes the
+// records of waiters that are gone, so a reused pid never revives one.
+func (s *Store) heavyWaiters() ([]HeavyRecord, error) {
+	waiting := []HeavyRecord{}
 	paths, err := filepath.Glob(filepath.Join(s.heavyDir(), "waiting", "*.json"))
 	if err != nil {
-		return st, err
+		return waiting, err
 	}
 	for _, p := range paths {
-		if rec, ok := readHeavy(p); ok {
-			st.Waiting = append(st.Waiting, rec)
+		rec, ok := readHeavy(p)
+		if ok && !alive(rec.PID) {
+			_ = os.Remove(p)
+			ok = false
+		}
+		if ok {
+			waiting = append(waiting, rec)
 		}
 	}
-	slices.SortFunc(st.Waiting, func(a, b HeavyRecord) int { return a.Since.Compare(b.Since) })
-	return st, nil
+	slices.SortFunc(waiting, func(a, b HeavyRecord) int { return a.Since.Compare(b.Since) })
+	return waiting, nil
 }
 
 // HeavyWaiting reports whether a live process of task id waits for a heavy
 // command slot.
 func (s *Store) HeavyWaiting(id string) bool {
-	paths, _ := filepath.Glob(filepath.Join(s.heavyDir(), "waiting", "*.json"))
-	for _, p := range paths {
-		if rec, ok := readHeavy(p); ok && rec.Task == id {
-			return true
-		}
-	}
-	return false
+	waiting, _ := s.heavyWaiters()
+	return slices.ContainsFunc(waiting, func(rec HeavyRecord) bool { return rec.Task == id })
 }
 
 // readHeavy reads one record, and reports false for a missing or unreadable
-// file or a process that is gone.
+// file.
 func readHeavy(path string) (HeavyRecord, bool) {
 	var rec HeavyRecord
 	data, err := os.ReadFile(path)
-	if err != nil || json.Unmarshal(data, &rec) != nil || !alive(rec.PID) {
+	if err != nil || json.Unmarshal(data, &rec) != nil {
 		return rec, false
 	}
 	return rec, true

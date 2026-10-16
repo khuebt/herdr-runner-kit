@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -14,6 +17,29 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 )
+
+// heavyHelperEnv makes the test binary an hrk heavy process: "<state
+// dir>|<pid file>". It runs a command in the one slot that writes its pid
+// to the pid file and sleeps.
+const heavyHelperEnv = "HRK_CLI_HEAVY_HELPER"
+
+func TestMain(m *testing.M) {
+	if spec := os.Getenv(heavyHelperEnv); spec != "" {
+		dir, pidFile, _ := strings.Cut(spec, "|")
+		store, err := state.Open(dir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		code, err := runHeavy(context.Background(), store, 1,
+			[]string{"sh", "-c", `echo $$ > "$0"; exec sleep 30`, pidFile}, nil, nil, os.Stderr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
 
 // heavyState opens a fresh state folder and config for the CLI, with
 // heavySlots set to slots.
@@ -109,7 +135,7 @@ func TestHeavyForwardsSIGTERM(t *testing.T) {
 
 func TestHeavyWaitsAndSaysWho(t *testing.T) {
 	store := heavyState(t, "1")
-	release, err := store.AcquireHeavy(context.Background(), 1, state.HeavyRecord{Task: "t105", Command: "npm test"}, nil)
+	release, _, err := store.AcquireHeavy(context.Background(), 1, state.HeavyRecord{Task: "t105", Command: "npm test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,4 +207,42 @@ func TestHeavyHidesSecretsInTheRecord(t *testing.T) {
 	if len(st.Holders) != 1 || strings.Contains(st.Holders[0].Command, token) || len([]rune(st.Holders[0].Command)) != heavyCommandRunes {
 		t.Errorf("holders = %+v", st.Holders)
 	}
+}
+
+func TestHeavySlotStaysHeldWhileTheCommandOutlivesHrk(t *testing.T) {
+	store := heavyState(t, "1")
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	helper := exec.Command(os.Args[0], "-test.run=^$")
+	helper.Env = append(os.Environ(), heavyHelperEnv+"="+store.Dir()+"|"+pidFile)
+	helper.Stderr = os.Stderr
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	waitUntil(t, "the command to start", func() bool {
+		data, _ := os.ReadFile(pidFile)
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		return pid > 0
+	})
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if err := helper.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	_ = helper.Wait()
+
+	if st, _ := store.HeavyStatus(1); len(st.Holders) != 1 {
+		t.Fatalf("holders after hrk heavy was killed = %+v, want the running command's slot", st.Holders)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, _, err := store.AcquireHeavy(ctx, 1, state.HeavyRecord{Task: "t2"}, nil); err == nil {
+		t.Fatal("took the slot of a command that still runs")
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the slot to come free", func() bool {
+		st, _ := store.HeavyStatus(1)
+		return len(st.Holders) == 0
+	})
 }
