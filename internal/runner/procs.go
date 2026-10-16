@@ -235,19 +235,29 @@ func (r *Runner) reportSurvivors(ctx context.Context, t *task.Task, before []pro
 	}
 }
 
-// reportScopeLeft names the processes still running in t's memory scopes
-// once its runner is lost. Those outlive a herdr restart or an OOM kill of
-// herdr: the scopes are not part of herdr's service. It never signals them.
-func (r *Runner) reportScopeLeft(ctx context.Context, t *task.Task) {
+// scopeLeft returns the processes still running in t's memory scopes. Those
+// outlive a herdr restart or an OOM kill of herdr: the scopes are not part
+// of herdr's service. A runner that is lost has them listed before it fails:
+// a wait that reports the failure may exit, and end this process with it, as
+// soon as the failure is written.
+func (r *Runner) scopeLeft(ctx context.Context, t *task.Task) ([]proc, error) {
 	if r.ProcTable == nil || len(t.Scopes) == 0 {
-		return
+		return nil, nil
 	}
 	table, err := r.ProcTable(ctx)
 	if err != nil {
-		r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(err.Error(), 160), "")
-		return
+		return nil, err
 	}
-	if left := scopedProcs(table, t.Scopes); len(left) > 0 {
+	return scopedProcs(table, t.Scopes), nil
+}
+
+// reportScopeLeft names the processes scopeLeft found once t's runner was
+// lost. It never signals them.
+func (r *Runner) reportScopeLeft(t *task.Task, left []proc, psErr error) {
+	switch {
+	case psErr != nil:
+		r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(psErr.Error(), 160), "")
+	case len(left) > 0:
 		r.emit(t, "processes-left", survivorSummary(left, "after its runner was lost"), "")
 	}
 }

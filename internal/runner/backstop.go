@@ -88,7 +88,10 @@ func (r *Runner) agentGone(ctx context.Context, t *task.Task) bool {
 	if r.switchable(t) && r.usageLimited(ctx, t) && r.switchAgent(t, false) == nil {
 		return true
 	}
-	r.fail(t.ID, r.goneReason(ctx, t))
+	left, psErr := r.scopeLeft(ctx, t)
+	if failed, ok := r.fail(t.ID, r.goneReason(ctx, t)); ok {
+		r.reportScopeLeft(failed, left, psErr)
+	}
 	return false
 }
 
@@ -349,8 +352,13 @@ func (r *Runner) goneReason(ctx context.Context, t *task.Task) string {
 }
 
 // failLost fails a running or waiting task whose runner is gone, and its
-// dependents, then names the processes still running in its memory scopes.
+// dependents, and names the processes still running in its memory scopes.
 func (r *Runner) failLost(ctx context.Context, id, reason string) {
+	var left []proc
+	var psErr error
+	if cur, err := r.Store.Get(id); err == nil {
+		left, psErr = r.scopeLeft(ctx, cur)
+	}
 	t, changed, err := r.Store.Transition(id, task.Failed, []task.Status{task.Running, task.NeedsHuman}, func(t *task.Task) {
 		t.Error = reason
 	})
@@ -358,8 +366,8 @@ func (r *Runner) failLost(ctx context.Context, id, reason string) {
 		return
 	}
 	r.emit(t, "failed", reason, "")
+	r.reportScopeLeft(t, left, psErr)
 	_ = r.failDependents(t)
-	r.reportScopeLeft(ctx, t)
 }
 
 // errIfLost returns an error naming where t's work is when its runner is

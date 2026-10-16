@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -226,18 +227,31 @@ func TestCanceledConfirmationKeepsTheRunner(t *testing.T) {
 }
 
 func TestLostRunnerReportsItsScopeProcesses(t *testing.T) {
-	r, fake, tk, _ := waitingRunner(t)
-	path := scopeDir(t, "102\n")
-	tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes = []string{path}; return nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.ProcTable = procTables(runnerTree)
-	fake.on("agent get", herdrErr("pane_not_found"))
-	fake.on("pane read", herdrErr("pane_not_found"))
-	r.CheckLost(context.Background(), tk)
-	left := eventsOf(t, r, tk.ID, "processes-left")
-	if len(left) != 1 || left[0].Summary != "1 process the runner started still run after its runner was lost: 102 `python3 -m http.server 8765` (stop them yourself if not needed)" {
-		t.Errorf("processes-left = %+v", left)
+	for name, lose := range map[string]func(*Runner, *task.Task){
+		"lost check":    func(r *Runner, tk *task.Task) { r.CheckLost(context.Background(), tk) },
+		"watched agent": func(r *Runner, tk *task.Task) { r.WatchAgent(context.Background(), tk.ID) },
+	} {
+		r, fake, tk, _ := waitingRunner(t)
+		path := scopeDir(t, "102\n")
+		tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes = []string{path}; return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A wait that reports the failure may exit at once, so the processes
+		// are listed before the failure is written.
+		r.ProcTable = func(context.Context) ([]proc, error) {
+			if cur, _ := r.Store.Get(tk.ID); cur.Status == task.Failed {
+				return nil, errors.New("listed after the failure")
+			}
+			return runnerTree, nil
+		}
+		for _, cmd := range []string{"agent get", "agent wait", "pane read"} {
+			fake.on(cmd, herdrErr("pane_not_found"))
+		}
+		lose(r, tk)
+		left := eventsOf(t, r, tk.ID, "processes-left")
+		if len(left) != 1 || left[0].Summary != "1 process the runner started still run after its runner was lost: 102 `python3 -m http.server 8765` (stop them yourself if not needed)" {
+			t.Errorf("%s: processes-left = %+v", name, left)
+		}
 	}
 }

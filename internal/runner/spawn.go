@@ -495,13 +495,16 @@ func (r *Runner) emit(t *task.Task, typ, summary, question string) {
 	}
 }
 
-// fail marks a task failed with reason and emits the failed event.
-func (r *Runner) fail(id, reason string) {
+// fail marks a task failed with reason and emits the failed event. It
+// returns the failed task, and false when the task was already failed or
+// could not be read.
+func (r *Runner) fail(id, reason string) (*task.Task, bool) {
 	t, changed, err := r.Store.Transition(id, task.Failed, nil, func(t *task.Task) { t.Error = reason })
 	if err != nil || !changed {
-		return
+		return nil, false
 	}
 	r.emit(t, "failed", reason, "")
+	return t, true
 }
 
 // CallerOwner names the main session working in dir: its git top-level, or
