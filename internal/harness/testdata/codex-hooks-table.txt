@@ -1,0 +1,40 @@
+  >_ OpenAI Codex (v0.162.1)
+     ~/.local/state/herdr-runner-kit/tasks/t103/out/live/repo
+  permissions: YOLO mode
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Hooks
+  Lifecycle hooks from config and enabled plugins.
+
+  ⚠ 4 hooks need review before they can run.
+
+  Event                 Installed   Active      Review      Description
+
+  PreToolUse            6           6           0           Before a tool executes
+  PermissionRequest     1           1           0           When permission is requested
+  PostToolUse           5           5           0           After a tool executes
+  PreCompact            2           2           0           Before context compaction
+  PostCompact           0           0           0           After context compaction
+› SessionStart          8           4           4           When a new session starts
+  SessionEnd            0           0           0           Right before a session ends
+  UserPromptSubmit      7           7           0           When the user submits a prompt
+↓
+
+  t trust all · enter review · esc close

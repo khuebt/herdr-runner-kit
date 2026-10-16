@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -443,15 +444,42 @@ func TestLaunchClaudeTab(t *testing.T) {
 func TestLaunchCodexWorktree(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	repo := gitRepo(t)
+	home := os.Getenv("CODEX_HOME")
+	if err := os.WriteFile(filepath.Join(home, "hooks.json"), []byte(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"session-init"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	fake.on("agent start", ok(`{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}`))
-	screens := []string{"  Hooks need review\n  24 hooks are new or changed.", "› Ask Codex to do anything"}
-	fake.on("pane read", func([]string) (string, error) {
-		s := screens[0]
-		if len(screens) > 1 {
-			screens = screens[1:]
-		}
-		return s, nil
+	update := "  Update available · 0.162.1 → 0.163.0\n› 1. Update now\n  2. Skip\n  3. Skip until next version\n  enter continue · esc skip"
+	review := "  Hooks need review\n  1 hook is new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)"
+	var keys [][]string
+	fake.on("agent send-keys", func(args []string) (string, error) {
+		keys = append(keys, args[3:])
+		return "{}", nil
 	})
+	fake.on("pane read", func([]string) (string, error) {
+		switch len(keys) {
+		case 0:
+			return update, nil
+		case 1:
+			return review, nil
+		}
+		return "› Ask Codex to do anything", nil
+	})
+	var refused error
+	var asked *task.Task
+	r.Sleep = func(time.Duration) {
+		// The user answers while the launcher waits for the hooks review
+		// to close.
+		got, _ := r.Store.Get("t1")
+		if got.Status != task.NeedsHuman || asked != nil {
+			return
+		}
+		asked = got
+		_, refused = r.Answer(context.Background(), "t1", "yes")
+		if _, err := r.Answer(context.Background(), "t1", " Skip "); err != nil {
+			t.Errorf("answer skip: %v", err)
+		}
+	}
 	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Skill: "ak:cook", Prompt: "plan.md", Cwd: repo})
 	if err := r.Launch(context.Background(), tk.ID); err != nil {
 		t.Fatal(err)
@@ -469,27 +497,133 @@ func TestLaunchCodexWorktree(t *testing.T) {
 	if !strings.Contains(start, "--kind codex --pane w2:p1") || !strings.Contains(start, `notify=["/usr/local/bin/hrk","__turn-end","--harness","codex"]`) {
 		t.Errorf("agent start = %q", start)
 	}
-	if keys := fake.call("agent", "send-keys"); !slices.Equal(keys, []string{"agent", "send-keys", "w2:p1", "esc"}) {
+	// Esc skips the update, which Enter would run; skip answers the review.
+	if !reflect.DeepEqual(keys, [][]string{{"esc"}, {"esc"}}) {
 		t.Errorf("send-keys = %q", keys)
+	}
+	if refused == nil || !strings.Contains(refused.Error(), "answer skip or trust") {
+		t.Errorf("answer yes = %v", refused)
+	}
+	if asked == nil || !strings.Contains(asked.Question, "Codex in t1 asks to trust 1 new or changed hooks. New in ") ||
+		!strings.Contains(asked.Question, "SessionStart: session-init.") || asked.Error != "codex-hooks-review" {
+		t.Errorf("task while asking = %+v", asked)
 	}
 	prompt := fake.call("agent", "prompt")
 	if !strings.HasPrefix(prompt[3], "$ak-cook plan.md\n\nYou are runner t1") {
 		t.Errorf("codex prompt = %q", prompt[3])
 	}
-	cfg, _ := os.ReadFile(filepath.Join(os.Getenv("CODEX_HOME"), "config.toml"))
+	cfg, _ := os.ReadFile(filepath.Join(home, "config.toml"))
 	if !strings.Contains(string(cfg), `[projects."`+repo+`"]`) {
 		t.Errorf("codex trust not added: %s", cfg)
 	}
 	got, _ := r.Store.Get(tk.ID)
-	if got.Status != task.Running || got.Worktree.Path != "/wt/t1" {
+	if got.Status != task.Running || got.Worktree.Path != "/wt/t1" || got.Question != "" || got.DialogAnswers != nil || got.Error != "" {
 		t.Errorf("task = %+v", got)
 	}
 	ev := events(t, r, tk.ID)
-	for _, want := range []string{"codex-trusted", "codex-hooks-review-skipped", "started", "prompted"} {
+	for _, want := range []string{"codex-trusted", "codex-update-skipped", "needs-human", "answered", "started", "prompted"} {
 		if !slices.Contains(ev, want) {
 			t.Errorf("events %v lack %s", ev, want)
 		}
 	}
+	all, _, _ := r.Store.ReadEventsSince(0)
+	for _, e := range all {
+		if e.Type == "answered" && e.Summary != "answered the codex-hooks-review dialog with skip" {
+			t.Errorf("answered = %q", e.Summary)
+		}
+	}
+}
+
+func TestLaunchCodexWaitsForLateHooksReview(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", ok(`{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}`))
+	reads, answered := 0, false
+	fake.on("pane read", func([]string) (string, error) {
+		// The input shows before Codex opens the review.
+		if reads++; reads < 6 || answered {
+			return "› Ask Codex to do anything", nil
+		}
+		return "  Hooks need review\n  2 hooks are new or changed.", nil
+	})
+	fake.on("agent send-keys", func([]string) (string, error) {
+		answered = true
+		return "{}", nil
+	})
+	r.Sleep = func(time.Duration) {
+		if got, _ := r.Store.Get("t1"); got.Status == task.NeedsHuman && !answered {
+			if _, err := r.Answer(context.Background(), "t1", "trust"); err != nil {
+				t.Errorf("answer trust: %v", err)
+			}
+		}
+	}
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Agent: "codex", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	keys, prompt := -1, -1
+	for i, c := range fake.calls {
+		switch strings.Join(c[:2], " ") {
+		case "agent send-keys":
+			if keys < 0 && slices.Equal(c[3:], []string{"2"}) {
+				keys = i
+			}
+		case "agent prompt":
+			prompt = i
+		}
+	}
+	if keys < 0 || prompt < keys {
+		t.Errorf("trust keys at call %d, first prompt at %d; the prompt must wait for the review", keys, prompt)
+	}
+}
+
+func TestAnswerDialogGoneSendsNothing(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: plainDir(t)})
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.Status, t.Error, t.Question = task.NeedsHuman, "codex-hooks-review", "trust?"
+		t.DialogAnswers = map[string][]string{"trust": {"2"}, "skip": {"esc"}}
+		t.Herdr.PaneID = "w1:p3"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fake.on("pane read", ok("› Ask Codex to do anything"))
+	if _, err := r.Answer(context.Background(), tk.ID, "trust"); err == nil || !strings.Contains(err.Error(), "no longer shows") {
+		t.Errorf("answer = %v", err)
+	}
+	if n := fake.count("agent", "send-keys"); n != 0 {
+		t.Errorf("sent keys %d times to a closed dialog", n)
+	}
+}
+
+func TestUnknownDialogQuestionQuotesScreen(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("pane read", ok("  Pick a plan?\n  token=abcd1234efgh5678\n  1. Yes  2. No"))
+	idleWaits := 0
+	fake.on("agent wait", func([]string) (string, error) {
+		if idleWaits++; idleWaits == 1 {
+			return "", herdrError(herdr.CodeTimeout)
+		}
+		return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	all, _, _ := r.Store.ReadEventsSince(0)
+	for _, ev := range all {
+		if ev.Type != "needs-human" {
+			continue
+		}
+		if !strings.Contains(ev.Question, "On screen: Pick a plan? / token=") || strings.Contains(ev.Question, "abcd1234") {
+			t.Errorf("question = %q", ev.Question)
+		}
+		return
+	}
+	t.Error("no needs-human event")
 }
 
 // busyStart makes herdr's agent start fail with codes, one per call, then

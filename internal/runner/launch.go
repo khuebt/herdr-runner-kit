@@ -13,6 +13,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
+	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -151,6 +152,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	// the prompt and its Enter never land in one. An agent herdr sees as
 	// blocked shows a dialog even when no known one matches.
 	a, err := r.Herdr.AgentGet(ctx, loc.PaneID)
+	r.waitLateDialog(ctx, adapter, loc.PaneID)
 	if err := r.settleDialogs(ctx, t, adapter, loc.PaneID, err == nil && a.Status == "blocked"); err != nil {
 		return err
 	}
@@ -531,8 +533,30 @@ func (r *Runner) findDialog(ctx context.Context, a harness.Adapter, pane string,
 		return harness.Dialog{}, false, nil
 	}
 	// herdr saw a dialog this kit does not know. Leave it to the user.
-	return harness.Dialog{Name: "unknown startup", Action: harness.NeedsHuman}, true, nil
+	return harness.Dialog{Name: unknownDialog, Action: harness.NeedsHuman}, true, nil
 }
+
+// unknownDialog names a startup dialog no adapter knows.
+const unknownDialog = "unknown startup"
+
+// waitLateDialog reads the screen until a known dialog shows or the longest
+// time one of adapter's dialogs may open late has passed.
+func (r *Runner) waitLateDialog(ctx context.Context, adapter harness.Adapter, pane string) {
+	var late time.Duration
+	for _, d := range adapter.Dialogs() {
+		late = max(late, d.OpensLate)
+	}
+	for range int(late / dialogLatePoll) {
+		screen, err := r.Herdr.PaneRead(ctx, pane, 40)
+		if _, shown := harness.DetectDialog(adapter, screen); err != nil || shown || ctx.Err() != nil {
+			return
+		}
+		r.Sleep(dialogLatePoll)
+	}
+}
+
+// dialogLatePoll is how often waitLateDialog reads the screen.
+const dialogLatePoll = 100 * time.Millisecond
 
 // waitDialogGone polls the screen until dialog d has closed, for at most two
 // seconds.
@@ -547,15 +571,32 @@ func (r *Runner) waitDialogGone(ctx context.Context, pane string, d harness.Dial
 }
 
 // waitForHuman marks the task needs-human until the user answers a startup
-// dialog in the runner's tab, then lets the launch continue. herdr's state
-// alone does not tell: it reports pi idle while pi's trust dialog shows, so
-// a known dialog must also be gone from the screen.
+// dialog in the runner's tab, or an Ask dialog with `hrk answer`, then lets
+// the launch continue. herdr's state alone does not tell: it reports pi idle
+// while pi's trust dialog shows, so a known dialog must also be gone from
+// the screen.
 func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d harness.Dialog) error {
 	dialog := d.Name
 	deadline := time.Now().Add(dialogAnswerTimeout)
 	q := fmt.Sprintf("Runner %s (%s) shows the %s dialog. Answer it in its herdr tab; the task continues on its own.", t.ID, t.Title, dialog)
+	var answers map[string][]string
+	switch {
+	case d.Action == harness.Ask && d.Question != nil:
+		// The question quotes the user's own config, which may name a secret.
+		screen, _ := r.Herdr.PaneRead(ctx, pane, 40)
+		q = clip(redact.Secrets(d.Question(t.ID, screen, MaxQuestionRunes)), MaxQuestionRunes)
+		answers = d.Answers
+	case dialog == unknownDialog:
+		screen, _ := r.Herdr.PaneRead(ctx, pane, 40)
+		if excerpt := promptExcerpt(screen); excerpt != "" {
+			q += " On screen: " + excerpt
+		}
+	}
 	nt, changed, err := r.Store.Transition(t.ID, task.NeedsHuman, []task.Status{task.Starting}, func(t *task.Task) {
 		t.Error = dialog
+		if answers != nil {
+			t.Question, t.DialogAnswers = q, answers
+		}
 		t.LaunchDeadline = time.Now().UTC().Add(dialogAnswerTimeout + LaunchBudget)
 	})
 	if err != nil {
@@ -577,7 +618,7 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d 
 		}
 	}
 	_, _, err = r.Store.Transition(t.ID, task.Starting, []task.Status{task.NeedsHuman}, func(t *task.Task) {
-		t.Error = ""
+		t.Error, t.Question, t.DialogAnswers = "", "", nil
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
 	})
 	return err

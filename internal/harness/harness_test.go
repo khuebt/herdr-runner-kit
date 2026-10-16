@@ -308,14 +308,66 @@ func TestFirstPrompt(t *testing.T) {
 	}
 }
 
-func TestCodexUpdateScreen(t *testing.T) {
-	screen, err := os.ReadFile(filepath.Join("testdata", "codex-update.txt"))
-	if err != nil {
+func TestCodexStartupDialogScreens(t *testing.T) {
+	a, _ := For(task.Codex)
+	for _, tt := range []struct {
+		file, name string
+		keys       []string
+	}{
+		// Enter on the update prompt would run the update.
+		{"codex-update.txt", "codex-update", []string{"esc"}},
+		{"codex-hooks-review.txt", "codex-hooks-review", nil},
+		// The user may open the review in the tab; the dialog still waits.
+		{"codex-hooks-table.txt", "codex-hooks-review", nil},
+	} {
+		screen, err := os.ReadFile(filepath.Join("testdata", tt.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, ok := DetectDialog(a, string(screen))
+		if !ok || d.Name != tt.name || !slices.Equal(d.Keys, tt.keys) {
+			t.Errorf("%s: got %+v, %v; want %s", tt.file, d, ok, tt.name)
+		}
+	}
+	d, _ := DetectDialog(a, "Hooks need review")
+	if d.Action != Ask || !d.IdleWhileShown || !slices.Equal(d.Answers["trust"], []string{"2"}) || !slices.Equal(d.Answers["skip"], []string{"esc"}) || len(d.Answers) != 2 {
+		t.Errorf("hooks review = %+v", d)
+	}
+}
+
+func TestCodexHooksQuestion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	hooks := `{"hooks":{
+		"SessionStart":[{"hooks":[{"type":"command","command":"gh-axi"},{"type":"command","command":"node  '/opt/hooks/session-init.cjs'"}]}],
+		"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"api_key=abcd1234 notify"}]}]}}`
+	cfg := "[hooks.state.\"" + filepath.Join(home, "hooks.json") + ":session_start:0:0\"]\ntrusted_hash = \"sha256:00\"\n\n" +
+		"[[hooks.PreToolUse]]\nhooks = [{ type = \"command\", command = \"inline-check\" }]\n"
+	if err := os.WriteFile(filepath.Join(home, "hooks.json"), []byte(hooks), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Enter on the update prompt would run the update.
-	if d, ok := DetectDialog(codex{}, string(screen)); !ok || d.Name != "codex-update" || d.Action != SendKeys || !slices.Equal(d.Keys, []string{"esc"}) {
-		t.Errorf("got %+v, %v", d, ok)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	screen, _ := os.ReadFile(filepath.Join("testdata", "codex-hooks-review.txt"))
+	d, _ := DetectDialog(codex{}, string(screen))
+	q := d.Question("t7", string(screen), 1000)
+	for _, want := range []string{
+		"Codex in t7 asks to trust 4 new or changed hooks.",
+		"SessionStart: node '/opt/hooks/session-init.cjs'; UserPromptSubmit: api_key=abcd1234 notify; PreToolUse: inline-check.",
+		"1 changed since they were trusted.",
+		"Answer trust or skip",
+	} {
+		if !strings.Contains(q, want) {
+			t.Errorf("question lacks %q:\n%s", want, q)
+		}
+	}
+	if strings.Contains(q, "gh-axi") {
+		t.Errorf("a trusted hook is listed: %s", q)
+	}
+	short := d.Question("t7", string(screen), 300)
+	if n := len([]rune(short)); n > 300 || !strings.Contains(short, "…") || !strings.HasSuffix(short, "unless you know these hooks).") {
+		t.Errorf("clipped question (%d) = %s", n, short)
 	}
 }
 
@@ -329,7 +381,7 @@ func TestDetectDialog(t *testing.T) {
 		{task.Claude, " Quick safety check: Is this a project you created or one you trust? (Like your own code", "claude-workspace-trust", NeedsHuman},
 		{task.Claude, "  Allow external CLAUDE.md file imports?\n", "claude-external-imports", NeedsHuman},
 		{task.Codex, "  Trust this folder? Codex can read, edit, and run files here", "codex-trust", NeedsHuman},
-		{task.Codex, "  Hooks need review\n  24 hooks are new or changed.", "codex-hooks-review", SendKeys},
+		{task.Codex, "  Hooks need review\n  24 hooks are new or changed.", "codex-hooks-review", Ask},
 		{task.Claude, "is this a project you created or one you trust?", "claude-workspace-trust", NeedsHuman},
 		{task.Claude, "│ Quick safety check: Is this a project you │\n│ created or one you trust? (Like your own  │", "claude-workspace-trust", NeedsHuman},
 		{task.Claude, "Is this a  project you created\tor one  you trust", "claude-workspace-trust", NeedsHuman},

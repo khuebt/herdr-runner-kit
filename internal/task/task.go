@@ -153,6 +153,10 @@ type Task struct {
 	Outputs   []string `json:"outputs,omitempty"`
 	Question  string   `json:"question,omitempty"`
 	Decisions []string `json:"decisions,omitempty"`
+	// DialogAnswers are the answers the startup dialog the task waits on
+	// takes from `hrk answer`, each with the herdr keys that give it; the
+	// dialog's name is in Error and its question in Question.
+	DialogAnswers map[string][]string `json:"dialogAnswers,omitempty"`
 	// Inputs are the results of the --after tasks, added to the first prompt.
 	Inputs string `json:"inputs,omitempty"`
 	// Unreported counts turns that ended without a report since the last

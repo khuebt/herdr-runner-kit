@@ -16,6 +16,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -116,6 +117,9 @@ const (
 	NeedsHuman DialogAction = iota
 	// SendKeys answers the dialog with Keys and records a warning.
 	SendKeys
+	// Ask leaves the dialog for the user like NeedsHuman, but asks the
+	// question Question builds, and `hrk answer` may give one of Answers.
+	Ask
 )
 
 // Dialog is a startup screen the launcher recognises by its text.
@@ -127,6 +131,15 @@ type Dialog struct {
 	// IdleWhileShown says herdr reports the agent idle while the dialog is
 	// still up, so an answer shows only as the dialog leaving the screen.
 	IdleWhileShown bool
+	// OpensLate is how long after the agent looks ready it may still open
+	// the dialog, so the first prompt waits that long for it.
+	OpensLate time.Duration
+	// Answers maps each answer an Ask dialog takes to the herdr logical
+	// keys that give it.
+	Answers map[string][]string
+	// Question builds an Ask dialog's question to the user, for runner id,
+	// from the screen, in at most limit characters.
+	Question func(id, screen string, limit int) string
 }
 
 // InputState is an adapter's reading of the agent's input box.
