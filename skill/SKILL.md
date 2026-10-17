@@ -49,8 +49,8 @@ End with "Start?". Spawn only after the user agrees, with their additions in the
 | `code` | claude sonnet, medium | yes | features and refactors |
 | `flow` | claude opus, high | yes | skill flows that change code (`--skill ak:cook`) |
 | `fix` | claude sonnet, medium | no | small fixes and edits |
-| `research` | claude opus, high | no | investigation and analysis |
-| `report` | claude opus, high | no | written reports and reviews |
+| `research` | claude sonnet, medium | no | investigation and analysis |
+| `report` | claude sonnet, medium | no | written reports and reviews |
 
 The user's config may change these defaults. `--agent harness[:model[:effort]]` overrides the kind, for example `--agent codex::xhigh` or `--agent claude:claude-opus-5-5:max`; pi and omp need a model, as in `--agent pi:openai-codex/gpt-6-luna:high`. `--worktree` and `--no-worktree` override the worktree choice. Follow the user's wording when they name an agent, model or effort. When they name a Claude config folder or account, such as "claude2", pass `--claude-config claude2`.
 

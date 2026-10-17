@@ -76,8 +76,8 @@ The token and chat ids are read when a message is sent. They are never copied in
 | `code` | `claude:claude-sonnet-5-5:medium` | yes |
 | `flow` | `claude:claude-opus-5-5:high` | yes |
 | `fix` | `claude:claude-sonnet-5-5:medium` | no |
-| `research` | `claude:claude-opus-5-5:high` | no |
-| `report` | `claude:claude-opus-5-5:high` | no |
+| `research` | `claude:claude-sonnet-5-5:medium` | no |
+| `report` | `claude:claude-sonnet-5-5:medium` | no |
 
 An explicit `--agent` or `--worktree` / `--no-worktree` on `spawn` always wins over the table.
 

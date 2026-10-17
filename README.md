@@ -77,8 +77,8 @@ Each runner has a kind, which picks its default agent and whether it gets its ow
 | `code` | Claude Sonnet, medium effort | yes | features and refactors |
 | `flow` | Claude Opus, high effort | yes | skill flows that change code, such as `--skill ak:cook` |
 | `fix` | Claude Sonnet, medium effort | no | small fixes and edits |
-| `research` | Claude Opus, high effort | no | investigation and analysis |
-| `report` | Claude Opus, high effort | no | written reports and reviews |
+| `research` | Claude Sonnet, medium effort | no | investigation and analysis |
+| `report` | Claude Sonnet, medium effort | no | written reports and reviews |
 
 Ask for another agent, model or effort in your own words, or change the defaults in the [configuration](docs/config.md). Finished runners close on their own 30 minutes after they finish. One you ask the main agent to `keep` stays open for 4 hours after it finished (`keepFor` in the [configuration](docs/config.md)), and the kit tells you about any process a closed runner left running. Their worktrees and branches stay until `cleanup` removes them; once a branch is merged, the main agent offers to do that, and waits for your yes.
 

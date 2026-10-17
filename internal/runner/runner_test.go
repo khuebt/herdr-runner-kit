@@ -209,7 +209,7 @@ func TestSpawnStartsLauncherQuickly(t *testing.T) {
 	if tk.Status != task.Starting || tk.LauncherPID != 4242 || tk.LaunchDeadline.IsZero() {
 		t.Errorf("task = %+v", tk)
 	}
-	if tk.Agent != "claude:claude-opus-5-5:high" || tk.UseWorktree || tk.Owner != dir || tk.MainWorkspace != "w1" {
+	if tk.Agent != "claude:claude-sonnet-5-5:medium" || tk.UseWorktree || tk.Owner != dir || tk.MainWorkspace != "w1" {
 		t.Errorf("defaults not applied: %+v", tk)
 	}
 	if tk.Title != "Compare two queues" {
