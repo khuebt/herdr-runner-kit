@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -56,6 +57,35 @@ func TestClaudeUsageMissingTranscript(t *testing.T) {
 	u, err := ClaudeUsage([]string{missing, fixtureTranscript()}, time.Time{}, time.Time{})
 	if err != nil || u.Units != fixtureUsage.Units {
 		t.Errorf("a missing and a readable transcript: usage %+v, err %v; want the readable one's", u, err)
+	}
+}
+
+func TestClaudeTurnWritten(t *testing.T) {
+	const (
+		toolCall = `{"type":"assistant","message":{"id":"m1","stop_reason":"tool_use","content":[{"type":"tool_use"}]}}` + "\n"
+		result   = `{"type":"user","message":{"content":[{"type":"tool_result"}]}}` + "\n"
+		reply    = `{"type":"assistant","message":{"id":"m2","stop_reason":"end_turn","content":[{"type":"text"}]}}` + "\n"
+		blob     = `{"type":"api-request","message":{"stop_reason":"tool_use"},"x":"assistant"}` + "\n"
+	)
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	tests := []struct {
+		name, rows string
+		want       bool
+	}{
+		{"tool call still last", toolCall + result + blob, false},
+		{"closing reply written", toolCall + result + reply, true},
+		{"no call", result, true},
+	}
+	for _, tt := range tests {
+		if err := os.WriteFile(path, []byte(tt.rows), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := (claude{}).TurnWritten(path); got != tt.want {
+			t.Errorf("%s: TurnWritten = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+	if !(claude{}).TurnWritten(filepath.Join(t.TempDir(), "gone.jsonl")) {
+		t.Error("a missing transcript waits")
 	}
 }
 

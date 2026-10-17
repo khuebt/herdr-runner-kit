@@ -298,13 +298,14 @@ func (pi) GatePrompt(payload []byte) (string, bool, error) {
 // GateBlock is the reason alone: the extension shows it as a warning.
 func (pi) GateBlock(reason string) string { return reason }
 
-// Checks keeps pi and omp optional, so a config without them sees warnings
-// only. The flags are long forms: doctor matches them as substrings of
-// --help, where "-e" would match anything.
 // Usage is nil: where pi and omp keep a session's token usage is not
 // confirmed.
 func (pi) Usage([]string, time.Time, time.Time) (*task.Usage, error) { return nil, nil }
+func (pi) TurnWritten(string) bool                                   { return true }
 
+// Checks keeps pi and omp optional, so a config without them sees warnings
+// only. The flags are long forms: doctor matches them as substrings of
+// --help, where "-e" would match anything.
 func (p pi) Checks() Checks {
 	flags := []string{"--model", "--thinking", p.approve, "--append-system-prompt", "--extension"}
 	if p.overlay != "" { // omp

@@ -83,6 +83,45 @@ func TestUsageCoversEveryAttemptAtTheTurnAfterTheReport(t *testing.T) {
 	}
 }
 
+func TestTurnEndLeavesTheLastCallToTheUsageReader(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var started []string
+	r.StartUsage = func(id string) error { started = append(started, id); return nil }
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	if _, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "fixed"}); err != nil {
+		t.Fatal(err)
+	}
+	// Claude writes the closing reply after its Stop hooks return.
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	call := func(id, stop string) string {
+		return fmt.Sprintf(`{"type":"assistant","message":{"id":%q,"model":"claude-haiku-5-5","stop_reason":%q,"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n", id, stop)
+	}
+	if err := os.WriteFile(path, []byte(call("m1", "tool_use")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, stopPayload(path)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Usage == nil || got.Usage.Calls != 1 || len(started) != 1 || started[0] != tk.ID {
+		t.Fatalf("usage = %+v, readers started %q; want the written call and one reader", got.Usage, started)
+	}
+	sleeps := 0
+	r.Sleep = func(time.Duration) {
+		if sleeps++; sleeps == 2 {
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = f.WriteString(call("m2", "end_turn"))
+			_ = f.Close()
+		}
+	}
+	r.AwaitUsage(tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Usage == nil || got.Usage.Calls != 2 {
+		t.Errorf("usage after the reader = %+v, want the closing reply's call counted", got.Usage)
+	}
+}
+
 func TestCloseRefreshesUsage(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	tk := finishedRunner(t, r, fake)

@@ -125,6 +125,7 @@ func newTestRunner(t *testing.T) (*Runner, *fakeHerdr, env) {
 		Getenv:        e.get,
 		StartLauncher: func(string) (int, error) { return 4242, nil },
 		StartAfter:    func(string) error { return nil },
+		StartUsage:    func(string) error { return nil },
 		Sleep:         func(time.Duration) {},
 	}
 	return r, fake, e

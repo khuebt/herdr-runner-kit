@@ -409,6 +409,7 @@ func (codex) GateBlock(string) string                 { return "" }
 
 // Usage is nil: where Codex keeps a session's token usage is not confirmed.
 func (codex) Usage([]string, time.Time, time.Time) (*task.Usage, error) { return nil, nil }
+func (codex) TurnWritten(string) bool                                   { return true }
 
 func (codex) Checks() Checks {
 	return Checks{

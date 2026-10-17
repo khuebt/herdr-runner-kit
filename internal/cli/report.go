@@ -117,6 +117,22 @@ func newAfterCommand() *cobra.Command {
 	}
 }
 
+func newUsageReaderCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "__usage <id>",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			r.AwaitUsage(args[0])
+			return nil
+		},
+	}
+}
+
 // newTurnEndCommand is the runners' turn-end hook. It never fails the hook:
 // errors go to stderr and the command exits 0.
 func newTurnEndCommand() *cobra.Command {

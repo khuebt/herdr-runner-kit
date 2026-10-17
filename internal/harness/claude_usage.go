@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -53,6 +54,46 @@ func ClaudeUsage(transcripts []string, from, to time.Time) (*task.Usage, error) 
 	}
 	u.At = time.Now().UTC()
 	return &u, nil
+}
+
+// claudeTail is how much of a transcript's end TurnWritten reads.
+const claudeTail = 1 << 20
+
+// TurnWritten reports whether the transcript's last call ended its turn.
+// Claude writes a turn's closing reply after its Stop hooks return, so
+// until then the last row is the tool call before it. A transcript that
+// cannot be read, or holds no call, counts as written.
+func (claude) TurnWritten(transcript string) bool {
+	f, err := os.Open(transcript)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = f.Close() }()
+	// ponytail: reads only the last MiB; a last call row longer than that counts as written.
+	if fi, err := f.Stat(); err == nil && fi.Size() > claudeTail {
+		if _, err := f.Seek(fi.Size()-claudeTail, io.SeekStart); err != nil {
+			return true
+		}
+	}
+	last := ""
+	r := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, err := r.ReadBytes('\n')
+		if bytes.Contains(line, []byte(`"assistant"`)) && !slices.ContainsFunc(claudeSkipped, func(p []byte) bool { return bytes.HasPrefix(line, p) }) {
+			var row struct {
+				Type    string `json:"type"`
+				Message struct {
+					StopReason string `json:"stop_reason"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(line, &row) == nil && row.Type == "assistant" {
+				last = row.Message.StopReason
+			}
+		}
+		if err != nil {
+			return last != "tool_use"
+		}
+	}
 }
 
 // claudeSkipped starts the rows that are large and carry no usage: request

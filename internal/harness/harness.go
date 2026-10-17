@@ -254,6 +254,10 @@ type Adapter interface {
 	// kit cannot read yet, and skips any part of a transcript it does not
 	// know.
 	Usage(transcripts []string, from, to time.Time) (*task.Usage, error)
+	// TurnWritten reports whether a session transcript holds its latest
+	// turn to the end. An agent may write a turn's last call only after its
+	// turn-end hook returns; usage read before then misses that call.
+	TurnWritten(transcript string) bool
 	// Checks lists what doctor checks.
 	Checks() Checks
 }

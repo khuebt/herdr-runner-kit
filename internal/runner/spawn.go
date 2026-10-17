@@ -49,6 +49,9 @@ type Runner struct {
 	StartLauncher func(id string) (int, error)
 	// StartAfter starts the detached follow-up of a report.
 	StartAfter func(id string) error
+	// StartUsage starts the detached reader of a task's usage, which waits
+	// for the agent to write its turn.
+	StartUsage func(id string) error
 	// Notify hands a news event to the detached Telegram notifier.
 	Notify func(ev state.Event)
 	// Telegram sends notifications in the notifier process.
@@ -79,6 +82,10 @@ func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	r.StartLauncher = func(id string) (int, error) { return r.startDetached(id, "__launch", "launch.log") }
 	r.StartAfter = func(id string) error {
 		_, err := r.startDetached(id, "__after", "after.log")
+		return err
+	}
+	r.StartUsage = func(id string) error {
+		_, err := r.startDetached(id, "__usage", "usage.log")
 		return err
 	}
 	return r
