@@ -131,6 +131,11 @@ func runHeavy(ctx context.Context, store *state.Store, slots int, args []string,
 		return 126, nil
 	}
 	running.Store(child.Process)
+	if lock != nil {
+		// Best effort: without the pid a leftover process holding the slot
+		// is not told from a running command.
+		_ = store.RecordHeavyCommand(lock, child.Process.Pid)
+	}
 	select {
 	case sig := <-caught: // came between the slot and the start
 		_ = child.Process.Signal(sig)
@@ -160,6 +165,9 @@ func waitingLine(st state.HeavyStatus) string {
 	holders := make([]string, len(st.Holders))
 	for i, h := range st.Holders {
 		holders[i] = h.Task + " " + h.Command + " " + age(h.Since)
+		if h.Orphaned {
+			holders[i] += " (orphaned)"
+		}
 	}
 	return fmt.Sprintf("hrk heavy: waiting for a slot (%d in use: %s)", len(st.Holders), strings.Join(holders, ", "))
 }
@@ -205,5 +213,9 @@ func printHeavy(w io.Writer, store *state.Store, slots int, asJSON bool) error {
 }
 
 func heavyLine(h state.HeavyRecord) string {
-	return fmt.Sprintf("%s · %s · %s · pid %d · %s", h.Task, h.Command, age(h.Since), h.PID, h.Cwd)
+	line := fmt.Sprintf("%s · %s · %s · pid %d · %s", h.Task, h.Command, age(h.Since), h.PID, h.Cwd)
+	if h.Orphaned {
+		line += fmt.Sprintf(" · orphaned: pid %d and command pid %d are gone, a leftover process still holds the lock", h.PID, h.CommandPID)
+	}
+	return line
 }

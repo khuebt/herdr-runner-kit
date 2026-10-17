@@ -241,3 +241,63 @@ func TestHeavyDeadWaiterRecordIsRemoved(t *testing.T) {
 		t.Error("a dead waiter's record outlived a read, for a reused pid to revive")
 	}
 }
+
+func TestHeavyStatusMarksASlotHeldByALeftoverProcess(t *testing.T) {
+	deadPID := func() int {
+		cmd := exec.Command("true")
+		if err := cmd.Run(); err != nil {
+			t.Fatal(err)
+		}
+		return cmd.Process.Pid
+	}
+	for name, tc := range map[string]struct {
+		pid, command int
+		orphaned     bool
+	}{
+		"holder and command gone":  {deadPID(), deadPID(), true},
+		"command still running":    {deadPID(), os.Getpid(), false},
+		"holder still running":     {os.Getpid(), deadPID(), false},
+		"command pid never stored": {deadPID(), 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := openStore(t)
+			if err := os.MkdirAll(s.heavyDir(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// A daemon the command left behind keeps the slot's lock.
+			daemon, ok, err := s.lockHeavySlot(1)
+			if err != nil || !ok {
+				t.Fatalf("lock = %v, %v", ok, err)
+			}
+			defer func() { _ = daemon.Close() }()
+			rec := HeavyRecord{Slot: 1, Task: "t9", PID: tc.pid, CommandPID: tc.command, Command: "gradle test", Since: time.Now()}
+			if err := writeJSON(s.slotPath(1, ".json"), rec); err != nil {
+				t.Fatal(err)
+			}
+			st, _ := s.HeavyStatus(1)
+			if len(st.Holders) != 1 || st.Holders[0].Orphaned != tc.orphaned {
+				t.Fatalf("holders = %+v, want orphaned %v", st.Holders, tc.orphaned)
+			}
+			// The lock is the kernel's: no other process frees it.
+			if _, ok, _ := s.lockHeavySlot(1); ok {
+				t.Error("took a slot whose lock a leftover process holds")
+			}
+		})
+	}
+}
+
+func TestRecordHeavyCommandKeepsTheHolder(t *testing.T) {
+	s := openStore(t)
+	release, lock, err := s.AcquireHeavy(context.Background(), 1, HeavyRecord{Task: "t1", Command: "go test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := s.RecordHeavyCommand(lock, 4242); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := s.HeavyStatus(1)
+	if len(st.Holders) != 1 || st.Holders[0].CommandPID != 4242 || st.Holders[0].Task != "t1" || st.Holders[0].Slot != 1 || st.Holders[0].Orphaned {
+		t.Errorf("holders = %+v", st.Holders)
+	}
+}
