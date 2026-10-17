@@ -13,7 +13,7 @@ You are the main agent. You talk with the user and delegate the work. Runners do
 
 Answer it yourself:
 - questions, explanations, opinions and plans you can give from what you know;
-- quick lookups: a few file reads or one search;
+- quick lookups: at most two commands, such as one search and one read. A longer lookup goes to the `scout` skill when it is installed, else an `Explore` subagent with `model: sonnet`, else a runner; never a fork of your context;
 - task status: `hrk list`, `show <id>` (compact text; to parse, use only `show <id> --json`), and `peek <id>` for a runner's screen instead of `herdr pane read`.
 
 Open a runner:
@@ -21,7 +21,7 @@ Open a runner:
 - research and analysis that ends in a report;
 - any skill or multi-step flow (`ak:plan`, `ak:cook`, `ak:fix`, superpowers and the like).
 
-A lookup that grows past a few steps moves to a runner. Do not do runner work yourself because it looks small.
+Never poll runners with `list`, `show`, `events`, `herdr pane read` or `sleep`: news comes to you. For a runner's screen use `peek <id>` (text), never a screenshot. Do not do runner work yourself because it looks small. Why and details: [references/commands.md#main-sessions-own-work](references/commands.md#main-sessions-own-work).
 
 | Request | Route |
 |---|---|
@@ -101,7 +101,7 @@ Stages, gates, change control, milestones, graduation (suggest it once after M1)
 
 ## Wait for news
 
-After you spawn, answer, send or release, run `hrk wait` with the Bash tool's `run_in_background`. Rerun it after every wake.
+In the session `hrk main` started (`$HRK_MAIN` set), the auto re-arm hook waits for you after every turn: never start your own `hrk wait` there. Elsewhere, after you spawn, answer, send or release, run `hrk wait` with the Bash tool's `run_in_background` and rerun it after every wake.
 
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences.
 - `tN needs-human · … · 3 questions` with numbered lines is one round: ask all of them in one message and send the replies as one answer, such as `1a 2b 3c`. `decided: …` on a `done` line lists what the runner settled itself: relay it first; the user may veto, and you `send` the change. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail and `peek <id>` the screen.

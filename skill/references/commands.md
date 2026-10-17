@@ -27,6 +27,14 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `heavy [--json]` | Who holds each heavy slot and who waits, with command and age. Use it when a runner, or your own check, seems to wait. |
 | `sync <id> [--from REF] [--no-send]` | Merge origin's default branch (such as `origin/main`), or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent, background work, an agent herdr cannot check, or a dirty worktree, and fetches only after those checks; a conflict is aborted and the text to `send` is printed. When it suggests `--from main`, local main has commits origin lacks. |
 
+## Main session's own work
+
+Each of your calls re-reads your whole context, about 200k tokens in a long session; a light agent's call carries 30k to 60k. So keep reading out of it:
+- A lookup is at most two commands, such as one search and one read. A longer one goes to the `scout` skill when it is installed, else an `Explore` subagent with `model: sonnet` briefed with paths, else a runner. Never fork your context for it: a fork carries all of it.
+- Never poll runners with `list`, `show`, `events`, `herdr pane read`, the tasks folder or `sleep`; `wait` or the hook brings their news. Use `list` and `show` when the user asks for status.
+- A runner's screen: `peek <id>` (text). Never a screenshot: an image stays in your context until the next compaction.
+- In the session `hrk main` started (`$HRK_MAIN` set), the auto re-arm hook runs `wait` after every turn; a `wait` of your own beside it only gets `already waiting`. One exception: after `/clear` in a resumed main session the hook stops, so run your own `hrk wait` in the background there until you restart with `main --exec`.
+
 ## Projects
 
 | Command | Use |
