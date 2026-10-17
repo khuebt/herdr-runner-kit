@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -83,6 +84,63 @@ func TestUsageCoversEveryAttemptAtTheTurnAfterTheReport(t *testing.T) {
 	}
 }
 
+func TestUsageCoversAHandoffWhoseFirstSessionEndedNoTurn(t *testing.T) {
+	hook := func(event, transcript string) []byte {
+		return fmt.Appendf(nil, `{"hook_event_name":%q,"source":"startup","prompt":"go","transcript_path":%q}`, event, transcript)
+	}
+	// Each way the first session's transcript reaches the kit: its start,
+	// with open or locked input, or a Stop hook after the handoff.
+	seen := map[string]func(r *Runner, e map[string]string, id, path string) error{
+		"session start": func(r *Runner, _ map[string]string, id, path string) error {
+			_, err := r.ContextHook(context.Background(), id, task.Claude, hook("SessionStart", path))
+			return err
+		},
+		"prompt gate": func(r *Runner, _ map[string]string, id, path string) error {
+			a, _ := harness.For(task.Claude)
+			_, err := r.GatePrompt(id, a, hook("UserPromptSubmit", path))
+			return err
+		},
+		"stop after the handoff": func(r *Runner, e map[string]string, id, path string) error {
+			e["HRK_ATTEMPT"] = "1"
+			defer func() { e["HRK_ATTEMPT"] = "2" }()
+			_, err := r.TurnEnd(context.Background(), id, task.Claude, stopPayload(path))
+			return err
+		},
+	}
+	for name, see := range seen {
+		t.Run(name, func(t *testing.T) {
+			r, _, e := newTestRunner(t)
+			tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+			first, second := copyTranscript(t), copyTranscript(t)
+			if name != "stop after the handoff" {
+				if err := see(r, e, tk.ID, first); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The first session hands off inside its first turn.
+			if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Attempt = 2; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			e["HRK_ATTEMPT"] = "2"
+			if name == "stop after the handoff" {
+				if err := see(r, e, tk.ID, first); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "fixed"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, stopPayload(second)); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := r.Store.Get(tk.ID)
+			if got.Usage == nil || got.Usage.Units != 2*fixtureUnits || got.Usage.Calls != 6 {
+				t.Fatalf("usage = %+v, want both sessions' %d units", got.Usage, 2*fixtureUnits)
+			}
+		})
+	}
+}
+
 func TestTurnEndLeavesTheLastCallToTheUsageReader(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	var started []string
@@ -102,8 +160,8 @@ func TestTurnEndLeavesTheLastCallToTheUsageReader(t *testing.T) {
 	if _, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, stopPayload(path)); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := r.Store.Get(tk.ID); got.Usage == nil || got.Usage.Calls != 1 || len(started) != 1 || started[0] != tk.ID {
-		t.Fatalf("usage = %+v, readers started %q; want the written call and one reader", got.Usage, started)
+	if got, _ := r.Store.Get(tk.ID); got.Usage != nil || len(started) != 1 || started[0] != tk.ID {
+		t.Fatalf("usage = %+v, readers started %q; want no read in the hook and one reader", got.Usage, started)
 	}
 	sleeps := 0
 	r.Sleep = func(time.Duration) {

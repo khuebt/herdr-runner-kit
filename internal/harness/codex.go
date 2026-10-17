@@ -378,6 +378,7 @@ func (codex) HookPayload(args []string, _ io.Reader) ([]byte, error) {
 	return []byte(args[0]), nil
 }
 
+func (codex) HookTranscript([]byte) string { return "" }
 func (codex) HookReply(string) string      { return "" }
 func (codex) SessionContext(string) string { return "" }
 

@@ -33,7 +33,7 @@ Each of your calls re-reads your whole context, about 200k tokens in a long sess
 - A lookup is at most two commands, such as one search and one read. A longer one goes to the `scout` skill when it is installed, else an `Explore` subagent with `model: sonnet` briefed with paths, else a runner. Never fork your context for it: a fork carries all of it.
 - Never poll runners with `list`, `show`, `events`, `herdr pane read`, the tasks folder or `sleep`; `wait` or the hook brings their news. Use `list` and `show` when the user asks for status.
 - A runner's screen: `peek <id>` (text). Never a screenshot: an image stays in your context until the next compaction.
-- In the session `hrk main` started (`$HRK_MAIN` set), the auto re-arm hook runs `wait` after every turn; a `wait` of your own beside it only gets `already waiting`. One exception: after `/clear` in a resumed main session the hook stops, so run your own `hrk wait` in the background there until you restart with `main --exec`.
+- In the session `hrk main` started or resumed, the auto re-arm hook runs `wait` after every turn; a `wait` of your own beside it only gets `already waiting`. One exception: after `/clear` in a resumed main session the hook stops, so run your own `hrk wait` in the background there until you restart with `main --exec`.
 
 ## Projects
 
@@ -179,7 +179,7 @@ Picking an agent: the brief names each runner's harness, model and effort with o
 
 ## News that wait reports
 
-Lines marked *quiet* never wake you alone: they come first with the next line that does, with `idle`, or at the latest 50 minutes after your last turn. `wait --all-news`, `wait --task` and `wakeOn: all` wake for them too.
+Lines marked *quiet* never wake you alone while other tasks run: they come first with the next line that does, with `idle`, or at the latest 50 minutes after your last turn. `wait --all-news`, `wait --task` and `wakeOn: all` wake for them too.
 
 | Line starts with | Meaning | What you do |
 |---|---|---|

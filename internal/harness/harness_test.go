@@ -546,8 +546,18 @@ func TestClaudeSettings(t *testing.T) {
 	if len(pre) != 1 || pre[0].Matcher != "" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
 		t.Errorf("PreCompact hooks = %s", data)
 	}
-	if len(start) != 1 || start[0].Matcher != "compact" || len(start[0].Hooks) != 1 || start[0].Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
-		t.Errorf("SessionStart hooks = %s", data)
+	// Open input records the transcript at startup; the prompt gate does it
+	// for locked input.
+	if len(start) != 2 || start[0].Matcher != "compact" || start[1].Matcher != "startup" {
+		t.Fatalf("SessionStart hooks = %s", data)
+	}
+	for _, s := range start {
+		if len(s.Hooks) != 1 || s.Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
+			t.Errorf("SessionStart hooks = %s", data)
+		}
+	}
+	if locked, _ := ClaudeSettings(ClaudeSettingsInput{Bin: "/home/u/bin/hrk", InputLocked: true}); strings.Contains(string(locked), `"startup"`) {
+		t.Errorf("locked input has a startup hook: %s", locked)
 	}
 	if strings.Contains(string(data), "UserPromptSubmit") {
 		t.Errorf("open input has a prompt gate: %s", data)
@@ -1007,10 +1017,25 @@ func screenOf(text string) Screen {
 	}
 }
 
+func TestHookTranscript(t *testing.T) {
+	tests := []struct {
+		a       Adapter
+		fixture string
+		want    string
+	}{
+		{claude{}, "stop-failure-claude.json", "/home/khuebt/.claude/projects/-home-khuebt-Work-herdr-runner-kit/4f0c2a9e-7b1d-4c55-9a8e-2d6b3f1e0c47.jsonl"},
+		{claude{}, "stop-background-none-claude.json", "/home/user/.claude/projects/demo-app/session.jsonl"},
+		{codex{}, "stop-background-none-claude.json", ""},
+	}
+	for _, tt := range tests {
+		if got := tt.a.HookTranscript([]byte(readFixture(t, tt.fixture))); got != tt.want {
+			t.Errorf("%s %s: transcript = %q, want %q", tt.a.Harness(), tt.fixture, got, tt.want)
+		}
+	}
+}
+
 func TestReadTurnEnd(t *testing.T) {
 	const codexTurn = `{"type":"agent-turn-complete","thread-id":"th1","input-messages":["go on"]}`
-	const failureTranscript = "/home/khuebt/.claude/projects/-home-khuebt-Work-herdr-runner-kit/4f0c2a9e-7b1d-4c55-9a8e-2d6b3f1e0c47.jsonl"
-	const stopTranscript = "/home/user/.claude/projects/demo-app/session.jsonl"
 	tests := []struct {
 		name    string
 		a       Adapter
@@ -1018,10 +1043,10 @@ func TestReadTurnEnd(t *testing.T) {
 		screen  string // fixture name, or "" for an unreadable pane
 		want    TurnSignal
 	}{
-		{"claude limit", claude{}, readFixture(t, "stop-failure-claude.json"), "", TurnSignal{LimitConfirmed: true, Transcript: failureTranscript}},
+		{"claude limit", claude{}, readFixture(t, "stop-failure-claude.json"), "", TurnSignal{LimitConfirmed: true}},
 		{"claude other failure", claude{}, `{"hook_event_name":"StopFailure","error":"server_error"}`, "", TurnSignal{Ignore: true}},
-		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true, Transcript: stopTranscript}},
-		{"claude all finished", claude{}, readFixture(t, "stop-background-none-claude.json"), "background-agents-claude-2.txt", TurnSignal{Transcript: stopTranscript}},
+		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true}},
+		{"claude all finished", claude{}, readFixture(t, "stop-background-none-claude.json"), "background-agents-claude-2.txt", TurnSignal{}},
 		{"claude mode line", claude{}, `{"hook_event_name":"Stop"}`, "background-agents-claude-2.txt", TurnSignal{Background: true}},
 		{"claude no list, no pane", claude{}, `{"hook_event_name":"Stop"}`, "", TurnSignal{}},
 		{"codex title turn", codex{}, `{"type":"agent-turn-complete","input-messages":["Generate a concise, single-line task title for this"]}`, "", TurnSignal{Ignore: true}},

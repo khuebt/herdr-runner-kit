@@ -63,14 +63,17 @@ const blockedHead = 60
 // it records an input-blocked event and returns the adapter's block reply,
 // which tells the human where to ask instead. An error lets the prompt
 // through: the lock prevents accidents, and must never cut the kit off from
-// its own runner.
+// its own runner. The session's transcript is recorded from the first
+// prompt on, so usage covers a session that hands off before its first
+// turn ends.
 func (r *Runner) GatePrompt(id string, adapter harness.Adapter, payload []byte) (string, error) {
-	prompt, synthetic, err := adapter.GatePrompt(payload)
-	if err != nil || synthetic {
-		return "", err
-	}
 	t, err := r.Store.Get(id)
 	if err != nil {
+		return "", err
+	}
+	r.recordTranscript(t, adapter.Harness(), adapter.HookTranscript(payload))
+	prompt, synthetic, err := adapter.GatePrompt(payload)
+	if err != nil || synthetic {
 		return "", err
 	}
 	if taken, err := r.Store.TakePromptToken(t.ID); err != nil || taken {

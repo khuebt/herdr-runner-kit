@@ -263,6 +263,7 @@ func (pi) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 func (pi) NudgeInHook() bool { return false }
 
 func (pi) HookPayload(_ []string, stdin io.Reader) ([]byte, error) { return readStdin(stdin) }
+func (pi) HookTranscript([]byte) string                            { return "" }
 func (pi) HookReply(string) string                                 { return "" }
 func (pi) SessionContext(string) string                            { return "" }
 func (pi) WorksInBackground(Screen) (bool, error)                  { return false, nil }
