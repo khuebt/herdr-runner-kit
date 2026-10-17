@@ -158,6 +158,7 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--title TEXT` | Short title; by default it comes from the prompt. |
 | `--language NAME` | Language of the runner's report summaries and questions, such as `Vietnamese`. Default: the config's `language`. |
 | `--claude-config DIR` | Claude config folder (account) of a Claude runner: a path, or a name such as `claude2` for `~/.claude2`. Default: the main session's. |
+| `--mcp` | Keep the user's MCP servers in a Claude runner, which starts without them. Only when the task needs an MCP tool. |
 | `--cwd DIR` | Folder the task works in; by default the current folder, or the project's folder with `--project`. |
 | `--project NAME` | Registered project the task works for. It opens in the project's workspace and reports to `project:NAME`. Default: the project holding the task's folder, if any. |
 

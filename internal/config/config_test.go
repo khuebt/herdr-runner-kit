@@ -36,6 +36,7 @@ kinds:
     worktree: true
   review:
     agent: codex::high
+    mcp: true
 telegram:
   notify: [needs-human]
 `))
@@ -45,10 +46,10 @@ telegram:
 	if got := cfg.Kinds["fix"]; got.Agent != "claude:claude-sonnet-5-5:medium" || !got.Worktree {
 		t.Errorf("fix = %+v, want default agent with worktree on", got)
 	}
-	if got := cfg.Kinds["review"]; got.Agent != "codex::high" || got.Worktree {
+	if got := cfg.Kinds["review"]; got.Agent != "codex::high" || got.Worktree || !got.MCP {
 		t.Errorf("review = %+v", got)
 	}
-	if got := cfg.Kinds["code"]; got.Agent != "claude:claude-sonnet-5-5:medium" {
+	if got := cfg.Kinds["code"]; got.Agent != "claude:claude-sonnet-5-5:medium" || got.MCP {
 		t.Errorf("code = %+v, want untouched default", got)
 	}
 	if len(cfg.Telegram.Notify) != 1 || cfg.Telegram.Notify[0] != "needs-human" {

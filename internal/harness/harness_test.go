@@ -30,13 +30,22 @@ func TestClaudeLaunchArgs(t *testing.T) {
 	tests := []struct {
 		agent string
 		dir   string // task folder holding the runner files
+		mcp   bool
 		want  []string
 	}{
-		{"claude", "", []string{"--dangerously-skip-permissions"}},
-		{"claude:claude-opus-5-5", "", []string{"--dangerously-skip-permissions", "--model", "claude-opus-5-5"}},
-		{"claude::max", "", []string{"--dangerously-skip-permissions", "--effort", "max"}},
+		{"claude", "", false, []string{"--dangerously-skip-permissions"}},
+		{"claude:claude-opus-5-5", "", false, []string{"--dangerously-skip-permissions", "--model", "claude-opus-5-5"}},
+		{"claude::max", "", false, []string{"--dangerously-skip-permissions", "--effort", "max"}},
 		{
-			"claude:claude-sonnet-5-5:medium", "/s/t3",
+			"claude:claude-sonnet-5-5:medium", "/s/t3", false,
+			[]string{
+				"--dangerously-skip-permissions", "--model", "claude-sonnet-5-5", "--effort", "medium",
+				"--settings", "/s/t3/claude-settings.json", "--append-system-prompt-file", "/s/t3/contract.md",
+				"--strict-mcp-config",
+			},
+		},
+		{
+			"claude:claude-sonnet-5-5:medium", "/s/t3", true,
 			[]string{
 				"--dangerously-skip-permissions", "--model", "claude-sonnet-5-5", "--effort", "medium",
 				"--settings", "/s/t3/claude-settings.json", "--append-system-prompt-file", "/s/t3/contract.md",
@@ -44,7 +53,7 @@ func TestClaudeLaunchArgs(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		got := claude{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Dir: tt.dir})
+		got := claude{}.LaunchArgs(LaunchOptions{Spec: spec(t, tt.agent), Dir: tt.dir, MCP: tt.mcp})
 		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: argv = %q, want %q", tt.agent, got, tt.want)
 		}
@@ -497,7 +506,7 @@ func TestShows(t *testing.T) {
 }
 
 func TestClaudeSettings(t *testing.T) {
-	data, err := ClaudeSettings("/home/u/bin/hrk", false)
+	data, err := ClaudeSettings(ClaudeSettingsInput{Bin: "/home/u/bin/hrk"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,17 +552,44 @@ func TestClaudeSettings(t *testing.T) {
 	if strings.Contains(string(data), "UserPromptSubmit") {
 		t.Errorf("open input has a prompt gate: %s", data)
 	}
-	data, _ = ClaudeSettings("/opt/it's here/hrk", false)
+	data, _ = ClaudeSettings(ClaudeSettingsInput{Bin: "/opt/it's here/hrk"})
 	if !strings.Contains(string(data), `'/opt/it'\\''s here/hrk' __turn-end`) {
 		t.Errorf("unsafe quoting: %s", data)
 	}
-	if _, err := ClaudeSettings("hrk", false); err == nil {
+	if _, err := ClaudeSettings(ClaudeSettingsInput{Bin: "hrk"}); err == nil {
 		t.Error("relative binary accepted")
 	}
 }
 
+func TestClaudeSettingsDeny(t *testing.T) {
+	always := []string{"Artifact", "SendFeedback", "ShareOnboardingGuide", "ListAgents"}
+	locked := []string{"AskUserQuestion", "ScheduleWakeup"}
+	for _, inputLocked := range []bool{false, true} {
+		data, err := ClaudeSettings(ClaudeSettingsInput{Bin: "/home/u/bin/hrk", InputLocked: inputLocked})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s struct{ Permissions struct{ Deny []string } }
+		if err := json.Unmarshal(data, &s); err != nil {
+			t.Fatal(err)
+		}
+		want := slices.Clone(always)
+		if inputLocked {
+			want = append(want, locked...)
+		}
+		if !slices.Equal(s.Permissions.Deny, want) {
+			t.Errorf("locked %v: deny = %q, want %q", inputLocked, s.Permissions.Deny, want)
+		}
+		for _, kept := range []string{"Workflow", "ReportFindings"} {
+			if slices.Contains(s.Permissions.Deny, kept) {
+				t.Errorf("locked %v: %s denied", inputLocked, kept)
+			}
+		}
+	}
+}
+
 func TestClaudeSettingsPromptGate(t *testing.T) {
-	data, err := ClaudeSettings("/home/u/bin/hrk", true)
+	data, err := ClaudeSettings(ClaudeSettingsInput{Bin: "/home/u/bin/hrk", InputLocked: true})
 	if err != nil {
 		t.Fatal(err)
 	}

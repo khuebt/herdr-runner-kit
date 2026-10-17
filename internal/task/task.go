@@ -190,6 +190,9 @@ type Task struct {
 	// InputLocked says the runner takes prompts only from the kit, when its
 	// agent can lock its input: the runnerInput config at spawn.
 	InputLocked bool `json:"inputLocked,omitempty"`
+	// MCP keeps the user's MCP servers in the runner, from spawn --mcp or
+	// the kind; without it a Claude runner starts with none.
+	MCP bool `json:"mcp,omitempty"`
 	// Language is the language the runner writes its report summaries and
 	// questions in. Empty leaves it to the runner.
 	Language string `json:"language,omitempty"`

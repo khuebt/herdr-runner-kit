@@ -24,9 +24,11 @@ import (
 
 // Kind is the default agent and worktree choice for one task kind. Worktree
 // means "use a worktree when the task's cwd is inside a git repository".
+// MCP keeps the user's MCP servers in the kind's runners.
 type Kind struct {
 	Agent    string
 	Worktree bool
+	MCP      bool
 }
 
 // Telegram configures notifications. Empty fields use the Telegram channel
@@ -150,6 +152,7 @@ type fileFallback struct {
 type fileKind struct {
 	Agent    *string `yaml:"agent"`
 	Worktree *bool   `yaml:"worktree"`
+	MCP      *bool   `yaml:"mcp"`
 }
 
 type fileTelegram struct {
@@ -210,6 +213,9 @@ func Parse(data []byte) (Config, error) {
 		}
 		if fk.Worktree != nil {
 			k.Worktree = *fk.Worktree
+		}
+		if fk.MCP != nil {
+			k.MCP = *fk.MCP
 		}
 		cfg.Kinds[name] = k
 	}

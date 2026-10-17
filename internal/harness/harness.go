@@ -31,6 +31,9 @@ type LaunchOptions struct {
 	// Dir is the task folder holding the files Files returned; empty when
 	// none were written.
 	Dir string
+	// MCP keeps the user's MCP servers; without it an adapter that can
+	// starts the agent with none.
+	MCP bool
 }
 
 // FilesInput are the inputs to an adapter's per-task runner files.

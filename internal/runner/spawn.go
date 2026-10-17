@@ -118,6 +118,9 @@ type SpawnOptions struct {
 	// Keep holds the runner's tab open after the task finishes, so gc
 	// leaves it.
 	Keep bool
+	// MCP keeps the user's MCP servers in the runner, as the kind's mcp
+	// does.
+	MCP bool
 	// Reason says why a task with the human gate waits, such as the
 	// dependency it needs. Only a release that names the task opens it.
 	Reason string
@@ -409,7 +412,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 		MainWorkspace: workspace, ClaudeConfigDir: configDir, Language: language,
 		Project: project.Name, Stage: stage, Keep: o.Keep,
 		Plan: o.Plan, Phase: o.Phase, CheckoutOf: o.CheckoutOf,
-		InputLocked: r.Config.RunnerInput == config.InputLocked,
+		InputLocked: r.Config.RunnerInput == config.InputLocked, MCP: o.MCP || kind.MCP,
 		// Queued until spawn decides: a task with no pending parents moves on
 		// to held or starting at once.
 		Status: task.Queued,

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,11 @@ func (claude) LaunchArgs(o LaunchOptions) []string {
 		// types into the pane.
 		args = append(args, "--settings", filepath.Join(o.Dir, claudeSettingsFile),
 			"--append-system-prompt-file", filepath.Join(o.Dir, claudeContractFile))
+		if !o.MCP {
+			// No runner has called an MCP tool, and the servers' tool
+			// schemas ride on every call.
+			args = append(args, "--strict-mcp-config")
+		}
 	}
 	return args
 }
@@ -47,7 +53,7 @@ const (
 )
 
 func (claude) Files(in FilesInput) ([]File, error) {
-	settings, err := ClaudeSettings(in.Bin, in.InputLocked)
+	settings, err := ClaudeSettings(ClaudeSettingsInput{Bin: in.Bin, InputLocked: in.InputLocked})
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +192,7 @@ func (claude) GateBlock(reason string) string { return ClaudeBlock(reason) }
 func (claude) Checks() Checks {
 	return Checks{
 		Bin:         "claude",
-		Flags:       []string{"--dangerously-skip-permissions", "--settings", "--model", "--effort"},
+		Flags:       []string{"--dangerously-skip-permissions", "--settings", "--model", "--effort", "--strict-mcp-config"},
 		Integration: "claude",
 		Required:    true,
 	}
@@ -391,9 +397,11 @@ func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
 // by the hook input, and PreCompact and SessionStart(compact) hooks that
 // call `<bin> __context`. PreCompact has no matcher: a manual compaction
 // must cancel an automatic one Claude announced but never ran. With
-// inputLocked, a UserPromptSubmit hook calls `<bin> __prompt-gate`. Claude
-// merges them with the user's own hooks.
-func ClaudeSettings(bin string, inputLocked bool) ([]byte, error) {
+// InputLocked, a UserPromptSubmit hook calls `<bin> __prompt-gate`. Claude
+// merges them with the user's own hooks. It also denies the tools a runner
+// has no use for, whose schemas would ride on every call.
+func ClaudeSettings(in ClaudeSettingsInput) ([]byte, error) {
+	bin := in.Bin
 	if !filepath.IsAbs(bin) {
 		return nil, fmt.Errorf("hook binary must be an absolute path, got %q", bin)
 	}
@@ -405,13 +413,33 @@ func ClaudeSettings(bin string, inputLocked bool) ([]byte, error) {
 		"PreCompact":   []any{map[string]any{"hooks": []any{onCompact}}},
 		"SessionStart": []any{map[string]any{"matcher": "compact", "hooks": []any{onCompact}}},
 	}
-	if inputLocked {
+	deny := slices.Clone(claudeRunnerDeny)
+	if in.InputLocked {
 		gate := map[string]any{"type": "command", "command": ShellQuote(bin) + " __prompt-gate --harness claude"}
 		hooks["UserPromptSubmit"] = []any{map[string]any{"hooks": []any{gate}}}
+		deny = append(deny, claudeLockedDeny...)
 	}
-	settings := map[string]any{"hooks": hooks}
+	settings := map[string]any{"hooks": hooks, "permissions": map[string]any{"deny": deny}}
 	return json.MarshalIndent(settings, "", "  ")
 }
+
+// ClaudeSettingsInput are the inputs to ClaudeSettings.
+type ClaudeSettingsInput struct {
+	Bin         string // absolute path of the kit binary the hooks call
+	InputLocked bool   // the runner takes prompts only from the kit
+}
+
+// claudeRunnerDeny are the tools no runner gets: Artifact publishes pages
+// for a person reading along, SendFeedback and ShareOnboardingGuide report
+// on or share Claude Code itself, and ListAgents finds other sessions to
+// message, while a runner talks only to the kit through its report.
+var claudeRunnerDeny = []string{"Artifact", "SendFeedback", "ShareOnboardingGuide", "ListAgents"}
+
+// claudeLockedDeny are denied too when the runner's input is locked:
+// nobody answers AskUserQuestion there, the channel to a human is a
+// needs-human report, and ScheduleWakeup paces a /loop no locked runner
+// is given.
+var claudeLockedDeny = []string{"AskUserQuestion", "ScheduleWakeup"}
 
 // ClaudeCompaction is what a PreCompact or SessionStart hook input says
 // about a compaction, as Claude Code 2.1.300 sends it: PreCompact carries

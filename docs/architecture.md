@@ -44,7 +44,7 @@ The main session (`hrk main`) always runs Claude Code and names the `claude` com
 | Decision | Adapter method |
 |---|---|
 | Launch argv, herdr kind, skill syntax, first prompt | `LaunchArgs`, `HerdrKind`, `RenderSkill`, `FirstPrompt` |
-| Per-task runner files (Claude: `claude-settings.json`, `contract.md`; pi and omp: `contract.md`, the runner extension `hrk-runner.ts`, and for omp `omp-runner.yml`) | `Files`; the core writes them into the task folder with mode 0600 |
+| Per-task runner files (Claude: `claude-settings.json` with the hooks and the denied tools, `contract.md`; pi and omp: `contract.md`, the runner extension `hrk-runner.ts`, and for omp `omp-runner.yml`) | `Files`; the core writes them into the task folder with mode 0600 |
 | Folder trust before launch | `PrepareTrust`, which returns the event to record |
 | Startup dialogs, screen reading, retries, usage limit on screen, context footer | `Dialogs`, `ProgressText`, `ShowsRetry`, `ShowsUsageLimit`, `ContextLeft`, `SelfResolvingPrompts` |
 | Reading a turn end | `ReadTurnEnd` returns a `TurnSignal`: ignore, thread, confirmed limit, limit on screen, background work, context left |
