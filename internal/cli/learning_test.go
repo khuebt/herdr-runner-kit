@@ -51,7 +51,7 @@ func TestLearningCountsReopensTabAnswersAndSwitches(t *testing.T) {
 	}
 	tasks := []*task.Task{
 		{ID: "t1", Kind: "code", Agent: "codex", Project: "demo-app", Status: task.Done},
-		{ID: "t2", Kind: "research", Agent: "claude", Status: task.Done},
+		{ID: "t2", Kind: "research", Agent: "claude", Status: task.Done, Usage: &task.Usage{Calls: 12, Units: 1_250_000}},
 		{ID: "t3", Kind: "code", Agent: "claude", Project: "demo-app", FallbackFrom: []string{"codex"}, Status: task.NeedsHuman},
 		{ID: "t4", Kind: "fix", Agent: "claude", Status: task.Done},
 	}
@@ -65,12 +65,12 @@ func TestLearningCountsReopensTabAnswersAndSwitches(t *testing.T) {
 		rows[f[0]] = f
 	}
 	want := map[string]string{
-		//    project kind agents status attempts nudges sends answers needs-human unreported switches duration active stalled idle-kept waited
-		"t1": "demo-app code codex done 2 1 1 0 0 0 0 5m0s 3m15s 0s - 0s",
+		//    project kind agents status attempts nudges sends answers needs-human unreported switches duration active stalled idle-kept waited units
+		"t1": "demo-app code codex done 2 1 1 0 0 0 0 5m0s 3m15s 0s - 0s -",
 		// Time held before the spawn is no wait: waited stays within duration.
-		"t2": "- research claude done 1 0 1 2 2 0 0 2m0s 45s 0s - 1m10s",
-		"t3": "demo-app code codex->claude needs-human 1 0 0 0 1 1 1 - 1m18s 0s - 20s",
-		"t4": "- fix claude done 1 0 1 1 1 0 0 50s 39s 0s - 10s",
+		"t2": "- research claude done 1 0 1 2 2 0 0 2m0s 45s 0s - 1m10s 1.2M",
+		"t3": "demo-app code codex->claude needs-human 1 0 0 0 1 1 1 - 1m18s 0s - 20s -",
+		"t4": "- fix claude done 1 0 1 1 1 0 0 50s 39s 0s - 10s -",
 	}
 	for id, w := range want {
 		if got := strings.Join(rows[id][1:], " "); got != w {
@@ -147,7 +147,7 @@ func TestLearningActiveStalledAndIdleKept(t *testing.T) {
 	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
 		f := strings.Fields(line)
 		if w, ok := want[f[0]]; ok {
-			if got := strings.Join(f[len(f)-5:], " "); got != w {
+			if got := strings.Join(f[len(f)-6:len(f)-1], " "); got != w {
 				t.Errorf("%s = %q, want %q\n%s", f[0], got, w, out.String())
 			}
 		}

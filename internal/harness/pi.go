@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
@@ -300,6 +301,10 @@ func (pi) GateBlock(reason string) string { return reason }
 // Checks keeps pi and omp optional, so a config without them sees warnings
 // only. The flags are long forms: doctor matches them as substrings of
 // --help, where "-e" would match anything.
+// Usage is nil: where pi and omp keep a session's token usage is not
+// confirmed.
+func (pi) Usage([]string, time.Time, time.Time) (*task.Usage, error) { return nil, nil }
+
 func (p pi) Checks() Checks {
 	flags := []string{"--model", "--thinking", p.approve, "--append-system-prompt", "--extension"}
 	if p.overlay != "" { // omp

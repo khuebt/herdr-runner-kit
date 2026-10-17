@@ -267,3 +267,38 @@ func TestAlreadyWaitingNamesTheHolder(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoarmRecordsTheMainTranscript(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HRK_MAIN", "1")
+	t.Setenv("HRK_TASK", "")
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A line from before transcripts were kept holds the id only.
+	if err := os.WriteFile(filepath.Join(dir, "main-sessions"), []byte("old-id\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newAutoarmCommand()
+	cmd.SetIn(strings.NewReader(`{"session_id":"main-id","transcript_path":"/home/user/.claude/projects/demo/main-id.jsonl","cwd":"` + t.TempDir() + `"}`))
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	want := []state.MainSession{{ID: "old-id"}, {ID: "main-id", Transcript: "/home/user/.claude/projects/demo/main-id.jsonl"}}
+	if got := store.MainSessions(); !slices.Equal(got, want) {
+		t.Errorf("main sessions = %+v, want %+v", got, want)
+	}
+	if !state.MainSessionListed(dir, "old-id") || !state.MainSessionListed(dir, "main-id") || state.MainSessionListed(dir, want[1].Transcript) {
+		t.Error("MainSessionListed must match ids only, old and new lines alike")
+	}
+	// A later arm without a transcript keeps the recorded one.
+	if err := store.RecordMainSession("main-id"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.MainSessions(); !slices.Equal(got, want) {
+		t.Errorf("after a re-record = %+v, want %+v", got, want)
+	}
+}

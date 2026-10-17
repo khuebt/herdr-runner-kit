@@ -8,7 +8,7 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 |---|---|
 | `spawn [flags] --stdin` | Record a task and open its runner. Returns at once. |
 | `list [--all]` | Your tasks and every registered project's, with stored status, herdr's live state, TAB (`open` with when `gc` closes it, `kept until HH:MM`, `kept`, `closed` or `-`), AGE and LAST, the age of the latest event. `--all` shows every owner. |
-| `show <id> [--prompt]` | One task as compact text: status, times, tab, worktree, `git:` line, summary, decisions, question, outputs, last 5 events. The prompt only with `--prompt`. |
+| `show <id> [--prompt]` | One task as compact text: status, times, tab, `usage:` of a Claude runner, worktree, `git:` line, summary, decisions, question, outputs, last 5 events. The prompt only with `--prompt`. |
 | `show <id> --json [--events N]` | The task as one JSON object, or `{task, events}` with `--events`. Parse this, never the text view. |
 | `peek <id> [--lines N]` | The runner's visible screen (default 30 lines), secrets hidden. Use it instead of `herdr pane read`. |
 | `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one refuses. |
@@ -21,7 +21,8 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `keep <id> [--off]` | Keep a finished runner's tab open for `keepFor` (4h by default) instead of letting `gc` close it after 30 minutes. `--off` lets `gc` close it again. |
 | `cleanup [id]... [--yes]` | List finished worktrees and branches left behind, yours and every project's: merged (squash and rebase merges included), unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
-| `events --learning [--task ID] [--project NAME]` | Use it when the user asks how much steering tasks took. Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish) and time waited on a human after the spawn. |
+| `events --learning [--task ID] [--project NAME]` | Use it when the user asks how much steering tasks took. Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish), time waited on a human after the spawn, and UNITS of token usage. |
+| `usage [id...] [--since 24h] [--owner DIR \| --all] [--by task\|owner] [--main] [--json]` | Use it when the user asks what tasks or the main session cost in tokens. Per task: calls, MAX-CTX, subagents and UNITS (input 1, cache read 0.1, 5-minute cache write 1.25, 1-hour write 2, output 5; not money), and a total. Claude runners only; others show `-`. `--main` adds main sessions. |
 | `heavy -- <command> [args...]` | Run your own tests, lint, typecheck and builds this way too: it waits for one of `heavySlots` slots (2 by default) shared with every runner, then runs the command and exits with its code. |
 | `heavy [--json]` | Who holds each heavy slot and who waits, with command and age. Use it when a runner, or your own check, seems to wait. |
 | `sync <id> [--from REF] [--no-send]` | Merge origin's default branch (such as `origin/main`), or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent, background work, an agent herdr cannot check, or a dirty worktree, and fetches only after those checks; a conflict is aborted and the text to `send` is printed. When it suggests `--from main`, local main has commits origin lacks. |

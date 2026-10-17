@@ -1,0 +1,78 @@
+package harness
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/khuebt/herdr-runner-kit/internal/task"
+)
+
+// The fixture's counts, by hand: call m1 is two rows of one message id (the
+// first with 5 output tokens, the second with 50) writing 1000 tokens to the
+// 1-hour cache; m2 reads 1000 and writes 200 to the 5-minute cache; the
+// synthetic row, the request blob and the broken line count nothing. The
+// subagent makes one call. Units: m1 10 + 1000×2 + 50×5 = 2260, m2 5 +
+// 1000×0.1 + 200×1.25 + 20×5 = 455, the subagent 3 + 500×0.1 + 100×1.25 +
+// 10×5 = 228. The token-usage measurement scripts give the same 2715 and 228.
+var fixtureUsage = task.Usage{
+	Calls: 3, Input: 18, CacheRead: 1500, CacheWrite: 1300, CacheWrite1h: 1000, Output: 80,
+	MaxContext: 1205, Subagents: 1, Units: 2943, SubagentUnits: 228,
+}
+
+func fixtureTranscript() string { return filepath.Join("testdata", "transcript-claude", "s1.jsonl") }
+
+func TestClaudeUsage(t *testing.T) {
+	u, err := claude{}.Usage([]string{fixtureTranscript()}, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.At.IsZero() {
+		t.Error("At is not set")
+	}
+	u.At = time.Time{}
+	if *u != fixtureUsage {
+		t.Errorf("usage = %+v, want %+v", *u, fixtureUsage)
+	}
+}
+
+func TestClaudeUsageWindow(t *testing.T) {
+	from := time.Date(2026, 10, 17, 1, 5, 0, 0, time.UTC)
+	u, err := ClaudeUsage([]string{fixtureTranscript()}, from, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only m2 is after from; the subagent's call is before it.
+	if u.Calls != 1 || u.Units != 455 || u.Subagents != 0 {
+		t.Errorf("usage from %s = %+v, want m2 only", from, *u)
+	}
+}
+
+func TestClaudeUsageMissingTranscript(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone.jsonl")
+	if u, err := ClaudeUsage([]string{missing}, time.Time{}, time.Time{}); err == nil || u != nil {
+		t.Errorf("only a missing transcript: usage %+v, err %v; want nil and an error", u, err)
+	}
+	u, err := ClaudeUsage([]string{missing, fixtureTranscript()}, time.Time{}, time.Time{})
+	if err != nil || u.Units != fixtureUsage.Units {
+		t.Errorf("a missing and a readable transcript: usage %+v, err %v; want the readable one's", u, err)
+	}
+}
+
+func TestOtherHarnessesHaveNoUsage(t *testing.T) {
+	for _, a := range All() {
+		if a.Harness() == task.Claude {
+			continue
+		}
+		if u, err := a.Usage([]string{fixtureTranscript()}, time.Time{}, time.Time{}); u != nil || err != nil {
+			t.Errorf("%s: usage %+v, err %v; want nil", a.Harness(), u, err)
+		}
+	}
+}
+
+func TestUsageString(t *testing.T) {
+	u := task.Usage{Calls: 53, MaxContext: 187_000, Units: 1_400_000, Subagents: 2, SubagentUnits: 300_000}
+	if got, want := u.String(), "53 calls, max context 187k, 1.4M units (2 subagents, 300k)"; got != want {
+		t.Errorf("String = %q, want %q", got, want)
+	}
+}

@@ -567,6 +567,7 @@ func (r *Runner) closeRunner(ctx context.Context, t *task.Task, removeWorktree b
 		if err := r.endClaim(t.ID, since, true); err != nil {
 			return err
 		}
+		r.refreshUsage(t.ID) // the agent wrote its last call
 		if cur, err := r.Store.Get(t.ID); err == nil {
 			summary := "tab closed"
 			switch {

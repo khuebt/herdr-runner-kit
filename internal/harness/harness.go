@@ -99,6 +99,9 @@ type TurnSignal struct {
 	// when ContextKnown.
 	ContextLeft  int
 	ContextKnown bool
+	// Transcript is the session transcript file the hook names, or empty
+	// when the agent names none.
+	Transcript string
 }
 
 // Checks is what doctor checks for one harness.
@@ -245,6 +248,12 @@ type Adapter interface {
 	// GateBlock is what the prompt gate prints to refuse a prompt, showing
 	// reason to the human.
 	GateBlock(reason string) string
+	// Usage sums the token usage in the session transcripts that turn ends
+	// named, counting only calls between from and to (a zero time leaves
+	// that side open). It returns nil for an agent whose transcripts the
+	// kit cannot read yet, and skips any part of a transcript it does not
+	// know.
+	Usage(transcripts []string, from, to time.Time) (*task.Usage, error)
 	// Checks lists what doctor checks.
 	Checks() Checks
 }

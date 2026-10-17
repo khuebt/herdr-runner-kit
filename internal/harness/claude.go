@@ -87,13 +87,23 @@ func (claude) PrepareTrust(in TrustInput) (TrustResult, error) {
 // either a confirmed usage limit or an API failure the kit cannot act on;
 // Claude ignores a StopFailure hook's output either way.
 func (c claude) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
+	transcript := claudeTranscript(in.Payload)
 	if message, stopFailure := ClaudeUsageLimit(in.Payload); stopFailure {
 		if message == "" {
-			return TurnSignal{Ignore: true}, nil
+			return TurnSignal{Ignore: true, Transcript: transcript}, nil
 		}
-		return TurnSignal{LimitConfirmed: true}, nil
+		return TurnSignal{LimitConfirmed: true, Transcript: transcript}, nil
 	}
-	return TurnSignal{Background: c.background(in)}, nil
+	return TurnSignal{Background: c.background(in), Transcript: transcript}, nil
+}
+
+// claudeTranscript reads the session transcript a hook input names.
+func claudeTranscript(payload []byte) string {
+	var in struct {
+		TranscriptPath string `json:"transcript_path"`
+	}
+	_ = json.Unmarshal(payload, &in)
+	return in.TranscriptPath
 }
 
 // background reports whether Claude ended its turn with shells or subagents

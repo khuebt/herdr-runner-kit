@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-10-17T01:00:10.000Z","isSidechain":true,"message":{"role":"user","content":"Find the config file."}}
+{"type":"assistant","timestamp":"2026-10-17T01:00:12.000Z","isSidechain":true,"message":{"id":"msg_a1","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Found it."}],"usage":{"input_tokens":3,"cache_creation_input_tokens":100,"cache_read_input_tokens":500,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":0},"output_tokens":10}}}

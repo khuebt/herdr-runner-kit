@@ -38,6 +38,15 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if err != nil {
 		return "", err
 	}
+	r.recordTranscript(t, h, sig.Transcript)
+	// The turn after a report holds the session's last calls, so a task
+	// that finished, or finishes now with a held done, has its usage read
+	// once the turn end is handled.
+	defer func() {
+		if cur, err := r.Store.Get(id); err == nil && cur.Status.Terminal() && len(cur.Transcripts) > 0 {
+			r.refreshUsage(id)
+		}
+	}()
 	if sig.LimitConfirmed {
 		if t.Herdr.PaneID == "" {
 			return "", nil

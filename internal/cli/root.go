@@ -44,6 +44,7 @@ func NewRootCommand() *cobra.Command {
 		newAnswerCommand(),
 		newReleaseCommand(),
 		newEventsCommand(),
+		newUsageCommand(),
 		newMainCommand(),
 		newNotifyCommand(),
 		newAutoarmCommand(),

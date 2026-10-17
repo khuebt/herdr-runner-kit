@@ -105,8 +105,9 @@ func newAutoarmCommand() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var payload struct {
-				Cwd       string `json:"cwd"`
-				SessionID string `json:"session_id"`
+				Cwd            string `json:"cwd"`
+				SessionID      string `json:"session_id"`
+				TranscriptPath string `json:"transcript_path"`
 			}
 			_ = json.NewDecoder(io.LimitReader(cmd.InOrStdin(), 1<<20)).Decode(&payload)
 			main := os.Getenv("HRK_MAIN")
@@ -130,7 +131,7 @@ func newAutoarmCommand() *cobra.Command {
 				return nil
 			}
 			if byMain {
-				_ = r.Store.RecordMainSession(payload.SessionID)
+				_ = r.Store.RecordMainTranscript(payload.SessionID, payload.TranscriptPath)
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 			defer stop()

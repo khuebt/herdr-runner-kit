@@ -1009,6 +1009,8 @@ func screenOf(text string) Screen {
 
 func TestReadTurnEnd(t *testing.T) {
 	const codexTurn = `{"type":"agent-turn-complete","thread-id":"th1","input-messages":["go on"]}`
+	const failureTranscript = "/home/khuebt/.claude/projects/-home-khuebt-Work-herdr-runner-kit/4f0c2a9e-7b1d-4c55-9a8e-2d6b3f1e0c47.jsonl"
+	const stopTranscript = "/home/user/.claude/projects/demo-app/session.jsonl"
 	tests := []struct {
 		name    string
 		a       Adapter
@@ -1016,10 +1018,10 @@ func TestReadTurnEnd(t *testing.T) {
 		screen  string // fixture name, or "" for an unreadable pane
 		want    TurnSignal
 	}{
-		{"claude limit", claude{}, readFixture(t, "stop-failure-claude.json"), "", TurnSignal{LimitConfirmed: true}},
+		{"claude limit", claude{}, readFixture(t, "stop-failure-claude.json"), "", TurnSignal{LimitConfirmed: true, Transcript: failureTranscript}},
 		{"claude other failure", claude{}, `{"hook_event_name":"StopFailure","error":"server_error"}`, "", TurnSignal{Ignore: true}},
-		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true}},
-		{"claude all finished", claude{}, readFixture(t, "stop-background-none-claude.json"), "background-agents-claude-2.txt", TurnSignal{}},
+		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true, Transcript: stopTranscript}},
+		{"claude all finished", claude{}, readFixture(t, "stop-background-none-claude.json"), "background-agents-claude-2.txt", TurnSignal{Transcript: stopTranscript}},
 		{"claude mode line", claude{}, `{"hook_event_name":"Stop"}`, "background-agents-claude-2.txt", TurnSignal{Background: true}},
 		{"claude no list, no pane", claude{}, `{"hook_event_name":"Stop"}`, "", TurnSignal{}},
 		{"codex title turn", codex{}, `{"type":"agent-turn-complete","input-messages":["Generate a concise, single-line task title for this"]}`, "", TurnSignal{Ignore: true}},
