@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.13.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.12.0...v0.13.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* default kinds research and report to claude sonnet at medium effort ([#66](https://github.com/khuebt/herdr-runner-kit/issues/66))
+
+### Features
+
+* default kinds research and report to claude sonnet at medium effort ([#66](https://github.com/khuebt/herdr-runner-kit/issues/66)) ([f44f314](https://github.com/khuebt/herdr-runner-kit/commit/f44f3143c0c4a93104883bac536d5f9aef2896d8))
+* record token usage per claude task and add hrk usage ([#69](https://github.com/khuebt/herdr-runner-kit/issues/69)) ([f44f314](https://github.com/khuebt/herdr-runner-kit/commit/f44f3143c0c4a93104883bac536d5f9aef2896d8))
+* start claude runners without unused tools or mcp servers, and keep mcp with spawn --mcp ([#67](https://github.com/khuebt/herdr-runner-kit/issues/67)) ([f44f314](https://github.com/khuebt/herdr-runner-kit/commit/f44f3143c0c4a93104883bac536d5f9aef2896d8))
+* wake the main session only for news that needs it and bring the rest with the next wake ([#68](https://github.com/khuebt/herdr-runner-kit/issues/68)) ([f44f314](https://github.com/khuebt/herdr-runner-kit/commit/f44f3143c0c4a93104883bac536d5f9aef2896d8))
+
+
+### Bug Fixes
+
+* count Workflow agents in Claude token usage ([8e8d91a](https://github.com/khuebt/herdr-runner-kit/commit/8e8d91a3c2d4b71075a9ddc67913310b16f39f8d))
+* record a session's transcript when it starts ([8e8d91a](https://github.com/khuebt/herdr-runner-kit/commit/8e8d91a3c2d4b71075a9ddc67913310b16f39f8d))
+* say on a kept worktree workspace that it is kept and how it goes away ([#65](https://github.com/khuebt/herdr-runner-kit/issues/65)) ([f44f314](https://github.com/khuebt/herdr-runner-kit/commit/f44f3143c0c4a93104883bac536d5f9aef2896d8))
+* wake the main session for a reopened plan phase's done ([8e8d91a](https://github.com/khuebt/herdr-runner-kit/commit/8e8d91a3c2d4b71075a9ddc67913310b16f39f8d))
+
+
+### Documentation
+
+* say when quiet news waits and where the re-arm hook runs ([8e8d91a](https://github.com/khuebt/herdr-runner-kit/commit/8e8d91a3c2d4b71075a9ddc67913310b16f39f8d))
+* tell the main agent to delegate lookups and never poll runners, and runners to use a light read-only agent ([#70](https://github.com/khuebt/herdr-runner-kit/issues/70)) ([f44f314](https://github.com/khuebt/herdr-runner-kit/commit/f44f3143c0c4a93104883bac536d5f9aef2896d8))
+
 ## [0.12.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.11.0...v0.12.0) (2026-10-16)
 
 
