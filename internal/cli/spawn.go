@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,7 +19,7 @@ func newSpawnCommand() *cobra.Command {
 	var o runner.SpawnOptions
 	var worktree, noWorktree bool
 	var gate string
-	var stdin bool
+	var stdin, review bool
 	cmd := &cobra.Command{
 		Use:     "spawn [flags] -- <prompt> | spawn [flags] --stdin",
 		Aliases: []string{"run"},
@@ -46,22 +47,11 @@ func newSpawnCommand() *cobra.Command {
 				return err
 			}
 			o.Warn = func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }
-			t, err := r.Spawn(cmd.Context(), o)
-			if err != nil {
-				return err
+			var flag *bool
+			if cmd.Flags().Changed("review") {
+				flag = &review
 			}
-			if _, err := fmt.Fprintln(cmd.OutOrStdout(), spawnLine(t)); err != nil {
-				return err
-			}
-			if t.Project != "" {
-				parallelNote(r.Store, t.Project, o.Warn)
-			}
-			if t.Worktree != nil && o.Branch == "" {
-				recent := runner.RecentBranches(cmd.Context(), t.RepoRoot, r.Config.WorktreeBranchPrefix, t.Worktree.Branch, 5)
-				_, err = fmt.Fprintln(cmd.ErrOrStderr(), branchNote(t.Worktree.Branch, recent))
-				return err
-			}
-			return nil
+			return spawnTask(cmd.Context(), r, o, flag, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	f := cmd.Flags()
@@ -82,8 +72,43 @@ func newSpawnCommand() *cobra.Command {
 	f.StringVar(&o.Title, "title", "", "short title (default: from the prompt)")
 	f.BoolVar(&stdin, "stdin", false, "read the prompt from stdin")
 	f.StringVar(&o.Project, "project", "", "registered project the task works for; it runs in the project's folder and reports to project:<name> (default: the project holding --cwd, if any)")
+	f.BoolVar(&review, "review", false, "chain a read-only review runner on another harness after this flow or code task (default: the kind's review)")
 	f.StringVar(&o.Owner, "owner", "", "main session the task reports to (default: git top-level of the current folder, or project:<name> for a project task)")
 	return cmd
+}
+
+// spawnTask spawns o and, when the kind or flag asks, the review runner
+// queued after it, printing one line per task.
+func spawnTask(ctx context.Context, r *runner.Runner, o runner.SpawnOptions, review *bool, out, errOut io.Writer) error {
+	want, err := r.WantsReview(o.Kind, review)
+	if err != nil {
+		return err
+	}
+	t, err := r.Spawn(ctx, o)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, spawnLine(t)); err != nil {
+		return err
+	}
+	if t.Project != "" {
+		parallelNote(r.Store, t.Project, o.Warn)
+	}
+	if want {
+		rt, err := r.SpawnReview(ctx, runner.ReviewSpawn{Writer: t, Warn: o.Warn})
+		if err != nil {
+			return fmt.Errorf("%s started, but its review could not be queued: %w", t.ID, err)
+		}
+		if _, err := fmt.Fprintln(out, spawnLine(rt)); err != nil {
+			return err
+		}
+	}
+	if t.Worktree != nil && o.Branch == "" {
+		recent := runner.RecentBranches(ctx, t.RepoRoot, r.Config.WorktreeBranchPrefix, t.Worktree.Branch, 5)
+		_, err = fmt.Fprintln(errOut, branchNote(t.Worktree.Branch, recent))
+		return err
+	}
+	return nil
 }
 
 // branchNote tells the main session that a worktree task got the kit's
