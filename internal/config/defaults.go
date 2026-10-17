@@ -39,5 +39,6 @@ func Default() Config {
 		RunnerMemoryMax:  "25%",
 		HeavySlots:       2,
 		RunnerInput:      InputLocked,
+		WakeOn:           WakeActionable,
 	}
 }

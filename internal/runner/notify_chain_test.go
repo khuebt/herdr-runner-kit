@@ -164,3 +164,55 @@ func TestDoneNotSelectedSendsNothing(t *testing.T) {
 		t.Errorf("events = %v", ev)
 	}
 }
+
+func TestQuietNewsIsMarkedWhenWritten(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	dir := plainDir(t)
+	quietOf := func(id, typ string) bool {
+		t.Helper()
+		evs := eventsOf(t, r, id, typ)
+		if len(evs) == 0 {
+			t.Fatalf("no %s event of %s", typ, id)
+		}
+		return evs[len(evs)-1].Quiet
+	}
+	step := running(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+	spawnStarting(t, r, SpawnOptions{Prompt: "b", Cwd: dir, After: []string{step.ID}})
+	if _, err := r.Report(step.ID, ReportOptions{Status: task.Done, Summary: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	if !quietOf(step.ID, "done") {
+		t.Error("a chain step's done is not quiet")
+	}
+	decided := running(t, r, SpawnOptions{Prompt: "c", Cwd: dir})
+	spawnStarting(t, r, SpawnOptions{Prompt: "d", Cwd: dir, After: []string{decided.ID}})
+	if _, err := r.Report(decided.ID, ReportOptions{Status: task.Done, Summary: "x", Decisions: []string{"q -> a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if quietOf(decided.ID, "done") {
+		t.Error("a done with decisions is quiet")
+	}
+	alone := running(t, r, SpawnOptions{Prompt: "e", Cwd: dir})
+	if _, err := r.Report(alone.ID, ReportOptions{Status: task.Done, Summary: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if quietOf(alone.ID, "done") {
+		t.Error("a standalone done is quiet")
+	}
+	phase := running(t, r, SpawnOptions{Prompt: "f", Cwd: dir})
+	if _, err := r.Store.Update(phase.ID, func(tk *task.Task) error { tk.Plan = dir; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(phase.ID, ReportOptions{Status: task.Done, Summary: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if !quietOf(phase.ID, "done") {
+		t.Error("a plan phase's done is not quiet")
+	}
+	for typ, want := range map[string]bool{"cleanable": true, "processes-left": true, "stopped": true, "failed": false, "stalled": false, "needs-human": false} {
+		r.emit(alone, typ, "x", "")
+		if got := quietOf(alone.ID, typ); got != want {
+			t.Errorf("%s quiet = %v, want %v", typ, got, want)
+		}
+	}
+}

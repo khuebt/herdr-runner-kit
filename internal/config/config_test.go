@@ -174,6 +174,23 @@ func TestParseRunnerInput(t *testing.T) {
 	}
 }
 
+func TestParseWakeOn(t *testing.T) {
+	if cfg := Default(); cfg.WakeOn != WakeActionable {
+		t.Errorf("default wakeOn = %q, want actionable", cfg.WakeOn)
+	}
+	for _, v := range []string{"actionable", "all"} {
+		cfg, err := Parse([]byte("wakeOn: " + v + "\n"))
+		if err != nil || cfg.WakeOn != v {
+			t.Errorf("Parse(%s) = %q, %v", v, cfg.WakeOn, err)
+		}
+	}
+	for _, v := range []string{`""`, "none", "true"} {
+		if _, err := Parse([]byte("wakeOn: " + v + "\n")); err == nil || !strings.Contains(err.Error(), "wakeOn") {
+			t.Errorf("Parse(%s) error = %v", v, err)
+		}
+	}
+}
+
 func TestParseWorktreeSetup(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

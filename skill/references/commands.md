@@ -170,18 +170,20 @@ Picking an agent: the brief names each runner's harness, model and effort with o
 
 ## News that wait reports
 
+Lines marked *quiet* never wake you alone: they come first with the next line that does, with `idle`, or at the latest 50 minutes after your last turn. `wait --all-news`, `wait --task` and `wakeOn: all` wake for them too.
+
 | Line starts with | Meaning | What you do |
 |---|---|---|
-| `tN done` | Finished; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. |
+| `tN done` | Finished; *quiet* for a chain step whose next task has not started, or a `plan run` phase, when it has no `decided:`; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. |
 | `tN needs-human` | The runner asks a question, or a round: `N questions` and one numbered line each; `attempt N` when the runner continues in a fresh session after a context handoff | Ask the user, all of a round in one message, then `answer` once, such as `1a 2b`, the same way for any attempt. An answer refused as `for attempt N of tN, which ended`: ask the user again. |
 | `tN held` | A `--gate human` task waits; `(reason)` when held with `--reason` | Ask the user, then `release`. |
 | `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. For `runner lost: herdr pane gone` (herdr or the machine restarted), relay it and offer a new `spawn`; `show <id>` names the worktree and branch with the partial work. |
 | `tN stalled` | `blocked on a prompt: …` quotes the prompt the agent waits on; `no progress for N min …` or `retrying for N min` means it stayed busy without progress after a nudge and an interrupt | Relay the quoted text as is; offer `focus <id>` or `peek <id>`. The runner stays open. Never chase `blocked`, `unstalled`, `nudged` or `interrupted` progress events. |
-| `tN processes-left` | Processes the closed runner started still run, with pids and commands | Name them to the user; never kill them yourself. |
+| `tN processes-left` | *Quiet.* Processes the closed runner started still run, with pids and commands | Name them to the user; never kill them yourself. |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |
 | `tN usage-limit` | The runner's screen shows its agent's usage limit and no `quotaFallback` agent is left | Tell the user; offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the reset. |
-| `tN stopped` | Stopped by `stop` | Relay it. |
-| `tN cleanable` | Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
+| `tN stopped` | *Quiet.* Stopped by `stop` | Relay it. |
+| `tN cleanable` | *Quiet.* Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
 | `tN plan-done` | Every phase of a `plan run` is done; `out:` is the run report | Relay the verified count and the report path. |
 
 ## Context handoff

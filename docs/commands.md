@@ -21,7 +21,7 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | Command | What it does |
 |---|---|
 | `spawn [flags] -- <prompt>` (alias `run`) | Records a task and returns at once. A detached launcher opens the runner in a new herdr tab, or a new worktree workspace, and sends the first prompt. When the agent fails to start, the runner's empty new worktree, its branch and its workspace are removed; a worktree with any change or commit is kept for `cleanup`. In a repository with `worktreeSetup` in the config, a new worktree first runs those commands, such as `npm ci`; see [config.md](config.md#worktree-setup). |
-| `wait` | Blocks until one of your tasks has news, prints one line per event and exits. Run it in the background and rerun it after each wake. |
+| `wait [--all-news]` | Blocks until one of your tasks has news to act on, prints one line per event and exits. Quiet news comes with the next wake; `--all-news` wakes for every line. Run it in the background and rerun it after each wake. See [What `wait` reports](#what-wait-reports). |
 | `answer <id> <text>` | Answers a runner that reported `needs-human`. It continues in the same session. A [locked](config.md#runner-input) runner's tab takes no typed answer, so answer here or from Telegram. A runner waiting on Codex's hooks review takes `trust` or `skip` (see [startup dialogs](#startup-dialogs)); other startup dialogs are answered in the runner's tab. The id may name the runner's attempt, such as `t3a2`; an answer for an attempt that ended is refused. See [Context handoff](#context-handoff). |
 | `answer --from-telegram --stdin` | Routes a Telegram reply by its `#id` tag, or to the only waiting task. See [telegram.md](telegram.md). |
 | `main [--exec]` | Prints, or runs, the command that starts the main session with the skill and the Telegram channel. |
@@ -169,7 +169,7 @@ While `wait` runs, it fetches origin at most every 10 minutes and reports each n
 
 The main agent runs `wait` in the background. In the session `main --exec` starts, the auto re-arm hook that `setup` installs also runs it after every turn, so no news is missed when the agent forgets to rerun it.
 
-`wait` wakes for `done`, `needs-human`, `failed`, `held`, `stalled`, `stopped`, `turn-ended-unreported`, `usage-limit`, `cleanable`, `processes-left` and `plan-done`. Other events, such as `started`, `prompt-resubmitted`, `blocked`, `unstalled`, `nudged`, `interrupted`, `closed`, `process-check-skipped`, `notify-deferred`, `phase-accepted`, `plan-status-failed`, `context-low`, `handoff` and `processes-carried`, only move its cursor.
+`wait` wakes for `needs-human`, `failed`, `held`, `stalled`, `turn-ended-unreported`, `usage-limit`, `plan-done` and `done`. Quiet news does not wake it: a `done` without decisions of a chain step whose next task has not started yet, or of a `plan run` phase (`plan-done` reports the run), and `stopped`, `cleanable` and `processes-left`. The kit marks a line quiet when it writes it. A quiet line comes first, in order, with the next line that wakes; when every task has finished, instead of the `idle:` line; when a `wait` you started times out; and at the latest 50 minutes after the main session was last active (its last turn end or `wait` start), 10 minutes before its 1-hour prompt cache would expire. The cursor stays before a quiet line until it is printed, so a new `wait` finds it again and never prints it twice. `wait --task`, `wait --all-news` and `wakeOn: all` in the [config](config.md#wake-on) wake for every line. Telegram is unaffected. Other events, such as `started`, `prompt-resubmitted`, `blocked`, `unstalled`, `nudged`, `interrupted`, `closed`, `process-check-skipped`, `notify-deferred`, `phase-accepted`, `plan-status-failed`, `context-low`, `handoff` and `processes-carried`, only move its cursor.
 
 ```
 t3 done · fix login · git: on hrk/t3-fix-login, 1 commit, no upstream · tab closes 15:42 · Login fixed; tests pass · out: /…/tasks/t3/out/notes.md
@@ -184,8 +184,8 @@ t4 needs-human · drop legacy API · Q: Drop the v1 endpoint? (recommended: yes)
 - Reports that land within 200 ms of each other wake it once.
 - Each line is at most 300 characters. `show <id>` has the full detail.
 - It only sees tasks of its owners: the git top-level of the current folder and every `project:` owner by default, or only `--owner`. So several main sessions can wait at once. Each owner has its own cursor, and a second `wait` on the same cursor exits with `already waiting`, naming the holder and its pid: the main session's auto re-arm hook, which wakes the agent on news, or another `hrk wait`.
-- When every task has finished, it exits with an `idle:` line. A task that is `needs-human` or `held` keeps it waiting, because the answer or release can come from another main session's Telegram or, when the runner's input is open, from its tab. It waits up to a second after the latest status change first, so news written right after that change is not lost.
-- After 30 minutes without news it prints `timeout` and exits 0 (`--timeout` changes this).
+- When every task has finished, it exits with an `idle:` line, or with the quiet lines it held. A task that is `needs-human` or `held` keeps it waiting, because the answer or release can come from another main session's Telegram or, when the runner's input is open, from its tab. It waits up to a second after the latest status change first, so news written right after that change is not lost.
+- After 30 minutes without news it prints `timeout`, or the quiet lines it held, and exits 0 (`--timeout` changes this).
 
 While it runs, `wait` also watches each runner through herdr:
 

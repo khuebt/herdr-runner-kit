@@ -40,6 +40,7 @@ worktreeSetup:            # run in each new runner worktree of this repository
     - cp "$HRK_REPO_ROOT/.env" .env
     - npm ci
 runnerInput: open         # let text typed in a runner's tab reach its agent
+wakeOn: all               # wake the main session for every news line
 ```
 
 ## Keys
@@ -66,6 +67,7 @@ runnerInput: open         # let text typed in a runner's tab reach its agent
 | `heavySlots` | `2` | How many commands wrapped in `hrk heavy` run at once across every runner and the main session; the others wait for a free slot. From 0 to 64; `0` runs them at once and drops the rule from the runner contract. See [commands.md](commands.md#heavy-commands). |
 | `worktreeSetup` | none | Shell commands, per repository, that run in each new runner worktree before its agent starts. Each key is a repository's main checkout, as an absolute or `~/` path; each value a list of at least one command. See [Worktree setup](#worktree-setup). |
 | `runnerInput` | `locked` | `locked` lets a Claude, pi or omp runner take prompts only from the kit: `spawn`, `send`, `answer`, Telegram replies and the kit's own nudges. `open` lets text typed in the runner's tab reach its agent, as before this key existed. A change applies to runners spawned after it. Codex runners stay open. See [Runner input](#runner-input). |
+| `wakeOn` | `actionable` | <a id="wake-on"></a>`actionable` wakes the main session, through its own `wait` and the auto re-arm hook, only for news it has to act on; quiet news, such as a chain step's `done` without decisions, `stopped`, `cleanable` or `processes-left`, comes with the next wake, and at the latest 50 minutes after the main session was last active. `all` wakes for every news line, as before this key existed. Telegram is unaffected. See [commands.md](commands.md#what-wait-reports). |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.

@@ -3,6 +3,7 @@ package wait
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -536,5 +537,160 @@ func TestNeedsHumanLineNamesALaterAttempt(t *testing.T) {
 	}
 	if got := Line(state.Event{Task: "t4", Type: "done", Summary: "ok", Attempt: 2}, tk, 0); got != "t4 done · store · ok" {
 		t.Errorf("done of attempt 2 = %q", got)
+	}
+}
+
+// chain makes a running task and a queued one that waits for it.
+func chain(t *testing.T, r *runner.Runner) (first, next *task.Task) {
+	t.Helper()
+	first = addTask(t, r, task.Running, owner)
+	next = &task.Task{Kind: "fix", Agent: "claude", Prompt: "y", Title: "next step", Owner: owner, Gate: task.GateAuto, Status: task.Queued, After: []string{first.ID}}
+	if err := r.Store.Create(next); err != nil {
+		t.Fatal(err)
+	}
+	return first, next
+}
+
+func setRunning(t *testing.T, r *runner.Runner, id string) {
+	t.Helper()
+	if _, err := r.Store.Update(id, func(tk *task.Task) error {
+		tk.Status, tk.Herdr.PaneID = task.Running, "w1:p9"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// quiet appends a quiet news event of id, as record marks it.
+func quiet(t *testing.T, r *runner.Runner, id, typ string) {
+	t.Helper()
+	if err := r.Store.Append(state.Event{Task: id, Owner: owner, Type: typ, Summary: typ + " " + id, Quiet: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func noWake(t *testing.T, ch chan result) {
+	t.Helper()
+	select {
+	case got := <-ch:
+		t.Fatalf("woke for quiet news: %+v %v", got.res, got.err)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func prefixes(t *testing.T, lines []string, want ...string) {
+	t.Helper()
+	if len(lines) != len(want) {
+		t.Fatalf("lines = %q, want %q", lines, want)
+	}
+	for i, w := range want {
+		if !strings.HasPrefix(lines[i], w) {
+			t.Fatalf("lines = %q, want %q", lines, want)
+		}
+	}
+}
+
+func TestChainStepDoneComesWithTheChainEnd(t *testing.T) {
+	r, _ := newTestRunner(t)
+	first, next := chain(t, r)
+	ch := start(r, Options{Owner: owner, Window: time.Millisecond})
+	waitBlocked()
+	report(t, r, first.ID, "step one")
+	noWake(t, ch)
+	setRunning(t, r, next.ID)
+	report(t, r, next.ID, "step two")
+	prefixes(t, get(t, ch).res.Lines, first.ID+" done", next.ID+" done")
+}
+
+func TestQuietTypesComeWithTheNextNews(t *testing.T) {
+	r, _ := newTestRunner(t)
+	a := addTask(t, r, task.Running, owner)
+	b := addTask(t, r, task.Running, owner)
+	ch := start(r, Options{Owner: owner, Window: time.Millisecond})
+	waitBlocked()
+	for _, typ := range []string{"cleanable", "processes-left", "stopped"} {
+		quiet(t, r, a.ID, typ)
+	}
+	noWake(t, ch)
+	if _, err := r.Report(b.ID, runner.ReportOptions{Status: task.Failed, Summary: "broke"}); err != nil {
+		t.Fatal(err)
+	}
+	prefixes(t, get(t, ch).res.Lines, a.ID+" cleanable", a.ID+" processes-left", a.ID+" stopped", b.ID+" failed")
+}
+
+func TestQuietNewsSurvivesANewWaitOnce(t *testing.T) {
+	r, _ := newTestRunner(t)
+	first, next := chain(t, r)
+	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+		t.Fatal(err)
+	}
+	report(t, r, first.ID, "step one")
+	short := 300 * time.Millisecond
+	if got := get(t, start(r, Options{Owner: owner, Holder: "hook", Timeout: short})); !got.res.TimedOut {
+		t.Fatalf("hook wait = %+v %v", got.res, got.err)
+	}
+	// The next step runs now; the stored flag still keeps the done quiet.
+	setRunning(t, r, next.ID)
+	if got := get(t, start(r, Options{Owner: owner, Timeout: short})); !got.res.TimedOut {
+		t.Fatalf("second wait = %+v %v", got.res, got.err)
+	}
+	got := get(t, start(r, Options{Owner: owner, Timeout: short, FlushOnTimeout: true}))
+	prefixes(t, got.res.Lines, first.ID+" done")
+	if got := get(t, start(r, Options{Owner: owner, Timeout: short, FlushOnTimeout: true})); !got.res.TimedOut {
+		t.Fatalf("delivered twice: %+v %v", got.res, got.err)
+	}
+}
+
+func TestQuietNewsFlushesWhenMainWasIdleTooLong(t *testing.T) {
+	r, _ := newTestRunner(t)
+	a := addTask(t, r, task.Running, owner)
+	o := Options{Owner: owner, Window: time.Millisecond}
+	if err := MarkActive(r.Store, o); err != nil {
+		t.Fatal(err)
+	}
+	ch := start(r, o)
+	waitBlocked()
+	quiet(t, r, a.ID, "cleanable")
+	noWake(t, ch) // the main session was just active
+	old := time.Now().Add(-flushAfter)
+	if err := os.Chtimes(activePath(r.Store, state.CursorName(owner)), old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.Append(state.Event{Task: a.ID, Owner: owner, Type: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	prefixes(t, get(t, ch).res.Lines, a.ID+" cleanable")
+}
+
+func TestIdleBringsQuietNewsThenIdle(t *testing.T) {
+	r, _ := newTestRunner(t)
+	a := addTask(t, r, task.Done, owner)
+	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+		t.Fatal(err)
+	}
+	quiet(t, r, a.ID, "processes-left")
+	got := get(t, start(r, Options{Owner: owner}))
+	prefixes(t, got.res.Lines, a.ID+" processes-left")
+	if got := get(t, start(r, Options{Owner: owner})); got.res.Idle == "" {
+		t.Fatalf("second wait = %+v %v", got.res, got.err)
+	}
+}
+
+func TestEveryNewsWakesWhenAsked(t *testing.T) {
+	for name, set := range map[string]func(*runner.Runner, *Options, string){
+		"all-news":    func(_ *runner.Runner, o *Options, _ string) { o.AllNews = true },
+		"task":        func(_ *runner.Runner, o *Options, id string) { o.Tasks = []string{id} },
+		"wakeOn: all": func(r *runner.Runner, _ *Options, _ string) { r.Config.WakeOn = config.WakeAll },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _ := newTestRunner(t)
+			a := addTask(t, r, task.Running, owner)
+			o := Options{Owner: owner, Window: time.Millisecond}
+			set(r, &o, a.ID)
+			ch := start(r, o)
+			waitBlocked()
+			quiet(t, r, a.ID, "cleanable")
+			prefixes(t, get(t, ch).res.Lines, a.ID+" cleanable")
+		})
 	}
 }

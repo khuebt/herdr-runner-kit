@@ -11,7 +11,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 - **The main agent answers directly** for ordinary questions, explanations and quick lookups.
 - **Everything else becomes a runner:** code changes of any size, research, analysis reports, and skill or multi-step flows. The main agent first replies with a short brief (goal, approach, checks, kind and branch) and starts the runner when you agree, so you can add what is missing.
 - **Each runner is visible.** It is an interactive agent in a herdr tab, so you can watch it or type into it.
-- **Results arrive as events.** A runner calls `hrk report`, and the main agent's background `wait` wakes at once. Tasks chained with `--after` start automatically when their parent is done.
+- **Results arrive as events.** A runner calls `hrk report`, and the main agent's background `wait` wakes at once for news it has to act on; quiet news, such as a chain step's `done`, comes with the next wake. Tasks chained with `--after` start automatically when their parent is done.
 - **Plans run phase by phase.** `plan run` gives each phase of an AgentKit plan a fresh runner on one shared branch, runs independent phases side by side, checks each finished phase against the files it declared, and resumes after a failure without redoing done phases.
 - **Decisions never stall a runner.** A runner that needs input stays alive in its session, and your answer resumes it in the same context.
 - **Projects keep their own record.** `new` starts a git repository with a project record and a herdr workspace, and `project status` shows where it stands. A project's runners open in its workspace and report to the main session from any folder.

@@ -79,9 +79,19 @@ func TestAutoarm(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unlock()
+	// The refused hook still marks the main session active, which
+	// postpones the flush of quiet news.
+	marker := filepath.Join(r.Store.Dir(), "main-active-"+state.CursorName("/repo"))
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(marker, old, old); err != nil {
+		t.Fatal(err)
+	}
 	stderr.Reset()
 	if code := autoarm(context.Background(), r, "/repo", &stderr); code != 0 || stderr.Len() != 0 {
 		t.Fatalf("cursor held: code %d, %q", code, stderr.String())
+	}
+	if info, err := os.Stat(marker); err != nil || time.Since(info.ModTime()) > time.Minute {
+		t.Errorf("activity marker not touched: %v", err)
 	}
 }
 

@@ -110,7 +110,7 @@ After you spawn, answer, send or release, run `hrk wait` with the Bash tool's `r
 - `usage-limit`: the runner's screen shows its agent's usage limit and no fallback agent is left; the task is still open. Tell the user, and offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the limit to reset.
 - `tab closes HH:MM` or `tab kept until HH:MM` on a `done` line: mention it, and offer `hrk keep <id>` when the user wants to come back to the tab later.
 - `stalled · blocked on a prompt: …`: relay the quoted prompt as is and offer `focus <id>`; a `stalled` for no progress or retrying: relay it, the runner stays open. Never chase `blocked` or other progress events, such as `context-low` or `handoff` (a runner continuing in a fresh session): they need nothing from you.
-- `processes-left`: name the surviving pids and commands to the user; never kill them yourself.
+- Quiet lines (a chain step's or plan phase's `done` without decisions, `stopped`, `cleanable`, `processes-left`) come with other news, not alone; relay them the same way. `processes-left`: name the surviving pids and commands; never kill them yourself.
 - `timeout`: rerun `wait` silently. `already waiting`: if the auto re-arm hook holds the cursor, do nothing; if another `hrk wait` does and none of your own background waits runs, tell the user which pid holds the news. `idle:`: every task finished; do not rerun until you start something.
 
 In the session `hrk main` started, news can also arrive as Stop hook feedback starting with `herdr-runner-kit news`. Handle it like a `wait` wake; the hook re-arms itself.

@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -34,10 +37,16 @@ const (
 	// Writers save the task first and append the event right after, so a
 	// task that just went idle may still have news on the way.
 	statusSettle = time.Second
+	// flushAfter is how long quiet news may wait after the main session's
+	// last activity before wait delivers it on its own.
+	// ponytail: 10 minutes short of the 1-hour prompt cache the main session
+	// was seen to keep; a config key if a shorter cache shows up.
+	flushAfter = 50 * time.Minute
 )
 
-// newsTypes are the events that wake the main session. Everything else is
-// progress and only moves the cursor.
+// newsTypes are the events that wake the main session, or come with its next
+// wake when marked quiet. Everything else is progress and only moves the
+// cursor.
 var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "cleanable", "processes-left", "plan-done"}
 
 // IsNews reports whether an event type wakes the main session.
@@ -58,6 +67,46 @@ type Options struct {
 	Holder  string
 	Timeout time.Duration
 	Window  time.Duration
+	// AllNews wakes for every news line. Otherwise quiet news waits for the
+	// next wake, the flush deadline or idle, unless Tasks names tasks or the
+	// config's wakeOn is all.
+	AllNews bool
+	// FlushOnTimeout delivers waiting quiet news when the timeout passes,
+	// instead of leaving it for the next wait.
+	FlushOnTimeout bool
+}
+
+func (o Options) cursor() string {
+	if o.Cursor != "" {
+		return o.Cursor
+	}
+	return state.CursorName(o.Owner)
+}
+
+// activePath is the marker whose modification time is the last activity of
+// the main session that waits on cursor.
+func activePath(s *state.Store, cursor string) string {
+	return filepath.Join(s.Dir(), "main-active-"+cursor)
+}
+
+// MarkActive records that the main session waiting on o's cursor is active
+// now: its turn just ended or it started a wait. Quiet news waits at most
+// flushAfter past the latest mark.
+func MarkActive(s *state.Store, o Options) error {
+	p, now := activePath(s, o.cursor()), time.Now()
+	if err := os.Chtimes(p, now, now); !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.WriteFile(p, nil, 0o600)
+}
+
+// lastActive returns the latest MarkActive of cursor, or since when there
+// was none.
+func lastActive(s *state.Store, cursor string, since time.Time) time.Time {
+	if info, err := os.Stat(activePath(s, cursor)); err == nil {
+		return info.ModTime()
+	}
+	return since
 }
 
 // Result is what one wait returns.
@@ -70,11 +119,12 @@ type Result struct {
 }
 
 // Run blocks until news arrives for the owner's tasks, nothing is left
-// running, the timeout passes or ctx ends.
+// running, the timeout passes or ctx ends. Quiet news is held and comes
+// first with the next news that wakes, at the flush deadline or instead of
+// the idle line. The saved cursor never passes held news, so a later Run,
+// in this process or another, finds it again.
 func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
-	if o.Cursor == "" {
-		o.Cursor = state.CursorName(o.Owner)
-	}
+	o.Cursor = o.cursor()
 	if o.Timeout <= 0 {
 		o.Timeout = DefaultTimeout
 	}
@@ -107,6 +157,16 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 		return Result{}, err
 	}
 	saved := cursor
+	hold := !o.AllNews && len(o.Tasks) == 0 && r.Config.WakeOn != config.WakeAll
+	var held []state.Event // quiet news not delivered yet, in log order
+	var heldFrom int64     // where the read that found the first held news started
+	began := time.Now()
+	deliver := func(news []state.Event) (Result, error) {
+		if err := r.Store.SaveCursor(o.Cursor, cursor); err != nil {
+			return Result{}, err
+		}
+		return Result{Lines: wake(r, o.Owner, append(held, news...))}, nil
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
@@ -132,10 +192,17 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	}(o.owners(tasks))
 
 	for {
+		from := cursor
 		var news []state.Event
 		news, cursor, err = readNews(r.Store, cursor, o)
 		if err != nil {
 			return Result{}, err
+		}
+		if hold && len(news) > 0 && !slices.ContainsFunc(news, func(ev state.Event) bool { return !ev.Quiet }) {
+			if len(held) == 0 {
+				heldFrom = from
+			}
+			held, news = append(held, news...), nil
 		}
 		if len(news) > 0 {
 			if !sleep(ctx, o.Window) {
@@ -145,17 +212,20 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			if more, cursor, err = readNews(r.Store, cursor, o); err != nil {
 				return Result{}, err
 			}
-			news = append(news, more...)
-			if err := r.Store.SaveCursor(o.Cursor, cursor); err != nil {
-				return Result{}, err
-			}
-			return Result{Lines: wake(r, o.Owner, news)}, nil
+			return deliver(append(news, more...))
 		}
-		if cursor != saved {
-			if err := r.Store.SaveCursor(o.Cursor, cursor); err != nil {
+		if len(held) > 0 && time.Since(lastActive(r.Store, o.Cursor, began)) >= flushAfter {
+			return deliver(nil)
+		}
+		save := cursor
+		if len(held) > 0 {
+			save = heldFrom
+		}
+		if save != saved {
+			if err := r.Store.SaveCursor(o.Cursor, save); err != nil {
 				return Result{}, err
 			}
-			saved = cursor
+			saved = save
 		}
 		if tasks, err = ownTasks(r.Store, o); err != nil {
 			return Result{}, err
@@ -177,6 +247,9 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 				}
 				continue
 			}
+			if len(held) > 0 {
+				return deliver(nil)
+			}
 			return Result{Idle: idle}, nil
 		}
 		b.scan(ctx, tasks)
@@ -192,7 +265,11 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 				}
 			}(o.owners(tasks))
 		}
-		if res, done, err := next(ctx, watcher, scan.C, timeout.C, eventsPath); done || err != nil {
+		res, done, err := next(ctx, watcher, scan.C, timeout.C, eventsPath)
+		if res.TimedOut && o.FlushOnTimeout && len(held) > 0 {
+			return deliver(nil)
+		}
+		if done || err != nil {
 			return res, err
 		}
 	}
