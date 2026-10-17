@@ -29,6 +29,14 @@ type Kind struct {
 	Agent    string
 	Worktree bool
 	MCP      bool
+	Review   bool // chain a review runner after each task of the kind
+}
+
+// ReviewConfig sets the review runner: Agent overrides the default reviewer
+// on another harness, Skill is the skill it runs, empty for none.
+type ReviewConfig struct {
+	Agent string
+	Skill string
 }
 
 // Telegram configures notifications. Empty fields use the Telegram channel
@@ -97,6 +105,7 @@ type Config struct {
 	// only for news it has to act on, the rest coming with the next wake,
 	// or for every news line.
 	WakeOn string
+	Review ReviewConfig
 }
 
 // The runnerInput values.
@@ -134,6 +143,9 @@ const MinStallAfter = 2 * time.Minute
 // NotifyEvents lists the event types the telegram.notify key accepts.
 var NotifyEvents = []string{"needs-human", "failed", "stalled", "held", "done", "turn-ended-unreported", "usage-limit", "api-error"}
 
+// UnreviewedKinds are the kinds a review never follows.
+var UnreviewedKinds = []string{"fix", "research", "report"}
+
 // The file types use pointers so that an absent key keeps its default.
 type fileConfig struct {
 	SchemaVersion        *int                `yaml:"schemaVersion"`
@@ -153,6 +165,12 @@ type fileConfig struct {
 	WorktreeSetup        map[string][]string `yaml:"worktreeSetup"`
 	RunnerInput          *string             `yaml:"runnerInput"`
 	WakeOn               *string             `yaml:"wakeOn"`
+	Review               *fileReview         `yaml:"review"`
+}
+
+type fileReview struct {
+	Agent *string `yaml:"agent"`
+	Skill *string `yaml:"skill"`
 }
 
 type fileFallback struct {
@@ -164,6 +182,7 @@ type fileKind struct {
 	Agent    *string `yaml:"agent"`
 	Worktree *bool   `yaml:"worktree"`
 	MCP      *bool   `yaml:"mcp"`
+	Review   *bool   `yaml:"review"`
 }
 
 type fileTelegram struct {
@@ -227,6 +246,9 @@ func Parse(data []byte) (Config, error) {
 		}
 		if fk.MCP != nil {
 			k.MCP = *fk.MCP
+		}
+		if fk.Review != nil {
+			k.Review = *fk.Review
 		}
 		cfg.Kinds[name] = k
 	}
@@ -293,6 +315,14 @@ func Parse(data []byte) (Config, error) {
 			cfg.WorktreeSetup[key] = cmds
 		}
 	}
+	if rv := file.Review; rv != nil {
+		if rv.Agent != nil {
+			cfg.Review.Agent = strings.TrimSpace(*rv.Agent)
+		}
+		if rv.Skill != nil {
+			cfg.Review.Skill = strings.TrimSpace(*rv.Skill)
+		}
+	}
 	if t := file.Telegram; t != nil {
 		if t.EnvFile != nil {
 			cfg.Telegram.EnvFile = *t.EnvFile
@@ -328,6 +358,14 @@ func (c Config) Validate() error {
 		}
 		if _, err := task.ParseAgentSpec(k.Agent); err != nil {
 			return fmt.Errorf("kinds.%s.agent: %w", name, err)
+		}
+		if k.Review && slices.Contains(UnreviewedKinds, name) {
+			return fmt.Errorf("kinds.%s.review: %s tasks are not reviewed", name, name)
+		}
+	}
+	if c.Review.Agent != "" {
+		if _, err := task.ParseAgentSpec(c.Review.Agent); err != nil {
+			return fmt.Errorf("review.agent: %w", err)
 		}
 	}
 	if _, ok := c.Kinds[c.DefaultKind]; !ok {

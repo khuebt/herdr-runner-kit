@@ -321,15 +321,27 @@ func (r *Runner) After(ctx context.Context, id string) error {
 	}
 	switch t.Status {
 	case task.Done:
+		if t.Review != nil {
+			r.finishReview(ctx, t)
+			if t, err = r.Store.Get(id); err != nil {
+				return err
+			}
+		}
 		if t.Plan == "" {
 			return r.startDependents(ctx, t)
 		}
 		// A plan phase is checked before the next wave may start, and the
-		// plan is done once its last phase is.
+		// plan is done once its last phase is. A review or fixup task is no
+		// phase and is not checked.
 		r.acceptPhase(ctx, t)
 		return errors.Join(r.startDependents(ctx, t), r.planDone(ctx, t))
 	case task.Failed, task.Stopped:
-		return r.failDependents(t)
+		err := r.failDependents(t)
+		if t.Plan != "" && planHelper(t) {
+			// A final review or fixup that ended this way still ends the run.
+			err = errors.Join(err, r.planDone(ctx, t))
+		}
+		return err
 	}
 	return nil
 }
@@ -354,6 +366,10 @@ func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 			continue
 		}
 		if len(pending) > 0 {
+			continue
+		}
+		if q.FixupOf == parent.ID && parent.Review != nil && parent.Review.Verdict == task.ReviewPass {
+			r.skipFixup(q, parent)
 			continue
 		}
 		inputs, base, err := r.parentInputs(q.After)
@@ -441,6 +457,12 @@ func (r *Runner) parentInputs(after []string) (inputs, base string, err error) {
 		line := fmt.Sprintf("- %s (%s): %s", p.ID, p.Title, p.Summary)
 		if len(p.Outputs) > 0 {
 			line += " Outputs: " + strings.Join(p.Outputs, ", ") + "."
+		}
+		if rv := p.Review; rv != nil && rv.File != "" {
+			line += " Review report: " + rv.File + " (verdict " + rv.Verdict + ")."
+			if rv.Note != "" {
+				line += " Note: " + rv.Note + "."
+			}
 		}
 		if p.Worktree != nil && p.Worktree.Branch != "" {
 			line += " Branch: " + p.Worktree.Branch + "."

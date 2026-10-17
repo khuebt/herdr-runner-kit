@@ -243,6 +243,23 @@ func TestParseEmptyFile(t *testing.T) {
 	}
 }
 
+func TestParseReview(t *testing.T) {
+	if cfg := Default(); cfg.Review.Skill != "ak:code-review" || cfg.Review.Agent != "" {
+		t.Errorf("default review = %+v", cfg.Review)
+	}
+	cfg, err := Parse([]byte("review:\n  agent: codex::high\nkinds:\n  code:\n    review: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Review.Agent != "codex::high" || cfg.Review.Skill != "ak:code-review" || !cfg.Kinds["code"].Review {
+		t.Errorf("review = %+v, code = %+v", cfg.Review, cfg.Kinds["code"])
+	}
+	cfg, err = Parse([]byte("review:\n  skill: \"\"\n"))
+	if err != nil || cfg.Review.Skill != "" {
+		t.Errorf("review.skill \"\" = %q, %v", cfg.Review.Skill, err)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	tests := []struct{ yaml, want string }{
 		{"kinds:\n  code:\n    agnet: codex\n", `unknown key agnet`},
@@ -271,6 +288,9 @@ func TestParseErrors(t *testing.T) {
 		{"worktreeSetup:\n  /srv/app: []\n", "worktreeSetup./srv/app: list at least one command"},
 		{"worktreeSetup:\n  /srv/app:\n    - \" \"\n", "worktreeSetup./srv/app[0] is empty"},
 		{"worktreeSetup:\n  /srv/app: npm ci\n", "cannot unmarshal"},
+		{"review:\n  agent: nope\n", "review.agent"},
+		{"review:\n  unknown: x\n", "unknown key unknown"},
+		{"kinds:\n  fix:\n    review: true\n", "kinds.fix.review: fix tasks are not reviewed"},
 	}
 	for _, tt := range tests {
 		_, err := Parse([]byte(tt.yaml))

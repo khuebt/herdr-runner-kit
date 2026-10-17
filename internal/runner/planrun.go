@@ -47,10 +47,13 @@ func PlanTasks(tasks []*task.Task, dir string) []*task.Task {
 }
 
 // LatestPhaseTasks maps each phase number to its newest task among the
-// tasks of one plan.
+// tasks of one plan. Review and fixup tasks run no phase.
 func LatestPhaseTasks(planTasks []*task.Task) map[int]*task.Task {
 	latest := map[int]*task.Task{}
 	for _, t := range planTasks {
+		if planHelper(t) {
+			continue
+		}
 		latest[t.Phase] = t // oldest first, so the newest wins
 	}
 	return latest
@@ -131,6 +134,9 @@ func PhasePrompt(plan *planrun.Plan, ph planrun.Phase, parallel []planrun.Phase,
 // the phases that ran beside it. It records the check, emits it as
 // phase-accepted, and marks the phase file completed.
 func (r *Runner) acceptPhase(ctx context.Context, t *task.Task) {
+	if planHelper(t) {
+		return
+	}
 	unlock, err := r.Store.LockFile(t.ID, "phase-check.lock")
 	if err != nil {
 		return
@@ -315,7 +321,7 @@ func phaseSiblings(t *task.Task, tasks []*task.Task) []*task.Task {
 	walk(t.After)
 	var out []*task.Task
 	for _, q := range tasks {
-		if q.ID == t.ID || q.Plan != t.Plan || q.PhaseStart == "" || ancestors[q.ID] {
+		if q.ID == t.ID || q.Plan != t.Plan || planHelper(q) || q.PhaseStart == "" || ancestors[q.ID] {
 			continue
 		}
 		if !q.FinishedAt.IsZero() && q.FinishedAt.Before(t.CreatedAt) {
@@ -369,7 +375,7 @@ func (r *Runner) phaseHoldReason(ctx context.Context, q *task.Task) string {
 	}
 	for _, id := range q.After {
 		p, err := r.Store.Get(id)
-		if err != nil || p.Plan == "" || p.Status != task.Done || p.FinishedAt.Before(q.CreatedAt) {
+		if err != nil || p.Plan == "" || planHelper(p) || p.Status != task.Done || p.FinishedAt.Before(q.CreatedAt) {
 			continue
 		}
 		if p.PhaseCheck == nil {
@@ -425,6 +431,15 @@ func (r *Runner) planDone(ctx context.Context, t *task.Task) error {
 		}
 	}
 	latest := LatestPhaseTasks(own)
+	var review, fixup *task.Task
+	for _, q := range own { // oldest first, so the newest wins
+		if q.Review != nil && q.Review.Final {
+			review = q
+		}
+		if q.FixupOf != "" {
+			fixup = q
+		}
+	}
 	var ids []string
 	for _, ph := range plan.Phases {
 		if !PhaseDone(ph, latest) {
@@ -447,11 +462,16 @@ func (r *Runner) planDone(ctx context.Context, t *task.Task) error {
 	// One plan-done per set of finished phase tasks, however many
 	// follow-ups see the plan done.
 	marker := filepath.Join(r.Store.Dir(), "plans", PlanLock(t.Plan)+".done")
+	for _, q := range []*task.Task{review, fixup} {
+		if q != nil {
+			ids = append(ids, q.ID)
+		}
+	}
 	key := strings.Join(ids, ",")
 	if prev, err := os.ReadFile(marker); err == nil && strings.TrimSpace(string(prev)) == key {
 		return nil
 	}
-	report, verified, err := writePlanReport(plan, latest, time.Now())
+	report, verified, err := writePlanReport(plan, latest, planHelpers(own), time.Now())
 	if err != nil {
 		r.emit(t, "plan-status-failed", "write the plan run report: "+err.Error(), "")
 	}
@@ -460,7 +480,7 @@ func (r *Runner) planDone(ctx context.Context, t *task.Task) error {
 	}
 	ev := state.Event{
 		Task: t.ID, Owner: t.Owner, Type: "plan-done", Status: t.Status,
-		Summary: fmt.Sprintf("plan %s: %d/%d phases done, %d verified in scope", plan.Title, len(plan.Phases), len(plan.Phases), verified),
+		Summary: fmt.Sprintf("plan %s: %d/%d phases done, %d verified in scope", plan.Title, len(plan.Phases), len(plan.Phases), verified) + reviewClause(review, fixup),
 	}
 	if report != "" {
 		ev.Outputs = []string{report}
@@ -474,10 +494,34 @@ func (r *Runner) planDone(ctx context.Context, t *task.Task) error {
 	return os.WriteFile(marker, []byte(key+"\n"), 0o600)
 }
 
+// planHelpers returns the review and fixup tasks of a plan, oldest first.
+func planHelpers(planTasks []*task.Task) []*task.Task {
+	return slices.DeleteFunc(slices.Clone(planTasks), func(t *task.Task) bool { return !planHelper(t) })
+}
+
+// reviewClause names the final review's verdict and the fixup that ran in the
+// plan-done summary: nothing for a plan without a final review, and nothing
+// about a fixup the kit skipped.
+func reviewClause(review, fixup *task.Task) string {
+	if review == nil {
+		return ""
+	}
+	verdict := string(review.Status)
+	if review.Status == task.Done && review.Review != nil && review.Review.Verdict != "" {
+		verdict = review.Review.Verdict
+	}
+	s := ", review " + verdict
+	if fixup != nil && !strings.HasPrefix(fixup.Summary, "skipped:") {
+		s += ", fixup " + fixup.ID + " " + string(fixup.Status)
+	}
+	return s
+}
+
 // writePlanReport writes <plan dir>/reports/plan-run-<YYMMDD-HHMM>.md: one
-// row per phase with the runner's claim next to the kit's check. It
-// returns the file and how many phases were verified in scope.
-func writePlanReport(plan *planrun.Plan, latest map[int]*task.Task, now time.Time) (string, int, error) {
+// row per phase with the runner's claim next to the kit's check, then the
+// plan's review and fixup tasks. It returns the file and how many phases were
+// verified in scope.
+func writePlanReport(plan *planrun.Plan, latest map[int]*task.Task, helpers []*task.Task, now time.Time) (string, int, error) {
 	verified := 0
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Plan run: %s\n\n", plan.Title)
@@ -512,6 +556,26 @@ func writePlanReport(plan *planrun.Plan, latest map[int]*task.Task, now time.Tim
 	}
 	if total.Calls > 0 {
 		fmt.Fprintf(&b, "| Total | | | %s | %s | |\n", task.Count(total.Units), cell(total.String()))
+	}
+	if len(helpers) > 0 {
+		b.WriteString("\n## Reviews\n\n| Task | Role | Agent | Result | Report | Note |\n|---|---|---|---|---|---|\n")
+		for _, h := range helpers {
+			role, result, file, note := "fixup", h.Summary, "", ""
+			if h.Status != task.Done && result == "" {
+				result = string(h.Status)
+			}
+			if rv := h.Review; rv != nil {
+				role = "review"
+				if rv.Final {
+					role = "final review"
+				}
+				result, file, note = string(h.Status), rv.File, rv.Note
+				if h.Status == task.Done && rv.Verdict != "" {
+					result = rv.Verdict
+				}
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n", h.ID, role, cell(h.Agent), cell(result), cell(file), cell(note))
+		}
 	}
 	dir := filepath.Join(plan.Dir, "reports")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
