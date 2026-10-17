@@ -216,3 +216,25 @@ func TestQuietNewsIsMarkedWhenWritten(t *testing.T) {
 		}
 	}
 }
+
+func TestReopenedPlanPhaseDoneWakes(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	dir := plainDir(t)
+	phase := running(t, r, SpawnOptions{Prompt: "f", Cwd: dir})
+	if _, err := r.Store.Update(phase.ID, func(tk *task.Task) error { tk.Plan = dir; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(phase.ID, ReportOptions{Status: task.Done, Summary: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Send(context.Background(), phase.ID, "fix the review finding"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(phase.ID, ReportOptions{Status: task.Done, Summary: "fixed"}); err != nil {
+		t.Fatal(err)
+	}
+	evs := eventsOf(t, r, phase.ID, "done")
+	if len(evs) != 2 || evs[1].Quiet {
+		t.Fatalf("done events %+v, want a loud second done", evs)
+	}
+}

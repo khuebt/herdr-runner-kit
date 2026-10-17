@@ -39,8 +39,8 @@ func (r *Runner) record(ev state.Event) error {
 // quietNews reports whether ev can wait for the main session's next wake:
 // a cleanup offer, processes left behind, a task the main session or the
 // user stopped, or a done without decisions that a later line reports, as
-// a chain step whose next task has not started or a plan-run phase, which
-// plan-done reports. A task that cannot be read makes a done loud.
+// a chain step whose next task has not started or a plan-run phase on its
+// first round, which plan-done reports. A task that cannot be read makes a done loud.
 func (r *Runner) quietNews(ev state.Event) bool {
 	switch ev.Type {
 	case "cleanable", "processes-left", "stopped":
@@ -54,7 +54,8 @@ func (r *Runner) quietNews(ev state.Event) bool {
 			return false
 		}
 		if t.Plan != "" {
-			return true
+			first, err := r.firstRound(ev, t)
+			return err == nil && first
 		}
 		internal, err := r.chainInternal(ev, t)
 		return err == nil && internal
@@ -161,6 +162,12 @@ func (r *Runner) chainInternal(ev state.Event, t *task.Task) (bool, error) {
 	if !waiting {
 		return false, nil
 	}
+	return r.firstRound(ev, t)
+}
+
+// firstRound reports whether ev, a done of t, ends t's first round: no
+// earlier done, and no new work typed into the runner before it.
+func (r *Runner) firstRound(ev state.Event, t *task.Task) (bool, error) {
 	all, _, err := r.Store.ReadEventsSince(0)
 	if err != nil {
 		return false, err
