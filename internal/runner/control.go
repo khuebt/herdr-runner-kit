@@ -578,6 +578,9 @@ func (r *Runner) closeRunner(ctx context.Context, t *task.Task, removeWorktree b
 				summary = "agent quit; workspace kept"
 			}
 			r.emit(cur, "closed", summary, "")
+			if cur.Worktree != nil && !cur.Worktree.Removed && !removeWorktree {
+				r.markKept(ctx, cur)
+			}
 		}
 	}
 	if t.Worktree == nil || !removeWorktree {
@@ -598,6 +601,25 @@ func (r *Runner) closeRunner(ctx context.Context, t *task.Task, removeWorktree b
 		return nil
 	})
 	return err
+}
+
+// keptLabel is the label of a closed runner's worktree workspace, which
+// stays open on the worktree.
+func keptLabel(t *task.Task) string {
+	return t.ID + " · " + string(t.Status) + " · worktree kept"
+}
+
+// markKept relabels the worktree workspace of a closed runner, unless
+// another unfinished task still works in it, and prints in its pane, now a
+// shell, why the worktree stays and how it goes away. Failures are
+// ignored: the workspace only keeps its launch label.
+func (r *Runner) markKept(ctx context.Context, t *task.Task) {
+	if id := t.Herdr.WorkspaceID; id != "" && !r.workspaceInUse(t) {
+		_ = r.Herdr.WorkspaceRename(ctx, id, keptLabel(t))
+	}
+	note := fmt.Sprintf(`hrk: %s is %s. Its worktree stays until "hrk cleanup --yes" removes it once branch %s is merged, or "hrk stop %s --remove-worktree" removes it now (the branch is kept).`,
+		t.ID, t.Status, t.Worktree.Branch, t.ID)
+	_ = r.Herdr.PaneRun(ctx, t.Herdr.PaneID, "clear; printf '%s\\n' "+harness.ShellQuote(note))
 }
 
 // endAgent quits the agent and closes its tab. With idle it first leaves an

@@ -351,6 +351,8 @@ func tabState(t *task.Task, now time.Time, keepFor time.Duration) string {
 	switch {
 	case t.Herdr.PaneID == "":
 		return "-"
+	case t.Herdr.Closed && t.Worktree != nil && !t.Worktree.Removed:
+		return "closed, worktree kept"
 	case t.Herdr.Closed:
 		return "closed"
 	}

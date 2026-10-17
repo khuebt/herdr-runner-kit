@@ -46,6 +46,8 @@ func TestTabState(t *testing.T) {
 		{task.Task{Status: task.Done, FinishedAt: now.Add(-time.Hour), Herdr: open}, "open, due"},
 		{task.Task{Status: task.Done, FinishedAt: now.Add(-time.Hour), Herdr: open, Keep: true}, "kept"},
 		{task.Task{Status: task.Done, Herdr: task.Herdr{PaneID: "w1:p1", Closed: true}}, "closed"},
+		{task.Task{Status: task.Done, Herdr: task.Herdr{PaneID: "w1:p1", Closed: true}, Worktree: &task.Worktree{}}, "closed, worktree kept"},
+		{task.Task{Status: task.Done, Herdr: task.Herdr{PaneID: "w1:p1", Closed: true}, Worktree: &task.Worktree{Removed: true}}, "closed"},
 	} {
 		if got := tabState(&c.t, now, 0); got != c.want {
 			t.Errorf("tabState(%s) = %q, want %q", c.t.Status, got, c.want)
