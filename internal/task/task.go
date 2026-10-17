@@ -237,6 +237,9 @@ type Task struct {
 	// keeps one. Usage is the token usage read from them, last at At.
 	Transcripts []Transcript `json:"transcripts,omitempty"`
 	Usage       *Usage       `json:"usage,omitempty"`
+	// StartedAt is when the agent first got its prompt, as the started event
+	// says. Tasks an older version started have none.
+	StartedAt time.Time `json:"startedAt,omitzero"`
 	// FinishedAt is set when the task reaches a terminal status.
 	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 	Status         Status    `json:"status"`

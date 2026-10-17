@@ -175,7 +175,11 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if err := r.typePrompt(ctx, t, loc.PaneID, text); err != nil {
 		return fmt.Errorf("send first prompt: %w", err)
 	}
-	t, changed, err := r.Store.SetStatus(t.ID, task.Running, task.Starting, task.NeedsHuman)
+	t, changed, err := r.Store.Transition(t.ID, task.Running, []task.Status{task.Starting, task.NeedsHuman}, func(t *task.Task) {
+		if t.StartedAt.IsZero() {
+			t.StartedAt = time.Now().UTC()
+		}
+	})
 	if err != nil {
 		return err
 	}

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -611,5 +612,64 @@ func TestCleanupListsOldUnmergedWithoutRemoving(t *testing.T) {
 	}
 	if got, _ := r.Store.Get(tk.ID); got.Worktree.Removed || got.Worktree.BranchDeleted {
 		t.Errorf("task = %+v", got.Worktree)
+	}
+}
+
+func TestNoticeCleanableSaysNeverStartedFromTheTask(t *testing.T) {
+	for name, tc := range map[string]struct {
+		startedAt time.Time
+		inLog     bool
+		never     bool
+	}{
+		// The log is not what says a task started: a StartedAt does.
+		"started, none in the log":  {startedAt: time.Now(), never: false},
+		"older version, in the log": {inLog: true, never: false},
+		"never started":             {never: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, _ := newTestRunner(t)
+			tk, repo := worktreeTask(t, r, "hrk/t1-a")
+			git(t, repo, "push", "-q", "origin", "hrk/t1-a:main")
+			if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+				t.Status, t.Error, t.StartedAt = task.Failed, "herdr is down", tc.startedAt
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.inLog {
+				if err := r.Store.Append(state.Event{Task: tk.ID, Owner: repo, Type: "started"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.NoticeCleanable(context.Background(), repo)
+			got := eventsOf(t, r, tk.ID, "cleanable")
+			if len(got) != 1 || strings.HasPrefix(got[0].Summary, "never started (herdr is down)") != tc.never {
+				t.Errorf("cleanable = %+v", got)
+			}
+		})
+	}
+}
+
+func TestLaunchRecordsWhenTheAgentStarted(t *testing.T) {
+	_, _, tk, _ := scopedLaunch(t, nil)
+	if tk.StartedAt.IsZero() {
+		t.Errorf("StartedAt unset: %+v", tk)
+	}
+}
+
+func TestRemoveUnstartedLeavesAStartedTaskAlone(t *testing.T) {
+	for name, started := range map[string]time.Time{"started": time.Now(), "never started": {}} {
+		t.Run(name, func(t *testing.T) {
+			r, _, _ := newTestRunner(t)
+			repo, wt := worktreeRepo(t, "hrk/t1-a")
+			tk := finishedTask(t, r, repo, &task.Worktree{Path: wt, Branch: "hrk/t1-a"})
+			if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.StartedAt = started; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			r.removeUnstarted(context.Background(), tk.ID)
+			if isDir(wt) == started.IsZero() {
+				t.Errorf("worktree present = %v", isDir(wt))
+			}
+		})
 	}
 }

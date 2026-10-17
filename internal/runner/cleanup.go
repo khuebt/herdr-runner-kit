@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/state"
@@ -330,9 +331,10 @@ func checkedOut(ctx context.Context, root, branch string) bool {
 	return slices.Contains(strings.Split(list, "\n"), "branch refs/heads/"+branch)
 }
 
-// startedTasks returns the ids of the tasks whose agent ever got its first
-// prompt: those with a started event.
-func (r *Runner) startedTasks() (map[string]bool, error) {
+// startedInLog returns the ids of the tasks with a started event. It reads
+// the whole event log, so only tasks an older version started, which have no
+// StartedAt, need it.
+func (r *Runner) startedInLog() (map[string]bool, error) {
 	all, _, err := r.Store.ReadEventsSince(0)
 	if err != nil {
 		return nil, err
@@ -346,6 +348,14 @@ func (r *Runner) startedTasks() (map[string]bool, error) {
 	return started, nil
 }
 
+// startedBefore reports whether the log read by started names task id. A log
+// that cannot be read counts as started, so nothing is called unstarted
+// without evidence.
+func startedBefore(started func() (map[string]bool, error), id string) bool {
+	m, err := started()
+	return err != nil || m[id]
+}
+
 // removeUnstarted removes the worktree and branch the launch of task id
 // created when its agent never started and nothing was written there; the
 // worktree's removal closes its workspace. Any doubt keeps them for cleanup.
@@ -354,7 +364,7 @@ func (r *Runner) removeUnstarted(ctx context.Context, id string) {
 	if err != nil || t.Worktree == nil || t.Worktree.Removed || !t.Worktree.OwnsBranch() || !isDir(t.Worktree.Path) {
 		return
 	}
-	if started, err := r.startedTasks(); err != nil || started[id] {
+	if !t.StartedAt.IsZero() {
 		return
 	}
 	wt, branch := t.Worktree.Path, t.Worktree.Branch
@@ -410,7 +420,8 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 		return
 	}
 	errOffered := errors.New("offered")
-	started, startedErr := r.startedTasks()
+	// The log is read once, and only for a task with no StartedAt to say.
+	started := sync.OnceValues(r.startedInLog)
 	for _, it := range items {
 		if it.Verdict != Merged {
 			continue
@@ -428,7 +439,7 @@ func (r *Runner) NoticeCleanable(ctx context.Context, owner string) {
 			removes = "the branch"
 		}
 		summary := "branch " + t.Worktree.Branch + " is " + it.Detail
-		if startedErr == nil && !started[t.ID] && t.Status != task.Done {
+		if t.StartedAt.IsZero() && t.Status != task.Done && !startedBefore(started, t.ID) {
 			// A branch with no commits counts as merged; say why it has none.
 			summary = "never started"
 			if reason, _, _ := strings.Cut(t.Error, "\n"); reason != "" {
