@@ -64,6 +64,22 @@ func TestAPIErrorCountResets(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"handoff", func(r *Runner, tk *task.Task) {
+			r.StartLauncher = func(string) (int, error) { return 5151, nil }
+			if _, err := r.Handoff(tk.ID, ReportOptions{Summary: "s", Outputs: []string{handoffFile(t, r, tk.ID)}, Attempt: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.Store.Transition(tk.ID, task.Running, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			getenv := r.Getenv // the replacement session's hooks
+			r.Getenv = func(k string) string {
+				if k == "HRK_ATTEMPT" {
+					return "2"
+				}
+				return getenv(k)
+			}
+		}},
 		{"needs-human", func(r *Runner, tk *task.Task) {
 			if _, err := r.Report(tk.ID, ReportOptions{Status: task.NeedsHuman, Questions: []string{"go on? (recommended: yes)"}}); err != nil {
 				t.Fatal(err)

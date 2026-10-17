@@ -109,8 +109,9 @@ func (r *Runner) Handoff(id string, o ReportOptions) (*task.Task, error) {
 		t.Attempt = task.AttemptOf(t) + 1
 		t.Handoffs = append(t.Handoffs, file)
 		t.Status, t.LauncherPID, t.Relaunched = task.Starting, 0, task.RelaunchHandoff
-		// A fresh session starts a new Codex thread and a fresh turn count.
-		t.CodexThread, t.Unreported, t.Question, t.Stalled = "", 0, "", false
+		// A fresh session starts a new Codex thread and fresh turn and API
+		// error counts.
+		t.CodexThread, t.Unreported, t.APIErrors, t.Question, t.Stalled = "", 0, 0, "", false
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
 		return nil
 	})
