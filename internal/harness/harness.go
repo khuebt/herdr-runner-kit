@@ -99,9 +99,6 @@ type TurnSignal struct {
 	// when ContextKnown.
 	ContextLeft  int
 	ContextKnown bool
-	// Transcript is the session transcript file the hook names, or empty
-	// when the agent names none.
-	Transcript string
 }
 
 // Checks is what doctor checks for one harness.
@@ -215,6 +212,9 @@ type Adapter interface {
 	// HookPayload reads a hook's input from its arguments or stdin. nil
 	// means there is nothing to handle.
 	HookPayload(args []string, stdin io.Reader) ([]byte, error)
+	// HookTranscript is the session transcript file a hook payload names,
+	// or empty when the agent names none.
+	HookTranscript(payload []byte) string
 	// HookReply is what the turn-end hook prints for the nudge block, or
 	// "" for nothing.
 	HookReply(block string) string
@@ -248,7 +248,7 @@ type Adapter interface {
 	// GateBlock is what the prompt gate prints to refuse a prompt, showing
 	// reason to the human.
 	GateBlock(reason string) string
-	// Usage sums the token usage in the session transcripts that turn ends
+	// Usage sums the token usage in the session transcripts that hooks
 	// named, counting only calls between from and to (a zero time leaves
 	// that side open). It returns nil for an agent whose transcripts the
 	// kit cannot read yet, and skips any part of a transcript it does not

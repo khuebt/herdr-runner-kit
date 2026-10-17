@@ -48,7 +48,7 @@ func (claude) LaunchArgs(o LaunchOptions) []string {
 
 // The per-task files a Claude runner starts with.
 const (
-	claudeSettingsFile = "claude-settings.json" // the turn-end and compaction hooks
+	claudeSettingsFile = "claude-settings.json" // the turn-end, compaction and session-start hooks
 	claudeContractFile = "contract.md"
 )
 
@@ -87,18 +87,18 @@ func (claude) PrepareTrust(in TrustInput) (TrustResult, error) {
 // either a confirmed usage limit or an API failure the kit cannot act on;
 // Claude ignores a StopFailure hook's output either way.
 func (c claude) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
-	transcript := claudeTranscript(in.Payload)
 	if message, stopFailure := ClaudeUsageLimit(in.Payload); stopFailure {
 		if message == "" {
-			return TurnSignal{Ignore: true, Transcript: transcript}, nil
+			return TurnSignal{Ignore: true}, nil
 		}
-		return TurnSignal{LimitConfirmed: true, Transcript: transcript}, nil
+		return TurnSignal{LimitConfirmed: true}, nil
 	}
-	return TurnSignal{Background: c.background(in), Transcript: transcript}, nil
+	return TurnSignal{Background: c.background(in)}, nil
 }
 
-// claudeTranscript reads the session transcript a hook input names.
-func claudeTranscript(payload []byte) string {
+// HookTranscript reads the session transcript a hook input names: every
+// Claude hook input carries it.
+func (claude) HookTranscript(payload []byte) string {
 	var in struct {
 		TranscriptPath string `json:"transcript_path"`
 	}
@@ -407,7 +407,9 @@ func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
 // by the hook input, and PreCompact and SessionStart(compact) hooks that
 // call `<bin> __context`. PreCompact has no matcher: a manual compaction
 // must cancel an automatic one Claude announced but never ran. With
-// InputLocked, a UserPromptSubmit hook calls `<bin> __prompt-gate`. Claude
+// InputLocked, a UserPromptSubmit hook calls `<bin> __prompt-gate`;
+// without it, a SessionStart(startup) hook calls `<bin> __context`. Either
+// records the session's transcript as it starts. Claude
 // merges them with the user's own hooks. It also denies the tools a runner
 // has no use for, whose schemas would ride on every call.
 func ClaudeSettings(in ClaudeSettingsInput) ([]byte, error) {
@@ -425,9 +427,13 @@ func ClaudeSettings(in ClaudeSettingsInput) ([]byte, error) {
 	}
 	deny := slices.Clone(claudeRunnerDeny)
 	if in.InputLocked {
+		// The prompt gate also records the session's transcript.
 		gate := map[string]any{"type": "command", "command": ShellQuote(bin) + " __prompt-gate --harness claude"}
 		hooks["UserPromptSubmit"] = []any{map[string]any{"hooks": []any{gate}}}
 		deny = append(deny, claudeLockedDeny...)
+	} else {
+		// SessionStart(startup) records the session's transcript.
+		hooks["SessionStart"] = append(hooks["SessionStart"].([]any), map[string]any{"matcher": "startup", "hooks": []any{onCompact}})
 	}
 	settings := map[string]any{"hooks": hooks, "permissions": map[string]any{"deny": deny}}
 	return json.MarshalIndent(settings, "", "  ")

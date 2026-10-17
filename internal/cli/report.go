@@ -165,8 +165,8 @@ func newTurnEndCommand() *cobra.Command {
 	return cmd
 }
 
-// newContextCommand is the runners' compaction hook, fed Claude-shaped
-// PreCompact and SessionStart(compact) inputs. Like the turn-end hook it
+// newContextCommand is the runners' compaction and session-start hook, fed
+// Claude-shaped PreCompact and SessionStart inputs. Like the turn-end hook it
 // never fails: errors go to stderr, and it prints nothing unless it asks for
 // a handoff and the agent takes added context.
 func newContextCommand() *cobra.Command {

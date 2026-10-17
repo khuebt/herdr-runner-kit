@@ -30,6 +30,9 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if err != nil {
 		return "", err
 	}
+	// The transcript belongs to the task whatever the attempt: a session
+	// that handed off holds the task's first calls.
+	r.recordTranscript(t, h, adapter.HookTranscript(payload))
 	// A session that handed off may end a turn before the launcher quits
 	// it; only the current session's turns count.
 	if r.callerAttempt() != task.AttemptOf(t) {
@@ -39,18 +42,16 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if err != nil {
 		return "", err
 	}
-	r.recordTranscript(t, h, sig.Transcript)
 	// The turn after a report holds the session's last calls, so a task
 	// that finished, or finishes now with a held done, has its usage read
-	// once the turn end is handled, and again by a detached child once the
-	// agent has written the turn's last call.
+	// once the turn end is handled, or, while the agent has still to write
+	// the turn's last call, by a detached child once it has.
 	defer func() {
 		if cur, err := r.Store.Get(id); err == nil && cur.Status.Terminal() && len(cur.Transcripts) > 0 {
-			r.refreshUsage(id)
-			if !turnsWritten(cur.Transcripts) {
-				if err := r.StartUsage(id); err != nil {
-					fmt.Fprintf(os.Stderr, "hrk: %s: start usage reader: %v\n", id, err)
-				}
+			if turnsWritten(cur.Transcripts) {
+				r.refreshUsage(id)
+			} else if err := r.StartUsage(id); err != nil {
+				fmt.Fprintf(os.Stderr, "hrk: %s: start usage reader: %v\n", id, err)
 			}
 		}
 	}()
