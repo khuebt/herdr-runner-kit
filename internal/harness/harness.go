@@ -187,6 +187,10 @@ type Adapter interface {
 	// prompt, so one extra Enter submits it; an agent whose input cannot be
 	// read reliably answers InputUnknown.
 	InputState(screen, prompt string) InputState
+	// InputIs reports whether screen's input box provably holds text and
+	// nothing else. Unlike InputState it never guesses from a prefix or a
+	// placeholder, and an agent whose input cannot be read answers false.
+	InputIs(screen, text string) bool
 	// ProgressText returns the part of a working agent's screen that
 	// changes only when the agent makes progress: the agent's own animated
 	// status lines, input box and footer are dropped, and the elapsed-time

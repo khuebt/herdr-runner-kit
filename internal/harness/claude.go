@@ -271,10 +271,9 @@ var claudePasted = regexp.MustCompile(`\[Pasted text #\d+`)
 // with a typed one.
 const claudePromptHead = 40
 
-// InputState reads the box between the last two input box edges. A pasted
-// prompt shows as "[Pasted text #N …]" and a short one as its own text.
-// Anything else in the box, or no box on screen, is unknown.
-func (claude) InputState(screen, prompt string) InputState {
+// claudeInputBox returns the text in the box between the last two input box
+// edges, with whitespace normalised, and false when no box is on screen.
+func claudeInputBox(screen string) (string, bool) {
 	lines := strings.Split(screen, "\n")
 	end := -1
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -286,18 +285,35 @@ func (claude) InputState(screen, prompt string) InputState {
 			continue
 		}
 		box := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.Join(lines[i+1:end], "\n")), "❯"))
-		box = strings.Join(strings.Fields(box), " ")
-		head := []rune(strings.Join(strings.Fields(prompt), " "))
-		head = head[:min(claudePromptHead, len(head))]
-		switch {
-		case box == "":
-			return InputEmpty
-		case claudePasted.MatchString(box), len(head) > 0 && strings.HasPrefix(box, string(head)):
-			return InputHolds
-		}
+		return strings.Join(strings.Fields(box), " "), true
+	}
+	return "", false
+}
+
+// InputState reads the box between the last two input box edges. A pasted
+// prompt shows as "[Pasted text #N …]" and a short one as its own text.
+// Anything else in the box, or no box on screen, is unknown.
+func (claude) InputState(screen, prompt string) InputState {
+	box, ok := claudeInputBox(screen)
+	if !ok {
 		return InputUnknown
 	}
+	head := []rune(strings.Join(strings.Fields(prompt), " "))
+	head = head[:min(claudePromptHead, len(head))]
+	switch {
+	case box == "":
+		return InputEmpty
+	case claudePasted.MatchString(box), len(head) > 0 && strings.HasPrefix(box, string(head)):
+		return InputHolds
+	}
 	return InputUnknown
+}
+
+// InputIs reports whether the box shows text and nothing else. A pasted
+// placeholder never does: it hides what was pasted.
+func (claude) InputIs(screen, text string) bool {
+	box, ok := claudeInputBox(screen)
+	return ok && box != "" && box == strings.Join(strings.Fields(text), " ")
 }
 
 // claudeRetry is the status line of a request Claude retries, as Claude

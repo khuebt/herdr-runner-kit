@@ -227,3 +227,29 @@ func TestClaudeInputState(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeInputIsOnlyTheWholeText(t *testing.T) {
+	prompt := "/ak:research queues in the billing service and report which ones can drop messages"
+	typed := readFixture(t, "input-typed-claude.txt")
+	cases := []struct {
+		name, screen, text string
+		want               bool
+	}{
+		{"exact", typed, prompt, true},
+		{"pasted placeholder", readFixture(t, "input-pasted-claude.txt"), prompt, false},
+		{"same prefix, other tail", typed, prompt[:50] + " and delete everything", false},
+		{"text is a prefix of the box", typed, prompt[:50], false},
+		{"empty box", readFixture(t, "working-claude-1.txt"), prompt, false},
+		{"no box", "❯ \n", prompt, false},
+	}
+	for _, c := range cases {
+		if got := (claude{}).InputIs(c.screen, c.text); got != c.want {
+			t.Errorf("%s: InputIs = %v, want %v", c.name, got, c.want)
+		}
+	}
+	for _, a := range []Adapter{codex{}, piAgent, ompAgent} {
+		if a.InputIs(typed, prompt) {
+			t.Errorf("%s: InputIs = true for an input that is not read", a.Harness())
+		}
+	}
+}
