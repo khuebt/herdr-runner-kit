@@ -28,7 +28,9 @@ func newWaitCommand() *cobra.Command {
 			"chain step's or plan phase's done without decisions, stopped, cleanable, " +
 			"processes-left) does not wake it: it comes first with the next wake, when " +
 			"everything is idle, at the timeout, or 50 minutes after the main session was " +
-			"last active. --task, --all-news and wakeOn: all wake for every line. Run it in " +
+			"last active. --task, --all-news and wakeOn: all wake for every line. --task keeps " +
+			"a cursor of its own, named from the ids, so it never moves the main session's " +
+			"cursor and runs beside the auto re-arm hook. Run it in " +
 			"the background and rerun it after each wake; a cursor makes sure no event is " +
 			"skipped or repeated.",
 		Args: cobra.NoArgs,
@@ -75,7 +77,7 @@ func newWaitCommand() *cobra.Command {
 	f := cmd.Flags()
 	f.StringSliceVar(&ids, "task", nil, "only these tasks")
 	f.StringVar(&o.Owner, "owner", "", "main session to wait for, and only it (default: git top-level of the current folder, plus the tasks of every project)")
-	f.StringVar(&o.Cursor, "cursor", "", "cursor name (default: derived from the owner)")
+	f.StringVar(&o.Cursor, "cursor", "", "cursor name (default: derived from the owner, or from the --task ids)")
 	f.BoolVar(&o.AllNews, "all-news", false, "wake for every news line, quiet ones too")
 	f.DurationVar(&o.Timeout, "timeout", wait.DefaultTimeout, "safety timeout; wait prints `timeout` and exits 0")
 	return cmd

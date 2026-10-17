@@ -694,3 +694,87 @@ func TestEveryNewsWakesWhenAsked(t *testing.T) {
 		})
 	}
 }
+
+func TestTaskCursorName(t *testing.T) {
+	got := TaskCursor([]string{"t2", "t1", "t2"})
+	if got != TaskCursor([]string{"t1", "t2"}) {
+		t.Errorf("order or duplicates change the name: %s", got)
+	}
+	if !strings.HasPrefix(got, "tasks-") || got == TaskCursor([]string{"t1"}) || got == state.CursorName(owner) {
+		t.Errorf("name = %s", got)
+	}
+}
+
+func TestTaskWaitLeavesTheMainCursor(t *testing.T) {
+	r, _ := newTestRunner(t)
+	a, b := addTask(t, r, task.Running, owner), addTask(t, r, task.Running, owner)
+	main := state.CursorName(owner)
+	if err := r.Store.InitCursor(main); err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := r.Store.Cursor(main)
+	ch := start(r, Options{Owner: owner, Tasks: []string{a.ID}, Window: time.Millisecond})
+	waitBlocked()
+	report(t, r, b.ID, "other")
+	report(t, r, a.ID, "mine")
+	got := get(t, ch)
+	prefixes(t, got.res.Lines, a.ID+" done")
+	if after, _, _ := r.Store.Cursor(main); after != before {
+		t.Fatalf("main cursor moved from %d to %d", before, after)
+	}
+	plain, err := Run(context.Background(), r, Options{Owner: owner, Window: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefixes(t, plain.Lines, b.ID+" done", a.ID+" done")
+}
+
+func TestTaskCursorStartsAtTheMainCursor(t *testing.T) {
+	r, _ := newTestRunner(t)
+	a := addTask(t, r, task.Running, owner)
+	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+		t.Fatal(err)
+	}
+	report(t, r, a.ID, "early")
+	o := Options{Owner: owner, Tasks: []string{a.ID}, Window: time.Millisecond}
+	first, err := Run(context.Background(), r, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefixes(t, first.Lines, a.ID+" done")
+	again, err := Run(context.Background(), r, o)
+	if err != nil || len(again.Lines) != 0 {
+		t.Fatalf("second wait: %+v %v", again, err)
+	}
+}
+
+func TestTaskWaitRunsBesideTheHook(t *testing.T) {
+	r, _ := newTestRunner(t)
+	a := addTask(t, r, task.Running, owner)
+	unlock, err := r.Store.LockCursor(state.CursorName(owner), "hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ch := start(r, Options{Owner: owner, Tasks: []string{a.ID}, Window: time.Millisecond})
+	waitBlocked()
+	report(t, r, a.ID, "beside")
+	got := get(t, ch)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	prefixes(t, got.res.Lines, a.ID+" done")
+}
+
+func TestMarkActiveMarksTheMainCursor(t *testing.T) {
+	r, _ := newTestRunner(t)
+	if err := MarkActive(r.Store, Options{Owner: owner, Tasks: []string{"t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(r.Store.Dir(), "main-active-"+state.CursorName(owner))); err != nil {
+		t.Error(err)
+	}
+	if m, _ := filepath.Glob(filepath.Join(r.Store.Dir(), "main-active-tasks-*")); len(m) != 0 {
+		t.Errorf("task cursor marked: %v", m)
+	}
+}
