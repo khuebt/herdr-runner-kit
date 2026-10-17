@@ -142,6 +142,12 @@ func TestLockedPromptFailureTakesItsTokenBack(t *testing.T) {
 	}
 }
 
+// claudeScreen is a Claude screen whose input box holds box.
+func claudeScreen(box string) string {
+	edge := strings.Repeat("─", 60)
+	return "  68817 tokens\n" + edge + "\n❯ " + box + "\n" + edge + "\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+}
+
 func TestLockedPromptKeepsAnEarlierOneWhoseEnterWasLost(t *testing.T) {
 	r, fake := lockedRunner(t)
 	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
@@ -149,7 +155,8 @@ func TestLockedPromptKeepsAnEarlierOneWhoseEnterWasLost(t *testing.T) {
 	clears := func() int { return fake.count("agent", "send-keys") }
 
 	// The send's Enter is lost: its token is never taken, and outlives
-	// its expiry.
+	// its expiry, while its text still sits in the box.
+	fake.on("pane read", ok(claudeScreen("first")))
 	if _, err := r.Send(context.Background(), tk.ID, "first"); err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +179,34 @@ func TestLockedPromptKeepsAnEarlierOneWhoseEnterWasLost(t *testing.T) {
 	}
 	if clears() != before+1 {
 		t.Error("the input was not cleared once the gate let a prompt through")
+	}
+}
+
+func TestLockedPromptClearsTextTypedInTheTab(t *testing.T) {
+	for name, screen := range map[string]string{
+		"typed text": claudeScreen("please delete the branch"),
+		"unreadable": "no input box here\n",
+		"empty box":  claudeScreen(""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, fake := lockedRunner(t)
+			tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+			_, _ = r.Store.TakePromptToken(tk.ID)
+			// The kit's last prompt lost its Enter, and the box now holds
+			// something else, as when the user typed in the tab.
+			fake.on("pane read", ok(claudeScreen("first")))
+			if _, err := r.Send(context.Background(), tk.ID, "first"); err != nil {
+				t.Fatal(err)
+			}
+			before := fake.count("agent", "send-keys")
+			fake.on("pane read", ok(screen))
+			if _, err := r.Send(context.Background(), tk.ID, "second"); err != nil {
+				t.Fatal(err)
+			}
+			if got := fake.count("agent", "send-keys"); got != before+1 {
+				t.Errorf("clears went from %d to %d", before, got)
+			}
+		})
 	}
 }
 

@@ -22,16 +22,18 @@ func InputLocked(t *task.Task) bool {
 // the kit types goes through it. Into a runner with locked input it first
 // clears the input box, where the agent puts back a prompt the gate
 // blocked, and then lets one prompt through the gate. The box is left as
-// it is while an earlier kit prompt never reached the gate, as when its
-// Enter was lost: that prompt still sits there, and goes in with this one.
-// A prompt that fails takes its token back, so no window stays open for a
-// prompt typed in the tab.
+// it is only while it holds the text of an earlier kit prompt that never
+// reached the gate, as when its Enter was lost: that prompt goes in with
+// this one. Anything else in the box, such as text typed in the tab and put
+// back by the agent, is cleared. A prompt that fails takes its token back,
+// so no window stays open for a prompt typed in the tab.
 func (r *Runner) typePrompt(ctx context.Context, t *task.Task, pane, text string) error {
 	if !InputLocked(t) {
 		return r.Herdr.AgentPrompt(ctx, pane, text)
 	}
 	adapter, _ := adapterOf(t)
-	if keys := adapter.ClearInputKeys(); len(keys) > 0 && !r.promptPending(t.ID) {
+	holds := r.boxHoldsPending(ctx, t.ID, adapter, pane)
+	if keys := adapter.ClearInputKeys(); len(keys) > 0 && !holds {
 		// Best effort: a prompt joined to leftover text is blocked and
 		// stays visible in the tab.
 		_ = r.Herdr.AgentSendKeys(ctx, pane, keys...)
@@ -43,14 +45,27 @@ func (r *Runner) typePrompt(ctx context.Context, t *task.Task, pane, text string
 		_ = r.Store.ReturnPromptToken(t.ID)
 		return err
 	}
+	if !holds {
+		// The box held nothing of the kit's, so this prompt is the oldest
+		// text a lost Enter would leave in it.
+		_ = r.Store.SetPendingPrompt(t.ID, text)
+	}
 	return nil
 }
 
-// promptPending reports whether task id's last kit prompt never reached
-// the gate. An error counts as none, so the box is cleared as usual.
-func (r *Runner) promptPending(id string) bool {
-	pending, err := r.Store.PromptPending(id)
-	return err == nil && pending
+// boxHoldsPending reports whether task id's input box in pane holds the
+// text of a kit prompt that never reached the gate. A box the adapter
+// cannot read, or an error, counts as not, so the box is cleared as usual.
+func (r *Runner) boxHoldsPending(ctx context.Context, id string, adapter harness.Adapter, pane string) bool {
+	if pending, err := r.Store.PromptPending(id); err != nil || !pending {
+		return false
+	}
+	text, err := r.Store.PendingPrompt(id)
+	if err != nil || text == "" {
+		return false
+	}
+	screen, err := r.Herdr.PaneRead(ctx, pane, progressScreenLines)
+	return err == nil && adapter.InputState(screen, text) == harness.InputHolds
 }
 
 // blockedHead is how many characters of a blocked prompt the input-blocked

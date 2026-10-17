@@ -64,6 +64,21 @@ func (s *Store) PromptPending(id string) (bool, error) {
 	})
 }
 
+// SetPendingPrompt keeps text, the kit prompt that may sit in task id's
+// input box, for the next prompt to compare the box with.
+func (s *Store) SetPendingPrompt(id, text string) error {
+	return fsutil.WriteFileAtomic(filepath.Join(s.TaskDir(id), "prompt-pending"), []byte(text), filePerm)
+}
+
+// PendingPrompt returns the text SetPendingPrompt kept, empty when none.
+func (s *Store) PendingPrompt(id string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(s.TaskDir(id), "prompt-pending"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	return string(data), err
+}
+
 // promptTokens reads task id's valid and expired tokens, each oldest
 // first, under the token lock, and writes back what change returns.
 func (s *Store) promptTokens(id string, change func(now time.Time, live, stale []time.Time) ([]time.Time, []time.Time, bool)) (bool, error) {
