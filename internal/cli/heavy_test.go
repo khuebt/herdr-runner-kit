@@ -294,3 +294,20 @@ func TestHeavyStatusSaysWhenALeftoverProcessHoldsASlot(t *testing.T) {
 		t.Errorf("waiting line = %q", got)
 	}
 }
+
+func TestHeavyRecordsTheCommandPidBeforeItRuns(t *testing.T) {
+	store := heavyState(t, "1")
+	out := filepath.Join(t.TempDir(), "out")
+	// The command copies the slot's record as its first act.
+	script := `echo $$ > "$0.pid"; cat "$1" > "$0.record"`
+	code, err := runHeavy(context.Background(), store, 1, []string{"sh", "-c", script, out, filepath.Join(store.Dir(), "heavy", "slot-1.json")}, nil, &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil || code != 0 {
+		t.Fatalf("runHeavy = %d, %v", code, err)
+	}
+	pid, _ := os.ReadFile(out + ".pid")
+	var rec state.HeavyRecord
+	data, _ := os.ReadFile(out + ".record")
+	if err := json.Unmarshal(data, &rec); err != nil || strconv.Itoa(rec.CommandPID) != strings.TrimSpace(string(pid)) || rec.CommandPID == 0 {
+		t.Errorf("the record the command saw = %s (%v), command pid %s", data, err, pid)
+	}
+}
