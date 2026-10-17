@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -36,6 +37,7 @@ type planRunOptions struct {
 	Language     string
 	Skill        string
 	Gate         string
+	Review       string
 	DryRun       bool
 	Warn         func(string)
 }
@@ -67,6 +69,9 @@ func newPlanRunCommand() *cobra.Command {
 			if !task.Gate(o.Gate).Valid() {
 				return fmt.Errorf("invalid gate %q: want auto or human", o.Gate)
 			}
+			if o.Review != "" && o.Review != planrun.ReviewRequired && o.Review != planrun.ReviewSkip {
+				return fmt.Errorf("invalid --review %q: want %s or %s", o.Review, planrun.ReviewRequired, planrun.ReviewSkip)
+			}
 			o.Warn = func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }
 			plan, err := planrun.Read(args[0])
 			if err != nil {
@@ -97,6 +102,7 @@ func newPlanRunCommand() *cobra.Command {
 	f.StringVar(&o.Language, "language", "", "language of the runners' report summaries and questions")
 	f.StringVar(&o.Skill, "skill", "ak:cook", "skill each phase runner invokes on its phase file")
 	f.StringVar(&o.Gate, "gate", "auto", "human holds every phase after the first for `release`")
+	f.StringVar(&o.Review, "review", "", "required or skip, overriding plan.md's review")
 	f.BoolVar(&o.DryRun, "dry-run", false, "print the waves and spawn nothing")
 	return cmd
 }
@@ -141,7 +147,36 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 		return fmt.Errorf("--branch names a new checkout, but this run already works in %s on %s; drop --branch", anchor.Worktree.Path, anchor.Worktree.Branch)
 	}
 
+	required := cmp.Or(o.Review, plan.Review) == planrun.ReviewRequired
+	reviewer := ""
+	first := -1
+	if required {
+		kind, ok := r.Config.Kinds[o.Kind]
+		if !ok {
+			return fmt.Errorf("unknown kind %q", o.Kind)
+		}
+		if reviewer, err = r.ReviewerAgent(cmp.Or(o.Agent, kind.Agent), plan.ReviewAgent); err != nil {
+			return err
+		}
+		if plan.ReviewAfter > 0 {
+			for i, wave := range waves {
+				if slices.ContainsFunc(wave, func(ph planrun.Phase) bool { return ph.Number == plan.ReviewAfter }) {
+					first = i
+				}
+			}
+			if first == len(waves)-1 {
+				first = -1
+			}
+		}
+	}
+
 	fmt.Fprintf(out, "plan %s: %d phases, %d to run\n", plan.Title, len(plan.Phases), countPhases(waves))
+	if required {
+		fmt.Fprintf(out, "review: required · reviewer %s\n", reviewer)
+		if plan.ReviewAfter > 0 && first == -1 {
+			fmt.Fprintf(out, "no review after phase %d: it is done or runs in the last wave; the final review covers it\n", plan.ReviewAfter)
+		}
+	}
 	for _, ph := range plan.Phases {
 		if !done(ph.Number) {
 			continue
@@ -164,6 +199,12 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 			for _, ph := range wave {
 				fmt.Fprintln(out, waveLine(i, wave, ph, anchor == nil, o.Parallel))
 			}
+			if i == first {
+				fmt.Fprintf(out, "review · after wave %d (phase %d) · %s\n", i+1, plan.ReviewAfter, reviewer)
+			}
+		}
+		if required && len(waves) > 0 {
+			fmt.Fprintf(out, "final review · after wave %d · %s; a fixup runner follows when it asks for fixes\n", len(waves), reviewer)
 		}
 		if len(waves) == 0 {
 			_, err := fmt.Fprintf(out, "every phase of %s is done\n", plan.Title)
@@ -186,10 +227,21 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 	if anchor != nil {
 		anchorID = anchor.ID
 	}
+	// spawnFailed words an error after some runners already started.
+	spawnFailed := func(what string, err error, spawned int) error {
+		if spawned > 0 {
+			return fmt.Errorf("spawn %s: %w; the %d runner(s) above were spawned: once they finish, run plan run again", what, err, spawned)
+		}
+		return fmt.Errorf("spawn %s: %w", what, err)
+	}
 	var prev []string
+	var last *task.Task
+	fixFor := ""
 	spawned := 0
-	for _, wave := range waves {
+	for i, wave := range waves {
 		var cur []string
+		note := fixFor
+		fixFor = ""
 		for _, ph := range wave {
 			after := slices.Clone(prev)
 			for _, d := range ph.Deps {
@@ -209,6 +261,9 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 				Prompt: runner.PhasePrompt(plan, ph, parallel, latest[ph.Number]),
 				Plan:   plan.Dir, Phase: ph.Number, Warn: o.Warn,
 			}
+			if note != "" {
+				so.Prompt += "\n\n" + runner.ReviewFixNote(note)
+			}
 			if o.Gate == string(task.GateHuman) && spawned > 0 {
 				so.Gate, so.Reason = task.GateHuman, "plan run --gate human"
 			}
@@ -219,11 +274,9 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 			}
 			t, err := r.Spawn(ctx, so)
 			if err != nil {
-				if spawned > 0 {
-					return fmt.Errorf("spawn phase %d: %w; the %d runner(s) above were spawned: once they finish, run plan run again", ph.Number, err, spawned)
-				}
-				return fmt.Errorf("spawn phase %d: %w", ph.Number, err)
+				return spawnFailed(fmt.Sprintf("phase %d", ph.Number), err, spawned)
 			}
+			last = t
 			if anchorID == "" {
 				anchorID = t.ID
 			}
@@ -232,7 +285,36 @@ func runPlan(ctx context.Context, out io.Writer, r *runner.Runner, plan *planrun
 			fmt.Fprintln(out, spawnLine(t))
 		}
 		prev = cur
+		if i != first {
+			continue
+		}
+		rt, err := r.SpawnReview(ctx, runner.ReviewSpawn{Writer: last, Plan: plan, CheckoutOf: anchorID, After: cur, Agent: reviewer, Warn: o.Warn})
+		if err != nil {
+			return spawnFailed("review", err, spawned)
+		}
+		spawned++
+		fmt.Fprintln(out, spawnLine(rt))
+		prev = append(slices.Clone(cur), rt.ID)
+		fixFor = rt.ID
 	}
+	if !required || spawned == 0 {
+		return nil
+	}
+	final, err := r.SpawnReview(ctx, runner.ReviewSpawn{Writer: last, Plan: plan, CheckoutOf: anchorID, After: prev, Final: true, Agent: reviewer, Warn: o.Warn})
+	if err != nil {
+		return spawnFailed("final review", err, spawned)
+	}
+	spawned++
+	fmt.Fprintln(out, spawnLine(final))
+	fix, err := r.Spawn(ctx, runner.SpawnOptions{
+		Kind: o.Kind, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
+		Cwd: root, After: []string{final.ID}, Title: "fix review findings: " + plan.Title,
+		Prompt: runner.FixupPrompt(plan.File, final.ID), Plan: plan.Dir, CheckoutOf: anchorID, FixupOf: final.ID, Warn: o.Warn,
+	})
+	if err != nil {
+		return spawnFailed("fixup", err, spawned)
+	}
+	fmt.Fprintln(out, spawnLine(fix))
 	return nil
 }
 

@@ -127,3 +127,54 @@ func write(t *testing.T, dir, name, body string) {
 		t.Fatal(err)
 	}
 }
+
+func reviewPlan(t *testing.T, planFM string) (*Plan, error) {
+	t.Helper()
+	dir := t.TempDir()
+	write(t, dir, "plan.md", "---\ntitle: x\n"+planFM+"---\n")
+	for _, n := range []string{"1", "2", "3"} {
+		write(t, dir, "phase-0"+n+"-p.md", "---\nphase: "+n+"\nreview: skip\nreview_after: 9\n---\n")
+	}
+	return Read(dir)
+}
+
+func TestReadReviewFields(t *testing.T) {
+	plan, err := reviewPlan(t, "review: required\nreview_after: 2\nreview_agent: codex::high\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Review != ReviewRequired || plan.ReviewAfter != 2 || plan.ReviewAgent != "codex::high" {
+		t.Fatalf("review fields = %q, %d, %q", plan.Review, plan.ReviewAfter, plan.ReviewAgent)
+	}
+	plan, err = reviewPlan(t, "review: required\nreview_after: \"2\"\n")
+	if err != nil || plan.ReviewAfter != 2 {
+		t.Fatalf("a string review_after reads as 2: %+v, %v", plan, err)
+	}
+	for name, dir := range map[string]string{"none": "", "basic": "testdata/basic"} {
+		var plan *Plan
+		if dir == "" {
+			plan, err = reviewPlan(t, "")
+		} else {
+			plan, err = Read(dir)
+		}
+		if err != nil || plan.Review != "" || plan.ReviewAfter != 0 || plan.ReviewAgent != "" {
+			t.Fatalf("%s: review fields = %+v, %v", name, plan, err)
+		}
+	}
+}
+
+func TestReadRefusesBadReviewFields(t *testing.T) {
+	for fm, want := range map[string]string{
+		"review: maybe\n":                         "review must be required or skip",
+		"review: required\nreview_after: 9\n":     "which the plan does not have",
+		"review: skip\nreview_after: 1\n":         "review_after needs review: required",
+		"review_after: 1\n":                       "review_after needs review: required",
+		"review: required\nreview_after: first\n": "is not a phase number",
+		"review: required\nreview_agent: nope\n":  "review_agent:",
+	} {
+		_, err := reviewPlan(t, fm)
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "plan.md") {
+			t.Errorf("%q: error = %v, want %q", fm, err, want)
+		}
+	}
+}

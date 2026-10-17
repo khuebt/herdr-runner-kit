@@ -102,12 +102,13 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		}); err != nil {
 			return err
 		}
-		// The first round starts here; the git line counts its commits, and a
-		// plan phase is checked against what it changed since.
+		// The first round starts here; the git line counts its commits, a
+		// plan phase is checked against what it changed since, and a review
+		// diffs from it.
 		if head := roundHead(t); head != "" {
 			if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
 				t.RoundHead = head
-				if t.Plan != "" && t.PhaseStart == "" {
+				if t.PhaseStart == "" {
 					t.PhaseStart = head
 				}
 				return nil
@@ -139,11 +140,19 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	}
 	scope := r.enterScope(ctx, t, loc.PaneID)
 
+	if t.Review != nil {
+		if t, err = r.prepareReview(t); err != nil {
+			return err
+		}
+	}
 	// Address the agent by pane id from here on: herdr drops the name when
 	// a start times out.
 	prompt := t.Prompt
 	if t.Inputs != "" {
 		prompt = strings.TrimSpace(prompt + "\n\n" + untrustedInputs(t))
+	}
+	if t.Review != nil {
+		prompt += "\n\n" + reviewRange(t)
 	}
 	for _, note := range relaunchNotes(t) {
 		prompt = strings.TrimSpace(prompt + "\n\n" + note)
@@ -166,7 +175,11 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if err := r.typePrompt(ctx, t, loc.PaneID, text); err != nil {
 		return fmt.Errorf("send first prompt: %w", err)
 	}
-	t, changed, err := r.Store.SetStatus(t.ID, task.Running, task.Starting, task.NeedsHuman)
+	t, changed, err := r.Store.Transition(t.ID, task.Running, []task.Status{task.Starting, task.NeedsHuman}, func(t *task.Task) {
+		if t.StartedAt.IsZero() {
+			t.StartedAt = time.Now().UTC()
+		}
+	})
 	if err != nil {
 		return err
 	}

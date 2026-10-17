@@ -5,6 +5,8 @@ package wait
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -47,7 +49,7 @@ const (
 // newsTypes are the events that wake the main session, or come with its next
 // wake when marked quiet. Everything else is progress and only moves the
 // cursor.
-var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "cleanable", "processes-left", "plan-done"}
+var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "api-error", "cleanable", "processes-left", "plan-done"}
 
 // IsNews reports whether an event type wakes the main session.
 func IsNews(typ string) bool { return slices.Contains(newsTypes, typ) }
@@ -61,7 +63,7 @@ type Options struct {
 	// wait started is watched too. It is ignored when Owner is empty.
 	Projects bool
 	Tasks    []string // empty means every task of the owners
-	Cursor   string   // cursor name; default derived from Owner
+	Cursor   string   // cursor name; default derived from Tasks, else from Owner
 	// Holder names this wait in the cursor lock, so a refused wait can say
 	// who holds it; default "wait".
 	Holder  string
@@ -77,10 +79,22 @@ type Options struct {
 }
 
 func (o Options) cursor() string {
-	if o.Cursor != "" {
+	switch {
+	case o.Cursor != "":
 		return o.Cursor
+	case len(o.Tasks) > 0:
+		return TaskCursor(o.Tasks)
 	}
 	return state.CursorName(o.Owner)
+}
+
+// TaskCursor names the cursor of a wait for the tasks ids: the same ids in
+// any order share it, and it is never the main session's cursor.
+func TaskCursor(ids []string) string {
+	ids = slices.Clone(ids)
+	slices.Sort(ids)
+	sum := sha256.Sum256([]byte(strings.Join(slices.Compact(ids), ",")))
+	return "tasks-" + hex.EncodeToString(sum[:6])
 }
 
 // activePath is the marker whose modification time is the last activity of
@@ -89,11 +103,16 @@ func activePath(s *state.Store, cursor string) string {
 	return filepath.Join(s.Dir(), "main-active-"+cursor)
 }
 
-// MarkActive records that the main session waiting on o's cursor is active
-// now: its turn just ended or it started a wait. Quiet news waits at most
-// flushAfter past the latest mark.
+// MarkActive records that the main session is active now: its turn just ended
+// or it started a wait. It marks the cursor of o.Cursor, else the owner's
+// cursor, also for a wait on tasks, which keeps a cursor of its own. Quiet
+// news waits at most flushAfter past the latest mark.
 func MarkActive(s *state.Store, o Options) error {
-	p, now := activePath(s, o.cursor()), time.Now()
+	name := o.Cursor
+	if name == "" {
+		name = state.CursorName(o.Owner)
+	}
+	p, now := activePath(s, name), time.Now()
 	if err := os.Chtimes(p, now, now); !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -124,6 +143,7 @@ type Result struct {
 // the idle line. The saved cursor never passes held news, so a later Run,
 // in this process or another, finds it again.
 func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
+	derived := o.Cursor == "" && len(o.Tasks) > 0
 	o.Cursor = o.cursor()
 	if o.Timeout <= 0 {
 		o.Timeout = DefaultTimeout
@@ -148,6 +168,21 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	defer func() { _ = watcher.Close() }()
 	if err := watcher.Add(r.Store.Dir()); err != nil {
 		return Result{}, fmt.Errorf("watch events: %w", err)
+	}
+	if derived {
+		// The first wait on these tasks sees what the main session has not
+		// been woken for.
+		if _, ok, err := r.Store.Cursor(o.Cursor); err != nil {
+			return Result{}, err
+		} else if !ok {
+			if offset, ok, err := r.Store.Cursor(state.CursorName(o.Owner)); err != nil {
+				return Result{}, err
+			} else if ok {
+				if err := r.Store.SaveCursor(o.Cursor, offset); err != nil {
+					return Result{}, err
+				}
+			}
+		}
 	}
 	if err := r.Store.InitCursor(o.Cursor); err != nil {
 		return Result{}, err

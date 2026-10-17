@@ -143,7 +143,7 @@ func TestClaudeOtherStopFailureIsIgnored(t *testing.T) {
 	r, _, launched := limitRunner(t, fixture(t, "usage-limit-claude.txt"), config.Fallback{Agent: "codex"})
 	tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
 	*launched = nil
-	payload := `{"hook_event_name":"StopFailure","error":"server_error","last_assistant_message":"API Error: 500"}`
+	payload := `{"hook_event_name":"StopFailure","error":"invalid_request","last_assistant_message":"API Error: 400"}`
 	if block, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, []byte(payload)); err != nil || block != "" {
 		t.Fatalf("TurnEnd = %q, %v", block, err)
 	}

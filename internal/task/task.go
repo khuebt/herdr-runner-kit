@@ -171,6 +171,10 @@ type Task struct {
 	// Unreported counts turns that ended without a report since the last
 	// prompt from the main session: the first is nudged, the second is news.
 	Unreported int `json:"unreported,omitempty"`
+	// APIErrors counts turns that ended on a transient API error since the
+	// runner last ended a turn normally, reported, was prompted by the main
+	// session or switched agents: the first is continued, the second is news.
+	APIErrors int `json:"apiErrors,omitempty"`
 	// CodexThread is the thread of the runner's first Codex turn. Notify
 	// calls from other threads, such as title generation, are ignored.
 	CodexThread string `json:"codexThread,omitempty"`
@@ -209,10 +213,16 @@ type Task struct {
 	// CheckoutOf is the plan task whose worktree this task works in: the
 	// phases of one plan run share one checkout and one branch.
 	CheckoutOf string `json:"checkoutOf,omitempty"`
-	// PhaseStart is the full sha of the checkout's HEAD when the phase's
-	// runner launched, and PhaseCheck what the kit found once it was done.
+	// PhaseStart is the full sha of the checkout's HEAD when the task's
+	// runner first launched; a plan phase is checked against it and a review
+	// diffs from it. PhaseCheck is what the kit found once a phase was done.
 	PhaseStart string      `json:"phaseStart,omitempty"`
 	PhaseCheck *PhaseCheck `json:"phaseCheck,omitempty"`
+	// Review is set on a review task: a read-only runner that reviews the
+	// work of task Review.Of, or of its plan run when Of is empty. FixupOf is
+	// the review whose verified findings a plan's fixup task fixes.
+	Review  *Review `json:"review,omitempty"`
+	FixupOf string  `json:"fixupOf,omitempty"`
 	// Scopes are the cgroups of the memory-capped systemd scopes the task's
 	// agent sessions ran in, oldest first.
 	Scopes []string `json:"scopes,omitempty"`
@@ -227,6 +237,9 @@ type Task struct {
 	// keeps one. Usage is the token usage read from them, last at At.
 	Transcripts []Transcript `json:"transcripts,omitempty"`
 	Usage       *Usage       `json:"usage,omitempty"`
+	// StartedAt is when the agent first got its prompt, as the started event
+	// says. Tasks an older version started have none.
+	StartedAt time.Time `json:"startedAt,omitzero"`
 	// FinishedAt is set when the task reaches a terminal status.
 	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 	Status         Status    `json:"status"`
@@ -384,6 +397,33 @@ type PhaseCheck struct {
 func (c *PhaseCheck) Holds() bool {
 	return c != nil && (c.Verdict == PhaseOutside || c.Verdict == PhaseDirty)
 }
+
+// Review is what a review task reviews and what it found.
+type Review struct {
+	Of    string `json:"of,omitempty"`    // the reviewed task; empty for a plan review
+	Final bool   `json:"final,omitempty"` // a plan's review before plan-done
+	// Writer is the writer's agent key; quota fallback never switches the
+	// reviewer to it.
+	Writer string `json:"writer,omitempty"`
+	// Base is the commit the reviewed diff starts from, File the report
+	// the reviewer writes, Earlier the reports of the plan's earlier
+	// reviews; all set when the review launches.
+	Base    string   `json:"base,omitempty"`
+	File    string   `json:"file,omitempty"`
+	Earlier []string `json:"earlier,omitempty"`
+	// Verdict is ReviewPass, ReviewFix or ReviewUnknown, read from File
+	// when the reviewer reports done; Note says why it is unknown, or
+	// that the checkout changed during the review.
+	Verdict string `json:"verdict,omitempty"`
+	Note    string `json:"note,omitempty"`
+}
+
+// Review verdicts.
+const (
+	ReviewPass    = "pass"
+	ReviewFix     = "fix"
+	ReviewUnknown = "unknown"
+)
 
 // GitState is a snapshot of a task's checkout, taken when its runner reports.
 type GitState struct {

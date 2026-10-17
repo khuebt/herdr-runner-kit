@@ -185,3 +185,27 @@ func TestShowAndListSharedWorktree(t *testing.T) {
 		t.Errorf("show without the anchor = %q, %v", out, err)
 	}
 }
+
+func TestShowNamesTheReview(t *testing.T) {
+	store, tk := stateWithTask(t)
+	if _, err := store.Update(tk.ID, func(t *task.Task) error {
+		t.Review = &task.Review{Of: "t5", Verdict: "fix", File: "/x/review-1.md"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI("show", tk.ID)
+	if err != nil || !strings.Contains(out, "\nreview: of t5 · verdict fix · report /x/review-1.md\n") {
+		t.Errorf("show = %q, %v", out, err)
+	}
+	if _, err := store.Update(tk.ID, func(t *task.Task) error {
+		t.Review, t.FixupOf = nil, "t7"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI("show", tk.ID)
+	if err != nil || !strings.Contains(out, "\nfixes: the findings of review t7\n") {
+		t.Errorf("show = %q, %v", out, err)
+	}
+}

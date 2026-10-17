@@ -153,7 +153,9 @@ func (pi) ShowsRetry(screen string) bool {
 }
 
 // InputState is always unknown: the input of pi and omp is not read.
+// InputIs is always false for the same reason.
 func (pi) InputState(string, string) InputState { return InputUnknown }
+func (pi) InputIs(string, string) bool          { return false }
 
 func (pi) SelfResolvingPrompts() []SelfResolvingPrompt { return nil }
 

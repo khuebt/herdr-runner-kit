@@ -38,6 +38,7 @@ Before any runner, even a one-line fix, reply with a short brief and wait for th
 - the goal, and how the runner will reach it: approach, files or areas;
 - what is out of scope, and how it is checked: tests, lint, a manual step;
 - kind and worktree, and for every runner its harness, model and effort with one reason: a cheaper model or lower effort than the kind's default for simple work (a doc edit, a rename, a one-line fix); a strong model and high effort only for multi-file design, root-cause hunts or live experiments; for a worktree task, the exact `--branch` value;
+- for code changes with migrations or bulk data, permissions or security, external integrations, concurrency or background work, or public contracts (CLI, config, hooks), an independent review: `review: required` in `plan.md` (with `review_after: <phase>` at the first phase later phases build on) for a plan run, or `spawn --review` for one `flow` or `code` task; `review: skip` or nothing for small, low-risk changes;
 - open questions, if any.
 
 End with "Start?". Spawn only after the user agrees, with their additions in the prompt. Skip the brief only when the user's message already says to start now.
@@ -79,7 +80,7 @@ EOF
 
 `spawn` returns at once with one line such as `t4 starting · claude:… · fix · Fix the typo`. Tell the user the id and title in one sentence, then end your turn.
 
-Plans: for an AgentKit plan with phase files, put the waves from `hrk plan run <plan> --dry-run` in the brief and run `plan run <plan>` on yes; a plan without phase files gets one `--skill ak:cook` runner. A `held` that names files outside a phase's scope: ask the user before `release`. `plan-done`: relay the report path and the verified count. Details: [references/commands.md#plans](references/commands.md#plans).
+Plans: for an AgentKit plan with phase files, put the waves from `hrk plan run <plan> --dry-run` in the brief and run `plan run <plan>` on yes; a plan without phase files gets one `--skill ak:cook` runner. A `held` that names files outside a phase's scope: ask the user before `release`. `plan-done`: relay the report path, the verified count and the review verdict; a single task's review `done` starts with its verdict, and on `fix` offer `send <writer id>` with the report. Details: [references/commands.md#plans](references/commands.md#plans).
 
 ## Projects
 
@@ -96,8 +97,7 @@ Stages, gates, change control, milestones, graduation (suggest it once after M1)
 ## Gates
 
 - `--gate auto` is the default: a chain moves on by itself within a second of each `done`. Do not ask the user between steps.
-- Use `--gate human` only when the user asks to review before a step. That task becomes `held` until the user approves; then run `hrk release <id>` (add `--note` with any instructions).
-- Stop and ask the user only for `needs-human` and `held`.
+- Use `--gate human` only when the user asks to review before a step. That task becomes `held` until the user approves; then run `hrk release <id>` (add `--note` with any instructions). Stop and ask the user only for `needs-human` and `held`.
 
 ## Wait for news
 
@@ -106,8 +106,8 @@ In the session `hrk main` started or resumed, the auto re-arm hook waits for you
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences.
 - `tN needs-human · … · 3 questions` with numbered lines is one round: ask all of them in one message and send the replies as one answer, such as `1a 2b 3c`. `decided: …` on a `done` line lists what the runner settled itself: relay it first; the user may veto, and you `send` the change. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail and `peek <id>` the screen.
 - `git: …` on a `done` or `failed` line: remind the user about uncommitted or untracked work, commits not pushed, or a branch diverged from its upstream. `repo state` means the main checkout, not a worktree.
-- `failed` with `usage limit reached`: the agent reported its usage limit and no configured fallback agent was left. Offer a new `spawn` with another `--agent` or `--claude-config`, and mention the config's `quotaFallback` list. A switch that worked shows as an `agent-switched` event in `show <id>`.
-- `usage-limit`: the runner's screen shows its agent's usage limit and no fallback agent is left; the task is still open. Tell the user, and offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the limit to reset.
+- `failed` with `usage limit reached`: the agent reported its usage limit and no configured fallback agent was left. Offer a new `spawn` with another `--agent` or `--claude-config`, and mention the config's `quotaFallback` list; a switch that worked shows as an `agent-switched` event in `show <id>`. `usage-limit`: the runner's screen shows the limit and no fallback is left; the task is still open, so offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the reset.
+- `api-error`: the runner's turn failed twice on an API error and it waits at its prompt; tell the user, and offer `hrk send <id>` with "continue" once the connection is back.
 - `tab closes HH:MM` or `tab kept until HH:MM` on a `done` line: mention it, and offer `hrk keep <id>` when the user wants to come back to the tab later.
 - `stalled · blocked on a prompt: …`: relay the quoted prompt as is and offer `focus <id>`; a `stalled` for no progress or retrying: relay it, the runner stays open. Never chase `blocked` or other progress events, such as `context-low` or `handoff` (a runner continuing in a fresh session): they need nothing from you.
 - Quiet lines (a chain step's or plan phase's `done` without decisions, `stopped`, `cleanable`, `processes-left`) come with other news, not alone; relay them the same way. `processes-left`: name the surviving pids and commands; never kill them yourself.

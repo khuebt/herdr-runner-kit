@@ -559,6 +559,29 @@ func showText(t *task.Task, anchor *task.Task, events []state.Event, dir string,
 	default:
 		field("cwd", t.Cwd)
 	}
+	if rv := t.Review; rv != nil {
+		of := "plan run"
+		switch {
+		case rv.Of != "":
+			of = "of " + rv.Of
+		case rv.Final:
+			of = "plan run, final"
+		}
+		parts := []string{of}
+		if rv.Verdict != "" {
+			parts = append(parts, "verdict "+rv.Verdict)
+		}
+		if rv.File != "" {
+			parts = append(parts, "report "+rv.File)
+		}
+		if rv.Note != "" {
+			parts = append(parts, rv.Note)
+		}
+		field("review", strings.Join(parts, " · "))
+	}
+	if t.FixupOf != "" {
+		field("fixes", "the findings of review "+t.FixupOf)
+	}
 	if t.Git != nil {
 		field("git", t.Git.Short()+" (checked "+t.Git.CheckedAt.Local().Format("15:04")+")")
 	}

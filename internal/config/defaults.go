@@ -40,5 +40,6 @@ func Default() Config {
 		HeavySlots:       2,
 		RunnerInput:      InputLocked,
 		WakeOn:           WakeActionable,
+		Review:           ReviewConfig{Skill: "ak:code-review"},
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,7 +26,11 @@ import (
 // crashed holder frees its slot at once, unless the command it runs got the
 // fd: then the slot stays held until that command exits too. Readers list a
 // holder while its slot's flock is held, whatever its pid, and drop the
-// records of waiters whose pid is gone.
+// records of waiters whose pid is gone. The holder's record carries the
+// command's pid as well. A slot whose flock is held while both are gone is
+// held by a leftover process, such as a daemon the command started, and is
+// listed as orphaned: only the kernel can drop a flock another process
+// holds, so such a slot is not treated as free.
 
 // HeavyPoll is how often a waiter tries the slots again, and HeavyNotify
 // how often it says it still waits. Variables so tests can shorten them.
@@ -42,6 +47,11 @@ type HeavyRecord struct {
 	Cwd     string    `json:"cwd"`
 	Command string    `json:"command"`
 	Since   time.Time `json:"since"`
+	// CommandPID is the pid of the command a holder runs, once started.
+	CommandPID int `json:"commandPid,omitempty"`
+	// Orphaned is set on a listed holder whose pid and command pid are
+	// both gone while the slot's flock is still held.
+	Orphaned bool `json:"orphaned,omitempty"`
 }
 
 // HeavyStatus lists the live holders, by slot, and the live waiters, oldest
@@ -112,6 +122,18 @@ func (s *Store) AcquireHeavy(ctx context.Context, slots int, rec HeavyRecord, no
 	}
 }
 
+// RecordHeavyCommand adds the pid of the command running with lock, the file
+// AcquireHeavy returned, to its holder record.
+func (s *Store) RecordHeavyCommand(lock *os.File, pid int) error {
+	path := strings.TrimSuffix(lock.Name(), ".lock") + ".json"
+	rec, ok := readHeavy(path)
+	if !ok {
+		return fmt.Errorf("read %s", filepath.Base(path))
+	}
+	rec.CommandPID = pid
+	return writeJSON(path, rec)
+}
+
 // tryHeavySlot takes slot n for rec if it is free. It returns a nil release
 // when the slot is taken.
 func (s *Store) tryHeavySlot(n int, rec HeavyRecord) (func(), *os.File, error) {
@@ -176,7 +198,8 @@ func (s *Store) HeavyStatus(slots int) (HeavyStatus, error) {
 
 // heavyHolder reads who holds slot n. The slot's flock, not the holder's
 // pid, says whether it is held: a killed holder's command may hold it
-// still. A free slot's leftover record is removed.
+// still. A free slot's leftover record is removed. A held slot whose holder
+// and command are both gone is marked orphaned.
 func (s *Store) heavyHolder(n int) (HeavyRecord, bool) {
 	path := s.slotPath(n, ".json")
 	f, free, err := s.lockHeavySlot(n)
@@ -188,7 +211,9 @@ func (s *Store) heavyHolder(n int) (HeavyRecord, bool) {
 		_ = f.Close()
 		return HeavyRecord{}, false
 	}
-	return readHeavy(path)
+	rec, ok := readHeavy(path)
+	rec.Orphaned = ok && rec.CommandPID > 0 && !alive(rec.PID) && !alive(rec.CommandPID)
+	return rec, ok
 }
 
 // heavyWaiters reads the live waiters, oldest first, and removes the

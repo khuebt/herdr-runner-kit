@@ -36,6 +36,12 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	if err := r.errIfLost(ctx, t); err != nil {
 		return false, err
 	}
+	// The prompt and the counter reset below are one step for the API retry.
+	unlock, err := r.Store.LockFile(id, promptLock)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	head := roundHead(t) // a new round begins with this prompt
 	// A done held before a message sent while the agent works, or while it
 	// still holds a done, does not answer the message, so the turn end must
@@ -71,7 +77,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		case t.Status == task.Stopped:
 			return errStopped
 		}
-		t.Unreported = 0
+		t.Unreported, t.APIErrors = 0, 0
 		if head != "" {
 			t.RoundHead = head
 		}
@@ -134,7 +140,7 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	nt, changed, err := r.Store.Transition(id, task.Running, []task.Status{task.NeedsHuman}, func(t *task.Task) {
-		t.Question, t.Unreported = "", 0
+		t.Question, t.Unreported, t.APIErrors = "", 0, 0
 		if head != "" {
 			t.RoundHead = head
 		}

@@ -19,6 +19,10 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 )
 
+// heavyGate is the shell script the command runs behind: it waits for a
+// byte on descriptor 4, then closes it and becomes the command.
+const heavyGate = `read -r _ <&4 || exit 1; exec 4<&-; exec "$@"`
+
 // heavyCommandRunes is how much of a heavy command its record keeps.
 const heavyCommandRunes = 80
 
@@ -121,14 +125,33 @@ func runHeavy(ctx context.Context, store *state.Store, slots int, args []string,
 		}
 	}
 	defer release()
+	var gate *os.File // the write end of the pipe the command waits on
 	if lock != nil {
 		// The command holds the slot too, so it stays held while the
 		// command runs even if this process is killed.
-		child.ExtraFiles = []*os.File{lock}
+		var pr *os.File
+		if pr, gate, err = os.Pipe(); err != nil {
+			return 0, err
+		}
+		defer func() { _ = gate.Close() }()
+		// The command waits for the gate, so its pid is in the holder's
+		// record before it can run. A holder killed before it opens the
+		// gate closes it, and the command exits without running.
+		child = exec.Command("sh", "-c", heavyGate, "hrk-heavy")
+		child.Args = append(child.Args, args...)
+		child.Stdin, child.Stdout, child.Stderr = stdin, stdout, stderr
+		child.ExtraFiles = []*os.File{lock, pr}
+		defer func() { _ = pr.Close() }()
 	}
 	if err := child.Start(); err != nil {
 		fmt.Fprintf(stderr, "hrk heavy: %v\n", err)
 		return 126, nil
+	}
+	if gate != nil {
+		// Best effort: without the pid a leftover process holding the slot
+		// is not told from a running command.
+		_ = store.RecordHeavyCommand(lock, child.Process.Pid)
+		_, _ = gate.Write([]byte{'\n'})
 	}
 	running.Store(child.Process)
 	select {
@@ -160,6 +183,9 @@ func waitingLine(st state.HeavyStatus) string {
 	holders := make([]string, len(st.Holders))
 	for i, h := range st.Holders {
 		holders[i] = h.Task + " " + h.Command + " " + age(h.Since)
+		if h.Orphaned {
+			holders[i] += " (orphaned)"
+		}
 	}
 	return fmt.Sprintf("hrk heavy: waiting for a slot (%d in use: %s)", len(st.Holders), strings.Join(holders, ", "))
 }
@@ -205,5 +231,9 @@ func printHeavy(w io.Writer, store *state.Store, slots int, asJSON bool) error {
 }
 
 func heavyLine(h state.HeavyRecord) string {
-	return fmt.Sprintf("%s · %s · %s · pid %d · %s", h.Task, h.Command, age(h.Since), h.PID, h.Cwd)
+	line := fmt.Sprintf("%s · %s · %s · pid %d · %s", h.Task, h.Command, age(h.Since), h.PID, h.Cwd)
+	if h.Orphaned {
+		line += fmt.Sprintf(" · orphaned: pid %d and command pid %d are gone, a leftover process still holds the lock", h.PID, h.CommandPID)
+	}
+	return line
 }

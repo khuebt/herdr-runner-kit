@@ -52,6 +52,9 @@ type Runner struct {
 	// StartUsage starts the detached reader of a task's usage, which waits
 	// for the agent to write its turn.
 	StartUsage func(id string) error
+	// StartAPIRetry starts the detached continue of a runner whose turn ended
+	// on an API error.
+	StartAPIRetry func(id string) error
 	// Notify hands a news event to the detached Telegram notifier.
 	Notify func(ev state.Event)
 	// Telegram sends notifications in the notifier process.
@@ -69,6 +72,8 @@ type Runner struct {
 	// memory-capped systemd scope named unit. Nil starts agents where herdr
 	// puts them.
 	EnterScope func(ctx context.Context, unit string, agent int, children func() []int) (Scope, error)
+	// LookPath finds a command on PATH; the default reviewer goes by what is installed.
+	LookPath func(string) (string, error)
 }
 
 // New returns a Runner for the real environment.
@@ -76,6 +81,7 @@ func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	r := &Runner{
 		Store: store, Config: cfg, Herdr: herdr.New(), Telegram: telegram.New(),
 		Bin: bin, Getenv: os.Getenv, Sleep: time.Sleep, ProcTable: psTable, ProcEnv: procEnviron,
+		LookPath:   exec.LookPath,
 		EnterScope: SystemScope(cfg.RunnerMemoryMax, runtime.GOOS),
 	}
 	r.Notify = r.startDetachedNotify
@@ -86,6 +92,10 @@ func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	}
 	r.StartUsage = func(id string) error {
 		_, err := r.startDetached(id, "__usage", "usage.log")
+		return err
+	}
+	r.StartAPIRetry = func(id string) error {
+		_, err := r.startDetached(id, "__api-retry", "api-retry.log")
 		return err
 	}
 	return r
@@ -138,6 +148,10 @@ type SpawnOptions struct {
 	// CheckoutOf is the plan task whose worktree the task works in. It
 	// implies no worktree of the task's own.
 	CheckoutOf string
+	// Review marks a review task, FixupOf a plan's fixup task after the
+	// review it names.
+	Review  *task.Review
+	FixupOf string
 	// Warn, when set, receives a one-line warning that spawn carried on
 	// without the project registry because it could not be read.
 	Warn func(string)
@@ -418,7 +432,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 		Cwd: cwd, Owner: owner, RepoRoot: root, UseWorktree: useWorktree, After: after, Gate: gate, HoldReason: reason,
 		MainWorkspace: workspace, ClaudeConfigDir: configDir, Language: language,
 		Project: project.Name, Stage: stage, Keep: o.Keep,
-		Plan: o.Plan, Phase: o.Phase, CheckoutOf: o.CheckoutOf,
+		Plan: o.Plan, Phase: o.Phase, CheckoutOf: o.CheckoutOf, Review: o.Review, FixupOf: o.FixupOf,
 		InputLocked: r.Config.RunnerInput == config.InputLocked, MCP: o.MCP || kind.MCP,
 		// Queued until spawn decides: a task with no pending parents moves on
 		// to held or starting at once.

@@ -16,11 +16,14 @@ defaultKind: code
 kinds:
   code:
     agent: codex:gpt-6-astra:high
+    review: true          # every code task gets a review runner after it
   fix:
     worktree: true
-  review:                 # a new kind
+  audit:                  # a new kind
     agent: claude:claude-opus-5-5:high
     worktree: false
+review:
+  agent: codex::xhigh      # reviewer for plan run and spawn --review, instead of the default
 worktreeBranchPrefix: hrk/
 language: Vietnamese
 telegram:
@@ -52,12 +55,15 @@ wakeOn: all               # wake the main session for every news line
 | `kinds.<name>.agent` | see below | Agent spec for tasks of this kind. Required for a new kind. |
 | `kinds.<name>.worktree` | see below | `true` runs the task in a new git worktree when its cwd is inside a git repository. |
 | `kinds.<name>.mcp` | `false` | `true` keeps your MCP servers in the kind's Claude runners, as `spawn --mcp` does for one task. See [Runner tools and MCP](#runner-tools-and-mcp). |
+| `kinds.<name>.review` | `false` | `true` chains a read-only review runner after each task of the kind, as `spawn --review` does for one task; `spawn --review=false` skips it. Not allowed for `fix`, `research` and `report`. `plan run` does not use it; see `review` in `plan.md` ([commands.md](commands.md#plans)). |
+| `review.agent` | none | Agent spec of review runners. Without it the reviewer runs on another harness than the writer, at high effort: Codex for a Claude writer, Claude Opus otherwise, or the writer's harness on another model when that command is not installed. `review_agent` in a plan's `plan.md` wins over it. |
+| `review.skill` | `ak:code-review` | Skill a review runner invokes first. An empty value sends the brief without a skill, for a harness without AgentKit. |
 | `worktreeBranchPrefix` | `hrk/` | Prefix of runner branches, for example `hrk/t3-fix-login`. |
 | `language` | none | Language runners write report summaries and questions in, as free text such as `Vietnamese`, on one line of at most 40 characters. `spawn --language` overrides it per task. See [report-contract.md](report-contract.md). |
 | `telegram.envFile` | none | Dotenv file holding `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used instead of the plugin's files. `~/` is expanded. See [telegram.md](telegram.md). |
 | `telegram.stateDir` | the plugin's directory | Directory holding the Telegram channel plugin's `.env` and `access.json`. By default it is `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. |
 | `telegram.chatId` | the plugin's `allowFrom` | Chat to notify, when it should differ from the plugin's allow list. |
-| `telegram.notify` | every accepted value | Events that send a Telegram message. A task's first `done` is held back while a task that waits on it has not started; see [telegram.md](telegram.md#messages). Accepted values: `needs-human`, `failed`, `stalled`, `held`, `done`, `turn-ended-unreported`, `usage-limit`. |
+| `telegram.notify` | every accepted value | Events that send a Telegram message. A task's first `done` is held back while a task that waits on it has not started; see [telegram.md](telegram.md#messages). Accepted values: `needs-human`, `failed`, `stalled`, `held`, `done`, `turn-ended-unreported`, `usage-limit`, `api-error`. |
 | `quotaFallback` | none | Agents a runner switches to, in order, when its agent hits a usage limit. Each entry has an `agent` spec, such as `omp:openai-codex/gpt-6-luna:high`, and, for a Claude agent only, an optional `claudeConfig` folder, as a path or a name such as `claude2`; without it the runner keeps its own. An entry that is the current agent, already hit its limit on the task, or names a missing folder is skipped. With none left, a limit Claude, pi or omp reports fails the task, and a limit only seen on a Codex screen, or a pi or omp error that only may be one, becomes `usage-limit` news instead. See [commands.md](commands.md#usage-limits). |
 | `keepFor` | `4h` | How long a kept runner's tab stays open after its task finished, as a duration such as `4h` or `90m`. `gc`, and `wait` while it runs, then close it once its agent is idle. `0` keeps it until `keep --off` or `stop`, as before this key existed. See [commands.md](commands.md#closing-runners). |
 | `stallAfter` | `10m` | How long a `working` agent may show no visible progress before the kit nudges it, then interrupts it, then reports it `stalled` with the runner left open. `0` turns the check off; otherwise at least `2m`. See [commands.md](commands.md#what-wait-reports). |

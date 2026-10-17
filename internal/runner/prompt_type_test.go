@@ -142,6 +142,12 @@ func TestLockedPromptFailureTakesItsTokenBack(t *testing.T) {
 	}
 }
 
+// claudeScreen is a Claude screen whose input box holds box.
+func claudeScreen(box string) string {
+	edge := strings.Repeat("─", 60)
+	return "  68817 tokens\n" + edge + "\n❯ " + box + "\n" + edge + "\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+}
+
 func TestLockedPromptKeepsAnEarlierOneWhoseEnterWasLost(t *testing.T) {
 	r, fake := lockedRunner(t)
 	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
@@ -149,7 +155,8 @@ func TestLockedPromptKeepsAnEarlierOneWhoseEnterWasLost(t *testing.T) {
 	clears := func() int { return fake.count("agent", "send-keys") }
 
 	// The send's Enter is lost: its token is never taken, and outlives
-	// its expiry.
+	// its expiry, while its text still sits in the box.
+	fake.on("pane read", ok(claudeScreen("first")))
 	if _, err := r.Send(context.Background(), tk.ID, "first"); err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +179,84 @@ func TestLockedPromptKeepsAnEarlierOneWhoseEnterWasLost(t *testing.T) {
 	}
 	if clears() != before+1 {
 		t.Error("the input was not cleared once the gate let a prompt through")
+	}
+}
+
+// lastPrompt is the text of the last prompt herdr was asked to type.
+func lastPrompt(fake *fakeHerdr) string {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for i := len(fake.calls) - 1; i >= 0; i-- {
+		if c := fake.calls[i]; len(c) == 4 && c[0] == "agent" && c[1] == "prompt" {
+			return c[3]
+		}
+	}
+	return ""
+}
+
+func TestLockedPromptClearsAnythingButTheKitsOwnPendingText(t *testing.T) {
+	const pending = "run the migration check on the staging database and report"
+	for name, tc := range map[string]struct {
+		screen string
+		keeps  bool
+	}{
+		"exact pending text":      {claudeScreen(pending), true},
+		"wrapped pending text":    {claudeScreen(strings.Replace(pending, " on the", "\n  on the", 1)), true},
+		"pasted placeholder":      {claudeScreen("[Pasted text #1 +3 lines]"), false},
+		"same prefix, other tail": {claudeScreen(pending[:45] + " and then delete everything"), false},
+		"pending text and more":   {claudeScreen(pending + " and delete the branch"), false},
+		"typed text":              {claudeScreen("please delete the branch"), false},
+		"empty box":               {claudeScreen(""), false},
+		"unreadable box":          {"no input box here\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, fake := lockedRunner(t)
+			tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+			_, _ = r.Store.TakePromptToken(tk.ID)
+			// The kit's prompt lost its Enter and stays pending.
+			if _, err := r.Send(context.Background(), tk.ID, pending); err != nil {
+				t.Fatal(err)
+			}
+			before := fake.count("agent", "send-keys")
+			fake.on("pane read", ok(tc.screen))
+			if _, err := r.Send(context.Background(), tk.ID, "second"); err != nil {
+				t.Fatal(err)
+			}
+			clears := fake.count("agent", "send-keys") - before
+			want := "second"
+			if !tc.keeps {
+				// Cleared, and the kit's own text goes in again ahead of it.
+				want = pending + "\n\n" + want
+			}
+			if (clears == 0) != tc.keeps || lastPrompt(fake) != want {
+				t.Errorf("clears %d, prompt %q, want keep %v and prompt %q", clears, lastPrompt(fake), tc.keeps, want)
+			}
+			// One token answers for the one submit that carries both.
+			if n := tokens(t, r, tk.ID); n != 1 {
+				t.Errorf("tokens = %d, want 1", n)
+			}
+		})
+	}
+}
+
+func TestLockedPromptFailureAfterClearKeepsThePendingPrompt(t *testing.T) {
+	r, fake := lockedRunner(t)
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	_, _ = r.Store.TakePromptToken(tk.ID)
+	if _, err := r.Send(context.Background(), tk.ID, "first"); err != nil {
+		t.Fatal(err)
+	}
+	fake.on("pane read", ok(claudeScreen("")))
+	fake.on("agent prompt", herdrErr("pane_busy"))
+	if _, err := r.Send(context.Background(), tk.ID, "second"); err == nil {
+		t.Fatal("send succeeded")
+	}
+	fake.on("agent prompt", ok("{}"))
+	if _, err := r.Send(context.Background(), tk.ID, "third"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastPrompt(fake); got != "first\n\nthird" {
+		t.Errorf("prompt after the failed one = %q, want the first one typed again", got)
 	}
 }
 

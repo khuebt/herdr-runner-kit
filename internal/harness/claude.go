@@ -83,15 +83,18 @@ func (claude) PrepareTrust(in TrustInput) (TrustResult, error) {
 	return TrustResult{Event: "claude-trusted", Detail: "set " + strings.Join(set, ", ") + " for " + in.RunnerPath}, nil
 }
 
-// ReadTurnEnd reads a Stop or StopFailure hook input. A StopFailure is
-// either a confirmed usage limit or an API failure the kit cannot act on;
-// Claude ignores a StopFailure hook's output either way.
+// ReadTurnEnd reads a Stop or StopFailure hook input. A StopFailure is a
+// confirmed usage limit, an API error that may pass, or a failure the kit
+// cannot act on; Claude ignores a StopFailure hook's output in every case.
 func (c claude) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 	if message, stopFailure := ClaudeUsageLimit(in.Payload); stopFailure {
-		if message == "" {
-			return TurnSignal{Ignore: true}, nil
+		if message != "" {
+			return TurnSignal{LimitConfirmed: true}, nil
 		}
-		return TurnSignal{LimitConfirmed: true}, nil
+		if apiErr, ok := ClaudeTransientError(in.Payload); ok {
+			return TurnSignal{APIError: apiErr}, nil
+		}
+		return TurnSignal{Ignore: true}, nil
 	}
 	return TurnSignal{Background: c.background(in)}, nil
 }
@@ -268,10 +271,9 @@ var claudePasted = regexp.MustCompile(`\[Pasted text #\d+`)
 // with a typed one.
 const claudePromptHead = 40
 
-// InputState reads the box between the last two input box edges. A pasted
-// prompt shows as "[Pasted text #N …]" and a short one as its own text.
-// Anything else in the box, or no box on screen, is unknown.
-func (claude) InputState(screen, prompt string) InputState {
+// claudeInputBox returns the text in the box between the last two input box
+// edges, with whitespace normalised, and false when no box is on screen.
+func claudeInputBox(screen string) (string, bool) {
 	lines := strings.Split(screen, "\n")
 	end := -1
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -283,18 +285,35 @@ func (claude) InputState(screen, prompt string) InputState {
 			continue
 		}
 		box := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.Join(lines[i+1:end], "\n")), "❯"))
-		box = strings.Join(strings.Fields(box), " ")
-		head := []rune(strings.Join(strings.Fields(prompt), " "))
-		head = head[:min(claudePromptHead, len(head))]
-		switch {
-		case box == "":
-			return InputEmpty
-		case claudePasted.MatchString(box), len(head) > 0 && strings.HasPrefix(box, string(head)):
-			return InputHolds
-		}
+		return strings.Join(strings.Fields(box), " "), true
+	}
+	return "", false
+}
+
+// InputState reads the box between the last two input box edges. A pasted
+// prompt shows as "[Pasted text #N …]" and a short one as its own text.
+// Anything else in the box, or no box on screen, is unknown.
+func (claude) InputState(screen, prompt string) InputState {
+	box, ok := claudeInputBox(screen)
+	if !ok {
 		return InputUnknown
 	}
+	head := []rune(strings.Join(strings.Fields(prompt), " "))
+	head = head[:min(claudePromptHead, len(head))]
+	switch {
+	case box == "":
+		return InputEmpty
+	case claudePasted.MatchString(box), len(head) > 0 && strings.HasPrefix(box, string(head)):
+		return InputHolds
+	}
 	return InputUnknown
+}
+
+// InputIs reports whether the box shows text and nothing else. A pasted
+// placeholder never does: it hides what was pasted.
+func (claude) InputIs(screen, text string) bool {
+	box, ok := claudeInputBox(screen)
+	return ok && box != "" && box == strings.Join(strings.Fields(text), " ")
 }
 
 // claudeRetry is the status line of a request Claude retries, as Claude
@@ -378,6 +397,34 @@ func ClaudeUsageLimit(payload []byte) (message string, stopFailure bool) {
 		return strings.TrimSpace(in.Message), true
 	}
 	return "", true
+}
+
+// ClaudeTransientError reads a Claude StopFailure input and returns the
+// message of an API error that may pass: a server error (which includes a
+// response lost mid-stream), an overloaded API, or a rate limit that is not
+// a usage limit. ok is false for any other input.
+func ClaudeTransientError(payload []byte) (message string, ok bool) {
+	var in struct {
+		Event   string `json:"hook_event_name"`
+		Error   string `json:"error"`
+		Message string `json:"last_assistant_message"`
+	}
+	if json.Unmarshal(payload, &in) != nil || in.Event != "StopFailure" {
+		return "", false
+	}
+	switch in.Error {
+	case "server_error", "overloaded":
+	case "rate_limit":
+		if limit, _ := ClaudeUsageLimit(payload); limit != "" {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	if message = strings.TrimSpace(in.Message); message == "" {
+		message = "API error: " + in.Error
+	}
+	return message, true
 }
 
 // ClaudeBackgroundWork reads the background_tasks list of a Claude Stop

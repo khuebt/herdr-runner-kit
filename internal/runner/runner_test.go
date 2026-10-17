@@ -126,7 +126,9 @@ func newTestRunner(t *testing.T) (*Runner, *fakeHerdr, env) {
 		StartLauncher: func(string) (int, error) { return 4242, nil },
 		StartAfter:    func(string) error { return nil },
 		StartUsage:    func(string) error { return nil },
+		StartAPIRetry: func(string) error { return nil },
 		Sleep:         func(time.Duration) {},
+		LookPath:      func(string) (string, error) { return "", exec.ErrNotFound },
 	}
 	return r, fake, e
 }

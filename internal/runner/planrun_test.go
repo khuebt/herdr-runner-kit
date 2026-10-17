@@ -304,7 +304,7 @@ func TestPlanReportShowsUnitsAndTheirTotal(t *testing.T) {
 		1: {ID: "t1", Agent: "claude", Summary: "did one", Usage: &task.Usage{Calls: 40, MaxContext: 120_000, Units: 1_250_000}},
 		2: {ID: "t2", Agent: "codex", Summary: "did two"},
 	}
-	path, _, err := writePlanReport(plan, latest, time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC))
+	path, _, err := writePlanReport(plan, latest, nil, time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,4 +324,48 @@ func TestPlanReportShowsUnitsAndTheirTotal(t *testing.T) {
 			t.Errorf("report lacks %q:\n%s", want, report)
 		}
 	}
+}
+
+func TestPlanHelpersAreNoPhases(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	phase, planDir := planTask(t, r, repo, srcPhase)
+	mk := func(tk *task.Task) *task.Task {
+		tk.Kind, tk.Agent, tk.Prompt, tk.Cwd, tk.RepoRoot, tk.Owner, tk.Plan = "code", "claude", "x", repo, repo, repo, planDir
+		tk.PhaseStart, tk.Status, tk.FinishedAt = headOf(t, repo), task.Done, time.Now()
+		if err := r.Store.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+		return tk
+	}
+	review := mk(&task.Task{Review: &task.Review{Final: true}})
+	fixup := mk(&task.Task{FixupOf: review.ID})
+	all := PlanTasks(mustList(t, r), planDir)
+
+	latest := LatestPhaseTasks(all)
+	if len(latest) != 1 || latest[1].ID != phase.ID {
+		t.Errorf("latest phase tasks = %v", latest)
+	}
+	for _, h := range []*task.Task{review, fixup} {
+		r.acceptPhase(context.Background(), h)
+		if got, _ := r.Store.Get(h.ID); got.PhaseCheck != nil {
+			t.Errorf("%s was checked as a phase: %+v", h.ID, got.PhaseCheck)
+		}
+	}
+	next := mk(&task.Task{Phase: 2, After: []string{phase.ID, review.ID}, Status: task.Queued})
+	if reason := r.phaseHoldReason(context.Background(), next); reason != "" {
+		t.Errorf("hold reason = %q", reason)
+	}
+	if sib := phaseSiblings(next, mustList(t, r)); slices.ContainsFunc(sib, planHelper) {
+		t.Errorf("siblings hold a helper: %v", sib)
+	}
+}
+
+func mustList(t *testing.T, r *Runner) []*task.Task {
+	t.Helper()
+	all, err := r.Store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all
 }

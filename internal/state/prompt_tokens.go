@@ -55,6 +55,14 @@ func (s *Store) ReturnPromptToken(id string) error {
 	return err
 }
 
+// DropPromptTokens removes every token of task id, valid or expired.
+func (s *Store) DropPromptTokens(id string) error {
+	_, err := s.promptTokens(id, func(time.Time, []time.Time, []time.Time) ([]time.Time, []time.Time, bool) {
+		return nil, nil, false
+	})
+	return err
+}
+
 // PromptPending reports whether task id holds a token no submit used,
 // expired or not: the kit's last prompt never reached the gate, so its
 // text may still sit in the agent's input box.
@@ -62,6 +70,21 @@ func (s *Store) PromptPending(id string) (bool, error) {
 	return s.promptTokens(id, func(_ time.Time, live, stale []time.Time) ([]time.Time, []time.Time, bool) {
 		return live, stale, len(live)+len(stale) > 0
 	})
+}
+
+// SetPendingPrompt keeps text, the kit prompt that may sit in task id's
+// input box, for the next prompt to compare the box with.
+func (s *Store) SetPendingPrompt(id, text string) error {
+	return fsutil.WriteFileAtomic(filepath.Join(s.TaskDir(id), "prompt-pending"), []byte(text), filePerm)
+}
+
+// PendingPrompt returns the text SetPendingPrompt kept, empty when none.
+func (s *Store) PendingPrompt(id string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(s.TaskDir(id), "prompt-pending"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	return string(data), err
 }
 
 // promptTokens reads task id's valid and expired tokens, each oldest

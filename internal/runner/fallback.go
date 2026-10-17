@@ -67,7 +67,8 @@ func agentKey(agent, claudeDir string) string {
 
 // nextFallback returns the first configured fallback that is neither t's
 // current agent nor one that already hit its limit on t. An entry whose
-// Claude config folder no longer exists is skipped.
+// Claude config folder no longer exists is skipped, and so is the writer's
+// agent for a review task.
 func (r *Runner) nextFallback(t *task.Task) (agent, claudeDir string, ok bool) {
 	current := agentKey(t.Agent, t.ClaudeConfigDir)
 	for _, f := range r.Config.QuotaFallback {
@@ -82,7 +83,7 @@ func (r *Runner) nextFallback(t *task.Task) (agent, claudeDir string, ok bool) {
 			}
 		}
 		key := agentKey(spec.String(), dir)
-		if key == current || slices.Contains(t.FallbackFrom, key) {
+		if key == current || slices.Contains(t.FallbackFrom, key) || (t.Review != nil && key == t.Review.Writer) {
 			continue
 		}
 		return spec.String(), dir, true
@@ -118,7 +119,7 @@ func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting, co
 		t.Agent, t.ClaudeConfigDir = agent, dir
 		t.Relaunched = task.RelaunchUsageLimit
 		// A new agent starts a new Codex thread and a fresh turn count.
-		t.CodexThread, t.Unreported, t.Stalled, t.Question, t.Error = "", 0, false, "", ""
+		t.CodexThread, t.Unreported, t.APIErrors, t.Stalled, t.Question, t.Error = "", 0, 0, false, "", ""
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
 		if toStarting {
 			t.Status, t.LauncherPID = task.Starting, 0

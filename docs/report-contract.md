@@ -96,11 +96,12 @@ A quota switch keeps the attempt but starts a fresh session, so a handoff reques
 
 ## A runner that forgets to report
 
-Each runner's turn-end hook (Claude's Stop hook, Codex's `notify`) checks whether the task reported. Claude's `StopFailure` hook, for a turn that ended in an API error, only looks for a usage limit (see [commands.md](commands.md#usage-limits)):
+Each runner's turn-end hook (Claude's Stop hook, Codex's `notify`) checks whether the task reported. Claude's `StopFailure` hook, for a turn that ended in an API error, looks for a usage limit (see [commands.md](commands.md#usage-limits)) or an error that may pass (see [commands.md](commands.md#api-errors)):
 
 - The first turn that ends without a report is nudged: Claude's Stop hook keeps it working with a reminder, and Codex gets the reminder as a new prompt. The reminder reads: "You ended your turn without reporting to the main session. If background shells or agents are still running, end your turn now without reporting: you are woken when they finish. Never start sleep or heartbeat commands to stay awake. Otherwise report: …", followed by the three `report` commands.
 - The second becomes `turn-ended-unreported` news for the main session.
 - Later turns are ignored until the main session sends or answers again.
+- A Claude turn that ends on a transient API error, such as a lost connection, is not counted: the kit types its own continue prompt once instead of a nudge, and a second failure in a row is `api-error` news.
 
 A Claude turn that ends while background shells or agents still run is not counted, because Claude wakes on its own when they finish. The kit reads them from the Stop hook's `background_tasks` list (Claude Code 2.1.300 and later): any entry still `running` or `pending` means the turn is not over. Claude's mode line is read only when the hook input has no such list, because it counts shells but not subagents, and draws its count a second or more after they start. Codex's internal title-generation turn is ignored. If your Codex `config.toml` sets its own `notify`, the kit still calls it with the same argument.
 

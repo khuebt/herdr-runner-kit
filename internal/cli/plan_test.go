@@ -98,7 +98,9 @@ func planRunner(t *testing.T, phases map[string]string) (*runner.Runner, *planHe
 	if err := os.MkdirAll(planDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	phases["plan.md"] = "---\ntitle: \"Demo plan\"\nstatus: pending\n---\n\n# Demo plan\n"
+	if _, ok := phases["plan.md"]; !ok {
+		phases["plan.md"] = "---\ntitle: \"Demo plan\"\nstatus: pending\n---\n\n# Demo plan\n"
+	}
 	for name, body := range phases {
 		if err := os.WriteFile(filepath.Join(planDir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -477,5 +479,132 @@ func TestPlanRunHumanGateAndRefusals(t *testing.T) {
 	}
 	if _, err := runPlanCmd(t, r, planDir, planRunOptions{}); err == nil || !strings.Contains(err.Error(), "release or stop t2 first") {
 		t.Errorf("rerun while held: %v", err)
+	}
+}
+
+const reviewedPlan = "---\ntitle: \"Demo plan\"\nstatus: pending\nreview: required\nreview_after: 1\nreview_agent: claude:claude-opus-5-5:high\n---\n\n# Demo plan\n"
+
+func reviewedPhases(planMD string) map[string]string {
+	return map[string]string{
+		"plan.md":       planMD,
+		"phase-01-a.md": phaseFile(1, "[]", "a/"),
+		"phase-02-b.md": phaseFile(2, "[1]", "b/"),
+		"phase-03-c.md": phaseFile(3, "[2]", "c/"),
+	}
+}
+
+func TestPlanRunDryRunShowsReviews(t *testing.T) {
+	r, _, _, planDir := planRunner(t, reviewedPhases(reviewedPlan))
+	out, err := runPlanCmd(t, r, planDir, planRunOptions{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"review: required · reviewer claude:claude-opus-5-5:high",
+		"review · after wave 1 (phase 1)",
+		"final review · after wave 3",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry run lacks %q:\n%s", want, out)
+		}
+	}
+	if tasks, _ := r.Store.List(); len(tasks) != 0 {
+		t.Fatalf("dry run spawned %d tasks", len(tasks))
+	}
+}
+
+func TestPlanRunChainsReviewsAndFixup(t *testing.T) {
+	r, _, _, planDir := planRunner(t, reviewedPhases(reviewedPlan))
+	if _, err := runPlanCmd(t, r, planDir, planRunOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := r.Store.List()
+	if err != nil || len(tasks) != 6 {
+		t.Fatalf("tasks = %d, %v", len(tasks), err)
+	}
+	p1, rev, p2, p3, final, fix := getTask(t, r, "t1"), getTask(t, r, "t2"), getTask(t, r, "t3"), getTask(t, r, "t4"), getTask(t, r, "t5"), getTask(t, r, "t6")
+	if rev.Review == nil || rev.Review.Final || !slices.Equal(rev.After, []string{p1.ID}) || rev.CheckoutOf != p1.ID ||
+		rev.Plan != planDir || rev.Agent != "claude:claude-opus-5-5:high" {
+		t.Errorf("review = %+v %+v", rev, rev.Review)
+	}
+	if !slices.Contains(p2.After, p1.ID) || !slices.Contains(p2.After, rev.ID) || !strings.Contains(p2.Prompt, runner.ReviewFixNote(rev.ID)) {
+		t.Errorf("phase 2 = after %v, prompt %q", p2.After, p2.Prompt)
+	}
+	if strings.Contains(p3.Prompt, runner.ReviewFixNote(rev.ID)) || !slices.Contains(p3.After, p2.ID) {
+		t.Errorf("phase 3 = after %v, prompt %q", p3.After, p3.Prompt)
+	}
+	if final.Review == nil || !final.Review.Final || !slices.Equal(final.After, []string{p3.ID}) {
+		t.Errorf("final review = %+v %+v", final, final.Review)
+	}
+	if fix.FixupOf != final.ID || !slices.Equal(fix.After, []string{final.ID}) || fix.CheckoutOf != p1.ID || fix.Kind != "flow" || fix.Skill != "" {
+		t.Errorf("fixup = %+v", fix)
+	}
+	for _, q := range []*task.Task{rev, p2, p3, final, fix} {
+		if q.Status != task.Queued {
+			t.Errorf("%s is %s, want queued", q.ID, q.Status)
+		}
+	}
+}
+
+func TestPlanRunReviewFlag(t *testing.T) {
+	r, _, _, planDir := planRunner(t, reviewedPhases(reviewedPlan))
+	out, err := runPlanCmd(t, r, planDir, planRunOptions{Review: planrun.ReviewSkip})
+	if err != nil || strings.Contains(out, "review") {
+		t.Fatalf("--review skip: %v\n%s", err, out)
+	}
+	if tasks, _ := r.Store.List(); len(tasks) != 3 {
+		t.Errorf("--review skip spawned %d tasks, want the 3 phases", len(tasks))
+	}
+
+	plain := reviewedPhases("---\ntitle: \"Demo plan\"\nstatus: pending\n---\n\n# Demo plan\n")
+	r, _, _, planDir = planRunner(t, plain)
+	r.Config.Review.Agent = "claude:claude-opus-5-5:high"
+	if _, err := runPlanCmd(t, r, planDir, planRunOptions{Review: planrun.ReviewRequired}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := r.Store.List()
+	var reviews, fixups int
+	for _, q := range tasks {
+		switch {
+		case q.Review != nil && q.Review.Final:
+			reviews++
+		case q.Review != nil:
+			t.Errorf("%s is a first review without review_after", q.ID)
+		case q.FixupOf != "":
+			fixups++
+		}
+	}
+	if len(tasks) != 5 || reviews != 1 || fixups != 1 {
+		t.Errorf("--review required spawned %d tasks, %d final reviews, %d fixups", len(tasks), reviews, fixups)
+	}
+
+	t.Setenv("HRK_TASK", "")
+	cmd := newPlanRunCommand()
+	cmd.SetArgs([]string{planDir, "--review", "maybe"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), `invalid --review "maybe"`) {
+		t.Errorf("--review maybe: %v", err)
+	}
+}
+
+func TestPlanRunNoFirstReviewInTheLastWave(t *testing.T) {
+	r, _, _, planDir := planRunner(t, reviewedPhases(strings.Replace(reviewedPlan, "review_after: 1", "review_after: 3", 1)))
+	out, err := runPlanCmd(t, r, planDir, planRunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "no review after phase 3") {
+		t.Errorf("output lacks the note:\n%s", out)
+	}
+	tasks, _ := r.Store.List()
+	if len(tasks) != 5 {
+		t.Fatalf("spawned %d tasks, want 3 phases, a final review and a fixup", len(tasks))
+	}
+	if q := tasks[3]; q.Review == nil || !q.Review.Final {
+		t.Errorf("task 4 = %+v", q)
+	}
+	if q := tasks[4]; q.FixupOf == "" {
+		t.Errorf("task 5 = %+v", q)
 	}
 }

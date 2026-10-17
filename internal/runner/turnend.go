@@ -17,6 +17,9 @@ import (
 // the runner again. block holds the nudge text, which the hook returns when
 // the adapter nudges in the hook; otherwise it is typed into the pane.
 //
+// A turn that ends on an API error that may pass, such as a lost connection,
+// is continued once; a second one in a row is api-error news.
+//
 // A usage limit switches the runner to its next fallback agent. A limit the
 // agent confirms fails the task when no fallback is left. A limit only seen
 // on screen switches when a fallback is left and otherwise becomes
@@ -61,11 +64,22 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 		}
 		return "", r.switchAgent(t, true)
 	}
+	if sig.APIError != "" {
+		return "", r.apiError(t, sig.APIError)
+	}
 	if sig.Ignore {
 		return "", nil
 	}
 	if ignore, err := r.otherThread(t, sig.Thread); ignore || err != nil {
 		return "", err
+	}
+	if t.APIErrors > 0 {
+		if _, err := r.Store.Update(id, func(t *task.Task) error {
+			t.APIErrors = 0
+			return nil
+		}); err != nil {
+			return "", err
+		}
 	}
 	if t.PendingDone != nil || !t.QueuedSend.IsZero() {
 		if settled, err := r.settleTurn(t.ID); settled || err != nil {

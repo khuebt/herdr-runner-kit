@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,12 @@ import (
 const heavyHelperEnv = "HRK_CLI_HEAVY_HELPER"
 
 func TestMain(m *testing.M) {
+	// The runner starts detached children as `<bin> __<command>`. In a test
+	// run <bin> is this test binary, which would run the whole suite again
+	// and spawn more children, so such a child must exit at once.
+	if slices.ContainsFunc(os.Args[1:], func(a string) bool { return strings.HasPrefix(a, "__") }) {
+		os.Exit(0)
+	}
 	if spec := os.Getenv(heavyHelperEnv); spec != "" {
 		dir, pidFile, _ := strings.Cut(spec, "|")
 		store, err := state.Open(dir)
@@ -39,6 +46,33 @@ func TestMain(m *testing.M) {
 		os.Exit(code)
 	}
 	os.Exit(m.Run())
+}
+
+// selfRunProbeEnv names the file TestSelfRunProbe writes when it runs.
+const selfRunProbeEnv = "HRK_CLI_SELF_RUN_PROBE"
+
+// TestSelfRunProbe only runs for TestDetachedChildDoesNotRunTheSuite.
+func TestSelfRunProbe(t *testing.T) {
+	if file := os.Getenv(selfRunProbeEnv); file != "" {
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestDetachedChildDoesNotRunTheSuite runs the test binary the way the
+// runner starts a detached child, `<bin> __notify <event>`, and fails when it
+// runs a test: the child would run the suite again and fork without end.
+func TestDetachedChildDoesNotRunTheSuite(t *testing.T) {
+	probe := filepath.Join(t.TempDir(), "ran")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSelfRunProbe$", "__notify", `{"task":"t1"}`)
+	cmd.Env = append(os.Environ(), selfRunProbeEnv+"="+probe)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("detached child: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(probe); err == nil {
+		t.Fatal("a test binary started as `<bin> __<command>` ran tests; TestMain must exit first")
+	}
 }
 
 // heavyState opens a fresh state folder and config for the CLI, with
@@ -230,8 +264,8 @@ func TestHeavySlotStaysHeldWhileTheCommandOutlivesHrk(t *testing.T) {
 	}
 	_ = helper.Wait()
 
-	if st, _ := store.HeavyStatus(1); len(st.Holders) != 1 {
-		t.Fatalf("holders after hrk heavy was killed = %+v, want the running command's slot", st.Holders)
+	if st, _ := store.HeavyStatus(1); len(st.Holders) != 1 || st.Holders[0].CommandPID != pid || st.Holders[0].Orphaned {
+		t.Fatalf("holders after hrk heavy was killed = %+v, want the running command's slot, with its pid %d", st.Holders, pid)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -245,4 +279,35 @@ func TestHeavySlotStaysHeldWhileTheCommandOutlivesHrk(t *testing.T) {
 		st, _ := store.HeavyStatus(1)
 		return len(st.Holders) == 0
 	})
+}
+
+func TestHeavyStatusSaysWhenALeftoverProcessHoldsASlot(t *testing.T) {
+	line := heavyLine(state.HeavyRecord{Task: "t1", Command: "gradle test", PID: 11, CommandPID: 12, Orphaned: true})
+	if !strings.Contains(line, "orphaned: pid 11 and command pid 12 are gone, a leftover process still holds the lock") {
+		t.Errorf("line = %q", line)
+	}
+	if line := heavyLine(state.HeavyRecord{Task: "t1", PID: 11, CommandPID: 12}); strings.Contains(line, "orphaned") {
+		t.Errorf("line = %q", line)
+	}
+	st := state.HeavyStatus{Holders: []state.HeavyRecord{{Task: "t1", Command: "gradle test", Orphaned: true}}}
+	if got := waitingLine(st); !strings.Contains(got, "t1 gradle test") || !strings.Contains(got, "(orphaned)") {
+		t.Errorf("waiting line = %q", got)
+	}
+}
+
+func TestHeavyRecordsTheCommandPidBeforeItRuns(t *testing.T) {
+	store := heavyState(t, "1")
+	out := filepath.Join(t.TempDir(), "out")
+	// The command copies the slot's record as its first act.
+	script := `echo $$ > "$0.pid"; cat "$1" > "$0.record"`
+	code, err := runHeavy(context.Background(), store, 1, []string{"sh", "-c", script, out, filepath.Join(store.Dir(), "heavy", "slot-1.json")}, nil, &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil || code != 0 {
+		t.Fatalf("runHeavy = %d, %v", code, err)
+	}
+	pid, _ := os.ReadFile(out + ".pid")
+	var rec state.HeavyRecord
+	data, _ := os.ReadFile(out + ".record")
+	if err := json.Unmarshal(data, &rec); err != nil || strconv.Itoa(rec.CommandPID) != strings.TrimSpace(string(pid)) || rec.CommandPID == 0 {
+		t.Errorf("the record the command saw = %s (%v), command pid %s", data, err, pid)
+	}
 }

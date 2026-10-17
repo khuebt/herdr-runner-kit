@@ -15,10 +15,18 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
 // PlanFile is the name of a plan's index file inside its folder.
 const PlanFile = "plan.md"
+
+// Values of plan.md's review key.
+const (
+	ReviewRequired = "required"
+	ReviewSkip     = "skip"
+)
 
 // Plan is an AgentKit plan folder.
 type Plan struct {
@@ -28,6 +36,13 @@ type Plan struct {
 	Dir    string
 	File   string
 	Phases []Phase
+	// Review is ReviewRequired, ReviewSkip or empty (no review) from
+	// plan.md's review key. ReviewAfter is the phase after whose wave the
+	// first review runs, 0 for none; ReviewAgent overrides the reviewer's
+	// agent spec.
+	Review      string
+	ReviewAfter int
+	ReviewAgent string
 }
 
 // Phase is one phase file of a plan.
@@ -61,6 +76,9 @@ type frontmatter struct {
 	Title        string `yaml:"title"`
 	Status       string `yaml:"status"`
 	Dependencies *[]any `yaml:"dependencies"`
+	Review       string `yaml:"review"`
+	ReviewAfter  any    `yaml:"review_after"`
+	ReviewAgent  string `yaml:"review_agent"`
 }
 
 var phaseFileRe = regexp.MustCompile(`^phase-(\d+)`)
@@ -125,7 +143,41 @@ func Read(p string) (*Plan, error) {
 	if err := checkDeps(plan.Phases); err != nil {
 		return nil, err
 	}
+	if err := readReview(plan, fm); err != nil {
+		return nil, fmt.Errorf("%s: %w", abs, err)
+	}
 	return plan, nil
+}
+
+// readReview validates plan.md's review keys and stores them on plan.
+func readReview(plan *Plan, fm frontmatter) error {
+	switch fm.Review {
+	case "", ReviewRequired, ReviewSkip:
+		plan.Review = fm.Review
+	default:
+		return fmt.Errorf("review must be %s or %s, got %q", ReviewRequired, ReviewSkip, fm.Review)
+	}
+	if fm.ReviewAfter != nil {
+		n, ok := phaseNumber(fm.ReviewAfter)
+		if !ok {
+			return fmt.Errorf("review_after %v is not a phase number", fm.ReviewAfter)
+		}
+		if _, ok := plan.Phase(n); !ok {
+			return fmt.Errorf("review_after names phase %d, which the plan does not have", n)
+		}
+		if plan.Review != ReviewRequired {
+			return fmt.Errorf("review_after needs review: %s", ReviewRequired)
+		}
+		plan.ReviewAfter = n
+	}
+	if fm.ReviewAgent != "" {
+		spec, err := task.ParseAgentSpec(fm.ReviewAgent)
+		if err != nil {
+			return fmt.Errorf("review_agent: %w", err)
+		}
+		plan.ReviewAgent = spec.String()
+	}
+	return nil
 }
 
 func readPhase(file string) (Phase, bool, error) {
