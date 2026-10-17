@@ -13,12 +13,13 @@ import (
 // first with 5 output tokens, the second with 50) writing 1000 tokens to the
 // 1-hour cache; m2 reads 1000 and writes 200 to the 5-minute cache; the
 // synthetic row, the request blob and the broken line count nothing. The
-// subagent makes one call. Units: m1 10 + 1000×2 + 50×5 = 2260, m2 5 +
-// 1000×0.1 + 200×1.25 + 20×5 = 455, the subagent 3 + 500×0.1 + 100×1.25 +
-// 10×5 = 228. The token-usage measurement scripts give the same 2715 and 228.
+// subagent and the workflow agent under subagents/workflows/wf_x make one
+// call each. Units: m1 10 + 1000×2 + 50×5 = 2260, m2 5 + 1000×0.1 +
+// 200×1.25 + 20×5 = 455, the subagent 3 + 500×0.1 + 100×1.25 + 10×5 = 228,
+// the workflow agent 2 + 4×5 = 22.
 var fixtureUsage = task.Usage{
-	Calls: 3, Input: 18, CacheRead: 1500, CacheWrite: 1300, CacheWrite1h: 1000, Output: 80,
-	MaxContext: 1205, Subagents: 1, Units: 2943, SubagentUnits: 228,
+	Calls: 4, Input: 20, CacheRead: 1500, CacheWrite: 1300, CacheWrite1h: 1000, Output: 84,
+	MaxContext: 1205, Subagents: 2, Units: 2965, SubagentUnits: 250,
 }
 
 func fixtureTranscript() string { return filepath.Join("testdata", "transcript-claude", "s1.jsonl") }
@@ -43,7 +44,7 @@ func TestClaudeUsageWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Only m2 is after from; the subagent's call is before it.
+	// Only m2 is after from; the subagents' calls are before it.
 	if u.Calls != 1 || u.Units != 455 || u.Subagents != 0 {
 		t.Errorf("usage from %s = %+v, want m2 only", from, *u)
 	}

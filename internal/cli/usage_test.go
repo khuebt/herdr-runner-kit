@@ -11,8 +11,8 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
-// The synthetic Claude transcript in the harness testdata: 3 calls, 2943
-// units with its subagent's 228, its calls on 2026-10-17 between 01:00 and
+// The synthetic Claude transcript in the harness testdata: 4 calls, 2965
+// units with its subagent and workflow agent's 250, its calls on 2026-10-17 between 01:00 and
 // 01:10 UTC.
 var usageFixture = filepath.Join("..", "harness", "testdata", "transcript-claude", "s1.jsonl")
 
@@ -73,11 +73,11 @@ func TestUsagePerTaskWithMain(t *testing.T) {
 	}
 	want := map[string]string{
 		"TASK":          "KIND AGENT STATUS CALLS MAX-CTX SUBAGENTS UNITS",
-		"t1":            "code claude done 3 1k 1 3k",
+		"t1":            "code claude done 4 1k 2 3k",
 		"t2":            "code codex done - - - -",
 		"t3":            "fix claude done 10 50k 0 100k",
-		"main main-ses": "main - - 3 1k 1 3k",
-		"total":         "16 50k 2 106k",
+		"main main-ses": "main - - 4 1k 2 3k",
+		"total":         "18 50k 4 106k",
 	}
 	got := usageLines(out)
 	if len(got) != len(want) {
@@ -106,7 +106,7 @@ func TestUsageWindowOwnerAndJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	if len(got.Rows) != 1 || got.Rows[0].Task != "t4" || got.Total.Units != 2943 || got.Total.SubagentUnits != 228 {
+	if len(got.Rows) != 1 || got.Rows[0].Task != "t4" || got.Total.Units != 2965 || got.Total.SubagentUnits != 250 {
 		t.Errorf("--owner /repo --until 2026-10-16 = %+v", got)
 	}
 
@@ -125,10 +125,10 @@ func TestUsageByOwner(t *testing.T) {
 	}
 	want := map[string]string{
 		"OWNER":  "TASKS CALLS MAX-CTX SUBAGENTS UNITS",
-		"/repo":  "2 3 1k 1 3k",
+		"/repo":  "2 4 1k 2 3k",
 		"/other": "1 10 50k 0 100k",
-		"main":   "1 3 1k 1 3k",
-		"total":  "16 50k 2 106k",
+		"main":   "1 4 1k 2 3k",
+		"total":  "18 50k 4 106k",
 	}
 	got := usageLines(out)
 	for k, w := range want {

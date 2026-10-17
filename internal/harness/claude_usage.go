@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,7 +23,7 @@ func (claude) Usage(transcripts []string, from, to time.Time) (*task.Usage, erro
 
 // ClaudeUsage sums the model calls in Claude Code session transcripts and in
 // the subagent transcripts Claude keeps beside each one, in
-// <session>/subagents/agent-*.jsonl. A transcript holds one JSON row per
+// <session>/subagents, at any depth, as agent-*.jsonl. A transcript holds one JSON row per
 // line; a call is an assistant row with usage, and Claude writes one row per
 // content block of a call, all with the call's message id, so rows of one id
 // count once with the largest of each field. Rows of the synthetic model,
@@ -41,13 +42,17 @@ func ClaudeUsage(transcripts []string, from, to time.Time) (*task.Usage, error) 
 			continue
 		}
 		read++
-		subs, _ := filepath.Glob(filepath.Join(strings.TrimSuffix(path, ".jsonl"), "subagents", "agent-*.jsonl"))
-		for _, sub := range subs {
+		// Workflow agents sit deeper, in subagents/workflows/wf_*/.
+		_ = filepath.WalkDir(filepath.Join(strings.TrimSuffix(path, ".jsonl"), "subagents"), func(sub string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasPrefix(d.Name(), "agent-") || !strings.HasSuffix(d.Name(), ".jsonl") {
+				return nil
+			}
 			calls := u.Calls
 			if claudeFileUsage(&u, sub, from, to, true) == nil && u.Calls > calls {
 				u.Subagents++
 			}
-		}
+			return nil
+		})
 	}
 	if read == 0 && firstErr != nil {
 		return nil, firstErr

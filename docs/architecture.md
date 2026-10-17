@@ -48,7 +48,7 @@ The main session (`hrk main`) always runs Claude Code and names the `claude` com
 | Folder trust before launch | `PrepareTrust`, which returns the event to record |
 | Startup dialogs, screen reading, retries, usage limit on screen, context footer | `Dialogs`, `ProgressText`, `ShowsRetry`, `ShowsUsageLimit`, `ContextLeft`, `SelfResolvingPrompts` |
 | Reading a turn end | `ReadTurnEnd` returns a `TurnSignal`: ignore, thread, confirmed limit, limit on screen, background work, context left, and the session's transcript file |
-| Token usage of a task's sessions | `Usage` reads the transcripts the turn ends named, and `TurnWritten` says whether one holds its latest turn to the end; Claude reads its JSONL transcripts and their `subagents/agent-*.jsonl`, the others return nil until their session files are confirmed |
+| Token usage of a task's sessions | `Usage` reads the transcripts the turn ends named, and `TurnWritten` says whether one holds its latest turn to the end; Claude reads its JSONL transcripts and every `agent-*.jsonl` under their `subagents/`, Workflow agents included, the others return nil until their session files are confirmed |
 | How the hook gets its input and answers | `HookPayload`, `HookReply`, `NudgeInHook`, `SessionContext` |
 | Background work before a sync | `WorksInBackground` |
 | Whether a done waits for the turn end, and the agent's working status line | `DoneAtTurnEnd`, `ShowsWorking` |
