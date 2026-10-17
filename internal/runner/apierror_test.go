@@ -146,6 +146,31 @@ func TestContinueAfterAPIErrorSkips(t *testing.T) {
 	}
 }
 
+// A send that lands after the retry checked the runner, but before it
+// typed, means no continue is typed.
+func TestContinueAfterAPIErrorYieldsToASend(t *testing.T) {
+	r, fake, tk, _ := apiRetryRunner(t)
+	turnEnd(t, r, tk.ID, apiFailure)
+	r.Sleep = func(time.Duration) {}
+	fake.on("agent prompt", ok("{}"))
+	sent := false
+	fake.on("agent get", func([]string) (string, error) {
+		if !sent {
+			sent = true
+			if _, err := r.Send(context.Background(), tk.ID, "go on"); err != nil {
+				t.Error(err)
+			}
+		}
+		return `{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`, nil
+	})
+	if err := r.ContinueAfterAPIError(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if fake.count("agent", "prompt") != 1 || lastCall(fake, "agent", "prompt")[3] != "go on" || countEvents(t, r, tk.ID, "api-continued") != 0 {
+		t.Errorf("prompts %d, last %v, events %v", fake.count("agent", "prompt"), lastCall(fake, "agent", "prompt"), events(t, r, tk.ID))
+	}
+}
+
 // A confirmed usage limit stays on the quota fallback path and never starts
 // an API retry.
 func TestUsageLimitStopFailureDoesNotRetry(t *testing.T) {

@@ -51,21 +51,40 @@ func (r *Runner) apiError(t *task.Task, message string) error {
 	return nil
 }
 
+// promptLock serialises send against the API retry, so a send's prompt
+// and its counter reset are one step the retry sees whole or not at all.
+const promptLock = "prompt.lock"
+
 // ContinueAfterAPIError runs in the detached __api-retry child: after a
 // random 30 to 60 s it types apiContinue into the runner, unless the task
 // no longer runs, its turn ended normally or was prompted since, or its
-// agent is working.
+// agent is working. The last check and the prompt hold promptLock, so a
+// send that lands after the first checks means no continue is typed.
 func (r *Runner) ContinueAfterAPIError(ctx context.Context, id string) error {
 	r.Sleep(apiRetryFloor + rand.N(apiRetryCeil-apiRetryFloor))
+	retrying := func(t *task.Task) bool {
+		return t.Status == task.Running && t.APIErrors == 1 && t.Herdr.PaneID != ""
+	}
 	t, err := r.Store.Get(id)
 	if err != nil {
 		return err
 	}
-	if t.Status != task.Running || t.APIErrors != 1 || t.Herdr.PaneID == "" {
+	if !retrying(t) {
 		return nil
 	}
 	pane := t.Herdr.PaneID
 	if a, err := r.Herdr.AgentGet(ctx, pane); err != nil || a.Status == "working" {
+		return nil
+	}
+	unlock, err := r.Store.LockFile(id, promptLock)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if t, err = r.Store.Get(id); err != nil {
+		return err
+	}
+	if !retrying(t) || t.Herdr.PaneID != pane {
 		return nil
 	}
 	if err := r.typePrompt(ctx, t, pane, apiContinue); err != nil {
