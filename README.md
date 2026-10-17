@@ -11,7 +11,7 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 - **The main agent answers directly** for ordinary questions, explanations and quick lookups.
 - **Everything else becomes a runner:** code changes of any size, research, analysis reports, and skill or multi-step flows. The main agent first replies with a short brief (goal, approach, checks, kind and branch) and starts the runner when you agree, so you can add what is missing.
 - **Each runner is visible.** It is an interactive agent in a herdr tab, so you can watch it or type into it.
-- **Results arrive as events.** A runner calls `hrk report`, and the main agent's background `wait` wakes at once. Tasks chained with `--after` start automatically when their parent is done.
+- **Results arrive as events.** A runner calls `hrk report`, and the main agent's background `wait` wakes at once for news it has to act on; quiet news, such as a chain step's `done`, comes with the next wake. Tasks chained with `--after` start automatically when their parent is done.
 - **Plans run phase by phase.** `plan run` gives each phase of an AgentKit plan a fresh runner on one shared branch, runs independent phases side by side, checks each finished phase against the files it declared, and resumes after a failure without redoing done phases.
 - **Decisions never stall a runner.** A runner that needs input stays alive in its session, and your answer resumes it in the same context.
 - **Projects keep their own record.** `new` starts a git repository with a project record and a herdr workspace, and `project status` shows where it stands. A project's runners open in its workspace and report to the main session from any folder.
@@ -77,8 +77,8 @@ Each runner has a kind, which picks its default agent and whether it gets its ow
 | `code` | Claude Sonnet, medium effort | yes | features and refactors |
 | `flow` | Claude Opus, high effort | yes | skill flows that change code, such as `--skill ak:cook` |
 | `fix` | Claude Sonnet, medium effort | no | small fixes and edits |
-| `research` | Claude Opus, high effort | no | investigation and analysis |
-| `report` | Claude Opus, high effort | no | written reports and reviews |
+| `research` | Claude Sonnet, medium effort | no | investigation and analysis |
+| `report` | Claude Sonnet, medium effort | no | written reports and reviews |
 
 Ask for another agent, model or effort in your own words, or change the defaults in the [configuration](docs/config.md). Finished runners close on their own 30 minutes after they finish. One you ask the main agent to `keep` stays open for 4 hours after it finished (`keepFor` in the [configuration](docs/config.md)), and the kit tells you about any process a closed runner left running. Their worktrees and branches stay until `cleanup` removes them; once a branch is merged, the main agent offers to do that, and waits for your yes.
 

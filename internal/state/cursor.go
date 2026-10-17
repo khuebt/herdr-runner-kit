@@ -133,15 +133,41 @@ func (s *Store) mainSessionsPath() string { return filepath.Join(s.dir, mainSess
 
 const mainSessionsFile = "main-sessions"
 
-func (s *Store) mainSessions() []string {
-	data, _ := os.ReadFile(s.mainSessionsPath())
-	return strings.Fields(string(data))
+// MainSession is a recorded main session: its Claude session id and, when
+// the hook named it, its transcript file.
+type MainSession struct {
+	ID         string
+	Transcript string
 }
 
-// RecordMainSession remembers the Claude session id of a main session, newest
-// last, so the auto re-arm hook still knows that session after a resume that
-// lost its environment. Empty ids are ignored.
-func (s *Store) RecordMainSession(id string) error {
+// MainSessions returns the recorded main sessions, oldest first. The file
+// holds one per line, the id and then the transcript after a tab; lines
+// from before transcripts were kept hold the id only.
+func (s *Store) MainSessions() []MainSession {
+	return readMainSessions(s.mainSessionsPath())
+}
+
+func readMainSessions(path string) []MainSession {
+	data, _ := os.ReadFile(path)
+	var out []MainSession
+	for line := range strings.SplitSeq(string(data), "\n") {
+		id, transcript, _ := strings.Cut(line, "\t")
+		if id = strings.TrimSpace(id); id != "" {
+			out = append(out, MainSession{ID: id, Transcript: strings.TrimSpace(transcript)})
+		}
+	}
+	return out
+}
+
+// RecordMainSession remembers the Claude session id of a main session,
+// newest last, so the auto re-arm hook still knows that session after a
+// resume that lost its environment. Empty ids are ignored.
+func (s *Store) RecordMainSession(id string) error { return s.RecordMainTranscript(id, "") }
+
+// RecordMainTranscript records a main session as RecordMainSession does,
+// with its transcript, so usage can read it. An empty transcript keeps the
+// one recorded before.
+func (s *Store) RecordMainTranscript(id, transcript string) error {
 	if id == "" {
 		return nil
 	}
@@ -150,13 +176,27 @@ func (s *Store) RecordMainSession(id string) error {
 		return err
 	}
 	defer unlock()
-	ids := s.mainSessions()
-	if len(ids) > 0 && ids[len(ids)-1] == id {
+	sessions := s.MainSessions()
+	if n := len(sessions); n > 0 && sessions[n-1].ID == id && (transcript == "" || sessions[n-1].Transcript == transcript) {
 		return nil
 	}
-	ids = append(slices.DeleteFunc(ids, func(x string) bool { return x == id }), id)
-	ids = ids[max(0, len(ids)-mainSessionsKept):]
-	return writeFileAtomic(s.mainSessionsPath(), []byte(strings.Join(ids, "\n")+"\n"))
+	sessions = slices.DeleteFunc(sessions, func(m MainSession) bool {
+		if m.ID == id && transcript == "" {
+			transcript = m.Transcript
+		}
+		return m.ID == id
+	})
+	sessions = append(sessions, MainSession{ID: id, Transcript: transcript})
+	sessions = sessions[max(0, len(sessions)-mainSessionsKept):]
+	var b strings.Builder
+	for _, m := range sessions {
+		b.WriteString(m.ID)
+		if m.Transcript != "" {
+			b.WriteString("\t" + m.Transcript)
+		}
+		b.WriteString("\n")
+	}
+	return writeFileAtomic(s.mainSessionsPath(), []byte(b.String()))
 }
 
 // IsMainSession reports whether RecordMainSession recorded id.
@@ -168,6 +208,5 @@ func (s *Store) IsMainSession(id string) bool {
 // state folder dir. It only reads, so a hook can ask before it opens the
 // state.
 func MainSessionListed(dir, id string) bool {
-	data, _ := os.ReadFile(filepath.Join(dir, mainSessionsFile))
-	return id != "" && slices.Contains(strings.Fields(string(data)), id)
+	return id != "" && slices.ContainsFunc(readMainSessions(filepath.Join(dir, mainSessionsFile)), func(m MainSession) bool { return m.ID == id })
 }

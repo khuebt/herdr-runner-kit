@@ -24,9 +24,11 @@ import (
 
 // Kind is the default agent and worktree choice for one task kind. Worktree
 // means "use a worktree when the task's cwd is inside a git repository".
+// MCP keeps the user's MCP servers in the kind's runners.
 type Kind struct {
 	Agent    string
 	Worktree bool
+	MCP      bool
 }
 
 // Telegram configures notifications. Empty fields use the Telegram channel
@@ -91,12 +93,22 @@ type Config struct {
 	// can lock its input takes prompts only from the kit, so text typed in
 	// its tab never reaches the model.
 	RunnerInput string
+	// WakeOn is WakeActionable or WakeAll: whether the main session wakes
+	// only for news it has to act on, the rest coming with the next wake,
+	// or for every news line.
+	WakeOn string
 }
 
 // The runnerInput values.
 const (
 	InputLocked = "locked"
 	InputOpen   = "open"
+)
+
+// The wakeOn values.
+const (
+	WakeActionable = "actionable"
+	WakeAll        = "all"
 )
 
 // MemoryOff is the runnerMemoryMax value that turns the memory cap off.
@@ -140,6 +152,7 @@ type fileConfig struct {
 	HeavySlots           *int                `yaml:"heavySlots"`
 	WorktreeSetup        map[string][]string `yaml:"worktreeSetup"`
 	RunnerInput          *string             `yaml:"runnerInput"`
+	WakeOn               *string             `yaml:"wakeOn"`
 }
 
 type fileFallback struct {
@@ -150,6 +163,7 @@ type fileFallback struct {
 type fileKind struct {
 	Agent    *string `yaml:"agent"`
 	Worktree *bool   `yaml:"worktree"`
+	MCP      *bool   `yaml:"mcp"`
 }
 
 type fileTelegram struct {
@@ -211,6 +225,9 @@ func Parse(data []byte) (Config, error) {
 		if fk.Worktree != nil {
 			k.Worktree = *fk.Worktree
 		}
+		if fk.MCP != nil {
+			k.MCP = *fk.MCP
+		}
 		cfg.Kinds[name] = k
 	}
 	if file.DefaultKind != nil {
@@ -259,6 +276,9 @@ func Parse(data []byte) (Config, error) {
 	}
 	if file.RunnerInput != nil {
 		cfg.RunnerInput = strings.TrimSpace(*file.RunnerInput)
+	}
+	if file.WakeOn != nil {
+		cfg.WakeOn = strings.TrimSpace(*file.WakeOn)
 	}
 	if file.WorktreeSetup != nil {
 		cfg.WorktreeSetup = make(map[string][]string, len(file.WorktreeSetup))
@@ -351,6 +371,9 @@ func (c Config) Validate() error {
 	}
 	if c.RunnerInput != InputLocked && c.RunnerInput != InputOpen {
 		return fmt.Errorf("runnerInput must be %s or %s, got %q", InputLocked, InputOpen, c.RunnerInput)
+	}
+	if c.WakeOn != WakeActionable && c.WakeOn != WakeAll {
+		return fmt.Errorf("wakeOn must be %s or %s, got %q", WakeActionable, WakeAll, c.WakeOn)
 	}
 	for repo, cmds := range c.WorktreeSetup {
 		if !filepath.IsAbs(repo) {

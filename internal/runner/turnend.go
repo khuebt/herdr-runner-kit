@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
@@ -38,6 +39,21 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if err != nil {
 		return "", err
 	}
+	r.recordTranscript(t, h, sig.Transcript)
+	// The turn after a report holds the session's last calls, so a task
+	// that finished, or finishes now with a held done, has its usage read
+	// once the turn end is handled, and again by a detached child once the
+	// agent has written the turn's last call.
+	defer func() {
+		if cur, err := r.Store.Get(id); err == nil && cur.Status.Terminal() && len(cur.Transcripts) > 0 {
+			r.refreshUsage(id)
+			if !turnsWritten(cur.Transcripts) {
+				if err := r.StartUsage(id); err != nil {
+					fmt.Fprintf(os.Stderr, "hrk: %s: start usage reader: %v\n", id, err)
+				}
+			}
+		}
+	}()
 	if sig.LimitConfirmed {
 		if t.Herdr.PaneID == "" {
 			return "", nil

@@ -32,6 +32,7 @@ func stateWithTask(t *testing.T) (*state.Store, *task.Task) {
 		Question:  task.JoinQuestions([]string{"Which database?", "Which host?"}),
 		Decisions: []string{"cache -> none"},
 		Git:       &task.GitState{Branch: "main", Head: "abc1234", SinceStart: 2},
+		Usage:     &task.Usage{Calls: 53, MaxContext: 187_000, Units: 1_400_000, Subagents: 2, SubagentUnits: 300_000},
 	}
 	if err := store.Create(tk); err != nil {
 		t.Fatal(err)
@@ -54,6 +55,7 @@ func TestShowIsCompact(t *testing.T) {
 		tk.ID + " · needs-human · code · claude\n",
 		"title: fix login\n",
 		"git: repo state, on main, 2 commits since start, head abc1234",
+		"usage: 53 calls, max context 187k, 1.4M units (2 subagents, 300k)\n",
 		"summary: " + tk.Summary + "\n",
 		"decisions:\n  cache -> none\n",
 		"question:\n  1. Which database?\n  2. Which host?\n",
@@ -84,7 +86,7 @@ func TestShowJSONParses(t *testing.T) {
 	}
 	dec := json.NewDecoder(strings.NewReader(out))
 	var got task.Task
-	if err := dec.Decode(&got); err != nil || got.ID != tk.ID || got.Prompt != tk.Prompt {
+	if err := dec.Decode(&got); err != nil || got.ID != tk.ID || got.Prompt != tk.Prompt || got.Usage == nil || *got.Usage != *tk.Usage {
 		t.Fatalf("decode = %+v, %v", got, err)
 	}
 	if rest, _ := io.ReadAll(dec.Buffered()); len(bytes.TrimSpace(rest)) != 0 || dec.More() {

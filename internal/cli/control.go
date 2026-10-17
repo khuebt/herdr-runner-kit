@@ -351,6 +351,8 @@ func tabState(t *task.Task, now time.Time, keepFor time.Duration) string {
 	switch {
 	case t.Herdr.PaneID == "":
 		return "-"
+	case t.Herdr.Closed && t.Worktree != nil && !t.Worktree.Removed:
+		return "closed, worktree kept"
 	case t.Herdr.Closed:
 		return "closed"
 	}
@@ -536,6 +538,9 @@ func showText(t *task.Task, anchor *task.Task, events []state.Event, dir string,
 	}
 	field("time", when)
 	field("context", contextNote(t, compactions))
+	if t.Usage != nil {
+		field("usage", t.Usage.String())
+	}
 	worktree := func(w *task.Worktree) string {
 		where := w.Path + " on " + w.Branch
 		if w.Removed {

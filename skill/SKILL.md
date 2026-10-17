@@ -13,7 +13,7 @@ You are the main agent. You talk with the user and delegate the work. Runners do
 
 Answer it yourself:
 - questions, explanations, opinions and plans you can give from what you know;
-- quick lookups: a few file reads or one search;
+- quick lookups: at most two commands, such as one search and one read. A longer lookup goes to the `scout` skill when it is installed, else an `Explore` subagent with `model: sonnet`, else a runner; never a fork of your context;
 - task status: `hrk list`, `show <id>` (compact text; to parse, use only `show <id> --json`), and `peek <id>` for a runner's screen instead of `herdr pane read`.
 
 Open a runner:
@@ -21,7 +21,7 @@ Open a runner:
 - research and analysis that ends in a report;
 - any skill or multi-step flow (`ak:plan`, `ak:cook`, `ak:fix`, superpowers and the like).
 
-A lookup that grows past a few steps moves to a runner. Do not do runner work yourself because it looks small.
+Never poll runners with `list`, `show`, `events`, `herdr pane read` or `sleep`: news comes to you. For a runner's screen use `peek <id>` (text), never a screenshot. Do not do runner work yourself because it looks small. Why and details: [references/commands.md#main-sessions-own-work](references/commands.md#main-sessions-own-work).
 
 | Request | Route |
 |---|---|
@@ -49,8 +49,8 @@ End with "Start?". Spawn only after the user agrees, with their additions in the
 | `code` | claude sonnet, medium | yes | features and refactors |
 | `flow` | claude opus, high | yes | skill flows that change code (`--skill ak:cook`) |
 | `fix` | claude sonnet, medium | no | small fixes and edits |
-| `research` | claude opus, high | no | investigation and analysis |
-| `report` | claude opus, high | no | written reports and reviews |
+| `research` | claude sonnet, medium | no | investigation and analysis |
+| `report` | claude sonnet, medium | no | written reports and reviews |
 
 The user's config may change these defaults. `--agent harness[:model[:effort]]` overrides the kind, for example `--agent codex::xhigh` or `--agent claude:claude-opus-5-5:max`; pi and omp need a model, as in `--agent pi:openai-codex/gpt-6-luna:high`. `--worktree` and `--no-worktree` override the worktree choice. Follow the user's wording when they name an agent, model or effort. When they name a Claude config folder or account, such as "claude2", pass `--claude-config claude2`.
 
@@ -101,7 +101,7 @@ Stages, gates, change control, milestones, graduation (suggest it once after M1)
 
 ## Wait for news
 
-After you spawn, answer, send or release, run `hrk wait` with the Bash tool's `run_in_background`. Rerun it after every wake.
+In the session `hrk main` started (`$HRK_MAIN` set), the auto re-arm hook waits for you after every turn: never start your own `hrk wait` there. Elsewhere, after you spawn, answer, send or release, run `hrk wait` with the Bash tool's `run_in_background` and rerun it after every wake.
 
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences.
 - `tN needs-human · … · 3 questions` with numbered lines is one round: ask all of them in one message and send the replies as one answer, such as `1a 2b 3c`. `decided: …` on a `done` line lists what the runner settled itself: relay it first; the user may veto, and you `send` the change. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail and `peek <id>` the screen.
@@ -110,7 +110,7 @@ After you spawn, answer, send or release, run `hrk wait` with the Bash tool's `r
 - `usage-limit`: the runner's screen shows its agent's usage limit and no fallback agent is left; the task is still open. Tell the user, and offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the limit to reset.
 - `tab closes HH:MM` or `tab kept until HH:MM` on a `done` line: mention it, and offer `hrk keep <id>` when the user wants to come back to the tab later.
 - `stalled · blocked on a prompt: …`: relay the quoted prompt as is and offer `focus <id>`; a `stalled` for no progress or retrying: relay it, the runner stays open. Never chase `blocked` or other progress events, such as `context-low` or `handoff` (a runner continuing in a fresh session): they need nothing from you.
-- `processes-left`: name the surviving pids and commands to the user; never kill them yourself.
+- Quiet lines (a chain step's or plan phase's `done` without decisions, `stopped`, `cleanable`, `processes-left`) come with other news, not alone; relay them the same way. `processes-left`: name the surviving pids and commands; never kill them yourself.
 - `timeout`: rerun `wait` silently. `already waiting`: if the auto re-arm hook holds the cursor, do nothing; if another `hrk wait` does and none of your own background waits runs, tell the user which pid holds the news. `idle:`: every task finished; do not rerun until you start something.
 
 In the session `hrk main` started, news can also arrive as Stop hook feedback starting with `herdr-runner-kit news`. Handle it like a `wait` wake; the hook re-arms itself.

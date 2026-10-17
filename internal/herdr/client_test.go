@@ -135,6 +135,18 @@ func TestWorkspaceClose(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRename(t *testing.T) {
+	var got []string
+	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		got = args
+		return []byte(`{}`), nil, nil
+	}}
+	if err := c.WorkspaceRename(context.Background(), "w2", "t1 · done · worktree kept"); err != nil ||
+		strings.Join(got, "|") != "workspace|rename|w2|t1 · done · worktree kept" {
+		t.Fatalf("err %v argv %q", err, got)
+	}
+}
+
 func TestRepoWorkspaceSkipsLinkedWorktrees(t *testing.T) {
 	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
 		switch strings.Join(args, " ") {

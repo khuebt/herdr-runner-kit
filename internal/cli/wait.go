@@ -23,9 +23,14 @@ func newWaitCommand() *cobra.Command {
 		Use:   "wait",
 		Short: "Block until a task has news, then print one line per event",
 		Long: "wait blocks until one of your tasks reports done, needs-human or failed, " +
-			"is held or stopped, stalls, or ends a turn without reporting. It prints one " +
-			"short line per event and exits 0. Run it in the background and rerun it after " +
-			"each wake; a cursor makes sure no event is skipped or repeated.",
+			"is held, stalls, hits a usage limit, ends a turn without reporting, or its plan " +
+			"run finishes. It prints one short line per event and exits 0. Quiet news (a " +
+			"chain step's or plan phase's done without decisions, stopped, cleanable, " +
+			"processes-left) does not wake it: it comes first with the next wake, when " +
+			"everything is idle, at the timeout, or 50 minutes after the main session was " +
+			"last active. --task, --all-news and wakeOn: all wake for every line. Run it in " +
+			"the background and rerun it after each wake; a cursor makes sure no event is " +
+			"skipped or repeated.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			for _, a := range ids {
@@ -42,6 +47,8 @@ func newWaitCommand() *cobra.Command {
 			if o.Owner == "" {
 				o.Owner, o.Projects = currentOwner(cmd), true
 			}
+			o.FlushOnTimeout = true // the timeout wakes the main session anyway
+			_ = wait.MarkActive(r.Store, o)
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			res, err := wait.Run(ctx, r, o)
@@ -69,6 +76,7 @@ func newWaitCommand() *cobra.Command {
 	f.StringSliceVar(&ids, "task", nil, "only these tasks")
 	f.StringVar(&o.Owner, "owner", "", "main session to wait for, and only it (default: git top-level of the current folder, plus the tasks of every project)")
 	f.StringVar(&o.Cursor, "cursor", "", "cursor name (default: derived from the owner)")
+	f.BoolVar(&o.AllNews, "all-news", false, "wake for every news line, quiet ones too")
 	f.DurationVar(&o.Timeout, "timeout", wait.DefaultTimeout, "safety timeout; wait prints `timeout` and exits 0")
 	return cmd
 }

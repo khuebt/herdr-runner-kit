@@ -231,7 +231,7 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 	if err := r.prepareTrust(t, adapter); err != nil {
 		return spec, nil, "", err
 	}
-	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID)})
+	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID), MCP: t.MCP})
 	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
 	if herdr.HasCode(err, herdr.CodeAgentPaneBusy) {
 		// The shell is still reading its startup files, or still running
@@ -678,6 +678,9 @@ func startedLine(t *task.Task, spec task.AgentSpec, setup *setupResult, scope st
 	if t.InputLocked && !InputLocked(t) {
 		name := string(spec.Harness)
 		parts = append(parts, fmt.Sprintf("input open (%s cannot lock it yet)", strings.ToUpper(name[:1])+name[1:]))
+	}
+	if t.MCP {
+		parts = append(parts, "mcp: on")
 	}
 	parts = append(parts, fmt.Sprintf("tab %q", t.ID+" · "+t.Title))
 	return strings.Join(parts, " · ")

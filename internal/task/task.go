@@ -4,6 +4,7 @@ package task
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -190,6 +191,9 @@ type Task struct {
 	// InputLocked says the runner takes prompts only from the kit, when its
 	// agent can lock its input: the runnerInput config at spawn.
 	InputLocked bool `json:"inputLocked,omitempty"`
+	// MCP keeps the user's MCP servers in the runner, from spawn --mcp or
+	// the kind; without it a Claude runner starts with none.
+	MCP bool `json:"mcp,omitempty"`
 	// Language is the language the runner writes its report summaries and
 	// questions in. Empty leaves it to the runner.
 	Language string `json:"language,omitempty"`
@@ -218,6 +222,11 @@ type Task struct {
 	// Keep holds a finished runner's tab open: gc leaves it until keep is
 	// turned off or the task is stopped.
 	Keep bool `json:"keep,omitempty"`
+	// Transcripts are the agent session transcripts the task's turn ends
+	// named, oldest first: every attempt and agent switch of a harness that
+	// keeps one. Usage is the token usage read from them, last at At.
+	Transcripts []Transcript `json:"transcripts,omitempty"`
+	Usage       *Usage       `json:"usage,omitempty"`
 	// FinishedAt is set when the task reaches a terminal status.
 	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 	Status         Status    `json:"status"`
@@ -225,6 +234,94 @@ type Task struct {
 	LaunchDeadline time.Time `json:"launchDeadline,omitzero"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// Transcript is one agent session's transcript file and the harness that
+// wrote it, which knows its format.
+type Transcript struct {
+	Harness Harness `json:"harness"`
+	Path    string  `json:"path"`
+}
+
+// Usage is the token usage of a task's agent sessions and their subagents.
+// Units weigh the tokens by list-price ratios to an input token (see
+// UnitWeights); they compare runs, they are not money.
+type Usage struct {
+	Calls        int64 `json:"calls"`
+	Input        int64 `json:"input"`
+	CacheRead    int64 `json:"cacheRead"`
+	CacheWrite   int64 `json:"cacheWrite"` // every cache write, the 1-hour ones included
+	CacheWrite1h int64 `json:"cacheWrite1h"`
+	Output       int64 `json:"output"`
+	// MaxContext is the largest context one call of the task's own sessions
+	// carried: input, cache read and cache write.
+	MaxContext int64 `json:"maxContext"`
+	// Subagents counts the subagents the sessions ran, and SubagentUnits
+	// their share of Units.
+	Subagents     int64     `json:"subagents"`
+	Units         float64   `json:"units"`
+	SubagentUnits float64   `json:"subagentUnits"`
+	At            time.Time `json:"at,omitzero"`
+}
+
+// UnitWeights are the cost of one token in input-token units, from the
+// list-price ratios: a cache read 0.1, a 5-minute cache write 1.25, a
+// 1-hour write 2, an output token 5.
+var UnitWeights = struct{ Input, CacheRead, CacheWrite5m, CacheWrite1h, Output float64 }{1, 0.1, 1.25, 2, 5}
+
+// AddCall counts one model call, and its context toward MaxContext unless
+// it is a subagent's.
+func (u *Usage) AddCall(input, cacheRead, cacheWrite, cacheWrite1h, output int64, subagent bool) {
+	w := UnitWeights
+	units := float64(input)*w.Input + float64(cacheRead)*w.CacheRead +
+		float64(cacheWrite-cacheWrite1h)*w.CacheWrite5m + float64(cacheWrite1h)*w.CacheWrite1h + float64(output)*w.Output
+	u.Calls++
+	u.Input += input
+	u.CacheRead += cacheRead
+	u.CacheWrite += cacheWrite
+	u.CacheWrite1h += cacheWrite1h
+	u.Output += output
+	u.Units += units
+	if subagent {
+		u.SubagentUnits += units
+	} else {
+		u.MaxContext = max(u.MaxContext, input+cacheRead+cacheWrite)
+	}
+}
+
+// Add adds o's counts to u.
+func (u *Usage) Add(o *Usage) {
+	u.Calls += o.Calls
+	u.Input += o.Input
+	u.CacheRead += o.CacheRead
+	u.CacheWrite += o.CacheWrite
+	u.CacheWrite1h += o.CacheWrite1h
+	u.Output += o.Output
+	u.MaxContext = max(u.MaxContext, o.MaxContext)
+	u.Subagents += o.Subagents
+	u.Units += o.Units
+	u.SubagentUnits += o.SubagentUnits
+}
+
+// String reads like "53 calls, max context 187k, 1.4M units (2 subagents,
+// 0.3M)".
+func (u *Usage) String() string {
+	s := fmt.Sprintf("%d calls, max context %s, %s units", u.Calls, Count(float64(u.MaxContext)), Count(u.Units))
+	if u.Subagents > 0 {
+		s += fmt.Sprintf(" (%d subagents, %s)", u.Subagents, Count(u.SubagentUnits))
+	}
+	return s
+}
+
+// Count prints n shortly: 950, 187k, 1.4M.
+func Count(n float64) string {
+	switch {
+	case n >= 1e6:
+		return strconv.FormatFloat(n/1e6, 'f', 1, 64) + "M"
+	case n >= 1e3:
+		return strconv.FormatFloat(n/1e3, 'f', 0, 64) + "k"
+	}
+	return strconv.FormatFloat(n, 'f', 0, 64)
 }
 
 // PendingDone is a held done report.

@@ -36,6 +36,7 @@ kinds:
     worktree: true
   review:
     agent: codex::high
+    mcp: true
 telegram:
   notify: [needs-human]
 `))
@@ -45,10 +46,10 @@ telegram:
 	if got := cfg.Kinds["fix"]; got.Agent != "claude:claude-sonnet-5-5:medium" || !got.Worktree {
 		t.Errorf("fix = %+v, want default agent with worktree on", got)
 	}
-	if got := cfg.Kinds["review"]; got.Agent != "codex::high" || got.Worktree {
+	if got := cfg.Kinds["review"]; got.Agent != "codex::high" || got.Worktree || !got.MCP {
 		t.Errorf("review = %+v", got)
 	}
-	if got := cfg.Kinds["code"]; got.Agent != "claude:claude-sonnet-5-5:medium" {
+	if got := cfg.Kinds["code"]; got.Agent != "claude:claude-sonnet-5-5:medium" || got.MCP {
 		t.Errorf("code = %+v, want untouched default", got)
 	}
 	if len(cfg.Telegram.Notify) != 1 || cfg.Telegram.Notify[0] != "needs-human" {
@@ -168,6 +169,23 @@ func TestParseRunnerInput(t *testing.T) {
 	}
 	for _, v := range []string{`""`, "closed", "true"} {
 		if _, err := Parse([]byte("runnerInput: " + v + "\n")); err == nil || !strings.Contains(err.Error(), "runnerInput") {
+			t.Errorf("Parse(%s) error = %v", v, err)
+		}
+	}
+}
+
+func TestParseWakeOn(t *testing.T) {
+	if cfg := Default(); cfg.WakeOn != WakeActionable {
+		t.Errorf("default wakeOn = %q, want actionable", cfg.WakeOn)
+	}
+	for _, v := range []string{"actionable", "all"} {
+		cfg, err := Parse([]byte("wakeOn: " + v + "\n"))
+		if err != nil || cfg.WakeOn != v {
+			t.Errorf("Parse(%s) = %q, %v", v, cfg.WakeOn, err)
+		}
+	}
+	for _, v := range []string{`""`, "none", "true"} {
+		if _, err := Parse([]byte("wakeOn: " + v + "\n")); err == nil || !strings.Contains(err.Error(), "wakeOn") {
 			t.Errorf("Parse(%s) error = %v", v, err)
 		}
 	}

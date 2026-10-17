@@ -125,6 +125,7 @@ func newTestRunner(t *testing.T) (*Runner, *fakeHerdr, env) {
 		Getenv:        e.get,
 		StartLauncher: func(string) (int, error) { return 4242, nil },
 		StartAfter:    func(string) error { return nil },
+		StartUsage:    func(string) error { return nil },
 		Sleep:         func(time.Duration) {},
 	}
 	return r, fake, e
@@ -209,7 +210,7 @@ func TestSpawnStartsLauncherQuickly(t *testing.T) {
 	if tk.Status != task.Starting || tk.LauncherPID != 4242 || tk.LaunchDeadline.IsZero() {
 		t.Errorf("task = %+v", tk)
 	}
-	if tk.Agent != "claude:claude-opus-5-5:high" || tk.UseWorktree || tk.Owner != dir || tk.MainWorkspace != "w1" {
+	if tk.Agent != "claude:claude-sonnet-5-5:medium" || tk.UseWorktree || tk.Owner != dir || tk.MainWorkspace != "w1" {
 		t.Errorf("defaults not applied: %+v", tk)
 	}
 	if tk.Title != "Compare two queues" {
@@ -2054,5 +2055,51 @@ func TestRememberedProjectWorkspaceIsChecked(t *testing.T) {
 				t.Errorf("workspace create ran %d times, want 1", n)
 			}
 		})
+	}
+}
+
+func TestLaunchClaudeMCPChoice(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	k := r.Config.Kinds["review"]
+	k.MCP = true
+	r.Config.Kinds["review"] = k
+	tests := []struct {
+		o    SpawnOptions
+		want bool
+	}{
+		{SpawnOptions{Kind: "research", Prompt: "x"}, false},
+		{SpawnOptions{Kind: "research", Prompt: "x", MCP: true}, true},
+		{SpawnOptions{Kind: "review", Agent: "claude", Prompt: "x"}, true},
+	}
+	for _, tt := range tests {
+		tt.o.Cwd = plainDir(t)
+		tk := spawnStarting(t, r, tt.o)
+		if tk.MCP != tt.want {
+			t.Errorf("%+v: task mcp = %v, want %v", tt.o, tk.MCP, tt.want)
+		}
+		if err := r.Launch(context.Background(), tk.ID); err != nil {
+			t.Fatal(err)
+		}
+		start := lastCall(fake, "agent", "start")
+		if strict := slices.Contains(start, "--strict-mcp-config"); strict == tt.want {
+			t.Errorf("%+v: agent start = %q", tt.o, start)
+		}
+		started := eventsOf(t, r, tk.ID, "started")
+		if len(started) != 1 || strings.Contains(started[0].Summary, "mcp: on") != tt.want {
+			t.Errorf("%+v: started = %+v", tt.o, started)
+		}
+	}
+
+	// A handoff relaunch rebuilds the argv from the stored task.
+	file := handoffFile(t, r, "t2")
+	if _, err := r.Handoff("t2", ReportOptions{Summary: "half", Outputs: []string{file}, Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	quitsThenIdle(fake)
+	if err := r.Launch(context.Background(), "t2"); err != nil {
+		t.Fatal(err)
+	}
+	if start := lastCall(fake, "agent", "start"); slices.Contains(start, "--strict-mcp-config") {
+		t.Errorf("relaunch dropped the task's mcp: %q", start)
 	}
 }

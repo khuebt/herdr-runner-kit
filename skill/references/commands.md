@@ -8,7 +8,7 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 |---|---|
 | `spawn [flags] --stdin` | Record a task and open its runner. Returns at once. |
 | `list [--all]` | Your tasks and every registered project's, with stored status, herdr's live state, TAB (`open` with when `gc` closes it, `kept until HH:MM`, `kept`, `closed` or `-`), AGE and LAST, the age of the latest event. `--all` shows every owner. |
-| `show <id> [--prompt]` | One task as compact text: status, times, tab, worktree, `git:` line, summary, decisions, question, outputs, last 5 events. The prompt only with `--prompt`. |
+| `show <id> [--prompt]` | One task as compact text: status, times, tab, `usage:` of a Claude runner, worktree, `git:` line, summary, decisions, question, outputs, last 5 events. The prompt only with `--prompt`. |
 | `show <id> --json [--events N]` | The task as one JSON object, or `{task, events}` with `--events`. Parse this, never the text view. |
 | `peek <id> [--lines N]` | The runner's visible screen (default 30 lines), secrets hidden. Use it instead of `herdr pane read`. |
 | `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one refuses. |
@@ -21,10 +21,19 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `keep <id> [--off]` | Keep a finished runner's tab open for `keepFor` (4h by default) instead of letting `gc` close it after 30 minutes. `--off` lets `gc` close it again. |
 | `cleanup [id]... [--yes]` | List finished worktrees and branches left behind, yours and every project's: merged (squash and rebase merges included), unmerged or dirty. `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
-| `events --learning [--task ID] [--project NAME]` | Use it when the user asks how much steering tasks took. Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish) and time waited on a human after the spawn. |
+| `events --learning [--task ID] [--project NAME]` | Use it when the user asks how much steering tasks took. Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish), time waited on a human after the spawn, and UNITS of token usage. |
+| `usage [id...] [--since 24h] [--owner DIR \| --all] [--by task\|owner] [--main] [--json]` | Use it when the user asks what tasks or the main session cost in tokens. Per task: calls, MAX-CTX, subagents and UNITS (input 1, cache read 0.1, 5-minute cache write 1.25, 1-hour write 2, output 5; not money), and a total. Claude runners only; others show `-`. `--main` adds main sessions. |
 | `heavy -- <command> [args...]` | Run your own tests, lint, typecheck and builds this way too: it waits for one of `heavySlots` slots (2 by default) shared with every runner, then runs the command and exits with its code. |
 | `heavy [--json]` | Who holds each heavy slot and who waits, with command and age. Use it when a runner, or your own check, seems to wait. |
 | `sync <id> [--from REF] [--no-send]` | Merge origin's default branch (such as `origin/main`), or REF, into a worktree task's branch and ask the runner to re-run its checks. Refuses a busy agent, background work, an agent herdr cannot check, or a dirty worktree, and fetches only after those checks; a conflict is aborted and the text to `send` is printed. When it suggests `--from main`, local main has commits origin lacks. |
+
+## Main session's own work
+
+Each of your calls re-reads your whole context, about 200k tokens in a long session; a light agent's call carries 30k to 60k. So keep reading out of it:
+- A lookup is at most two commands, such as one search and one read. A longer one goes to the `scout` skill when it is installed, else an `Explore` subagent with `model: sonnet` briefed with paths, else a runner. Never fork your context for it: a fork carries all of it.
+- Never poll runners with `list`, `show`, `events`, `herdr pane read`, the tasks folder or `sleep`; `wait` or the hook brings their news. Use `list` and `show` when the user asks for status.
+- A runner's screen: `peek <id>` (text). Never a screenshot: an image stays in your context until the next compaction.
+- In the session `hrk main` started (`$HRK_MAIN` set), the auto re-arm hook runs `wait` after every turn; a `wait` of your own beside it only gets `already waiting`. One exception: after `/clear` in a resumed main session the hook stops, so run your own `hrk wait` in the background there until you restart with `main --exec`.
 
 ## Projects
 
@@ -158,6 +167,7 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--title TEXT` | Short title; by default it comes from the prompt. |
 | `--language NAME` | Language of the runner's report summaries and questions, such as `Vietnamese`. Default: the config's `language`. |
 | `--claude-config DIR` | Claude config folder (account) of a Claude runner: a path, or a name such as `claude2` for `~/.claude2`. Default: the main session's. |
+| `--mcp` | Keep the user's MCP servers in a Claude runner, which starts without them. Only when the task needs an MCP tool. |
 | `--cwd DIR` | Folder the task works in; by default the current folder, or the project's folder with `--project`. |
 | `--project NAME` | Registered project the task works for. It opens in the project's workspace and reports to `project:NAME`. Default: the project holding the task's folder, if any. |
 
@@ -169,18 +179,20 @@ Picking an agent: the brief names each runner's harness, model and effort with o
 
 ## News that wait reports
 
+Lines marked *quiet* never wake you alone: they come first with the next line that does, with `idle`, or at the latest 50 minutes after your last turn. `wait --all-news`, `wait --task` and `wakeOn: all` wake for them too.
+
 | Line starts with | Meaning | What you do |
 |---|---|---|
-| `tN done` | Finished; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. |
+| `tN done` | Finished; *quiet* for a chain step whose next task has not started, or a `plan run` phase, when it has no `decided:`; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. |
 | `tN needs-human` | The runner asks a question, or a round: `N questions` and one numbered line each; `attempt N` when the runner continues in a fresh session after a context handoff | Ask the user, all of a round in one message, then `answer` once, such as `1a 2b`, the same way for any attempt. An answer refused as `for attempt N of tN, which ended`: ask the user again. |
 | `tN held` | A `--gate human` task waits; `(reason)` when held with `--reason` | Ask the user, then `release`. |
 | `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. For `runner lost: herdr pane gone` (herdr or the machine restarted), relay it and offer a new `spawn`; `show <id>` names the worktree and branch with the partial work. |
 | `tN stalled` | `blocked on a prompt: …` quotes the prompt the agent waits on; `no progress for N min …` or `retrying for N min` means it stayed busy without progress after a nudge and an interrupt | Relay the quoted text as is; offer `focus <id>` or `peek <id>`. The runner stays open. Never chase `blocked`, `unstalled`, `nudged` or `interrupted` progress events. |
-| `tN processes-left` | Processes the closed runner started still run, with pids and commands | Name them to the user; never kill them yourself. |
+| `tN processes-left` | *Quiet.* Processes the closed runner started still run, with pids and commands | Name them to the user; never kill them yourself. |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |
 | `tN usage-limit` | The runner's screen shows its agent's usage limit and no `quotaFallback` agent is left | Tell the user; offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the reset. |
-| `tN stopped` | Stopped by `stop` | Relay it. |
-| `tN cleanable` | Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
+| `tN stopped` | *Quiet.* Stopped by `stop` | Relay it. |
+| `tN cleanable` | *Quiet.* Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
 | `tN plan-done` | Every phase of a `plan run` is done; `out:` is the run report | Relay the verified count and the report path. |
 
 ## Context handoff

@@ -31,6 +31,9 @@ type LaunchOptions struct {
 	// Dir is the task folder holding the files Files returned; empty when
 	// none were written.
 	Dir string
+	// MCP keeps the user's MCP servers; without it an adapter that can
+	// starts the agent with none.
+	MCP bool
 }
 
 // FilesInput are the inputs to an adapter's per-task runner files.
@@ -96,6 +99,9 @@ type TurnSignal struct {
 	// when ContextKnown.
 	ContextLeft  int
 	ContextKnown bool
+	// Transcript is the session transcript file the hook names, or empty
+	// when the agent names none.
+	Transcript string
 }
 
 // Checks is what doctor checks for one harness.
@@ -242,6 +248,16 @@ type Adapter interface {
 	// GateBlock is what the prompt gate prints to refuse a prompt, showing
 	// reason to the human.
 	GateBlock(reason string) string
+	// Usage sums the token usage in the session transcripts that turn ends
+	// named, counting only calls between from and to (a zero time leaves
+	// that side open). It returns nil for an agent whose transcripts the
+	// kit cannot read yet, and skips any part of a transcript it does not
+	// know.
+	Usage(transcripts []string, from, to time.Time) (*task.Usage, error)
+	// TurnWritten reports whether a session transcript holds its latest
+	// turn to the end. An agent may write a turn's last call only after its
+	// turn-end hook returns; usage read before then misses that call.
+	TurnWritten(transcript string) bool
 	// Checks lists what doctor checks.
 	Checks() Checks
 }

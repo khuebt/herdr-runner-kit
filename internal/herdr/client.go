@@ -299,6 +299,11 @@ func (c *Client) WorkspaceClose(ctx context.Context, id string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "workspace", "close", id)
 }
 
+// WorkspaceRename sets the label herdr shows for a workspace.
+func (c *Client) WorkspaceRename(ctx context.Context, id, label string) error {
+	return c.runJSON(ctx, DefaultTimeout, nil, "workspace", "rename", id, label)
+}
+
 // PaneRun types command and Enter into a pane's shell.
 func (c *Client) PaneRun(ctx context.Context, pane, command string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "pane", "run", pane, command)

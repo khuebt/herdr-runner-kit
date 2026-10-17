@@ -105,8 +105,9 @@ func newAutoarmCommand() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var payload struct {
-				Cwd       string `json:"cwd"`
-				SessionID string `json:"session_id"`
+				Cwd            string `json:"cwd"`
+				SessionID      string `json:"session_id"`
+				TranscriptPath string `json:"transcript_path"`
 			}
 			_ = json.NewDecoder(io.LimitReader(cmd.InOrStdin(), 1<<20)).Decode(&payload)
 			main := os.Getenv("HRK_MAIN")
@@ -130,7 +131,7 @@ func newAutoarmCommand() *cobra.Command {
 				return nil
 			}
 			if byMain {
-				_ = r.Store.RecordMainSession(payload.SessionID)
+				_ = r.Store.RecordMainTranscript(payload.SessionID, payload.TranscriptPath)
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 			defer stop()
@@ -267,10 +268,14 @@ func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writ
 	if err != nil || !slices.ContainsFunc(tasks, watched) {
 		return 0
 	}
+	opts := wait.Options{Owner: owner, Projects: true, Holder: autoarmHolder}
+	// Before the lock, so a turn end whose hook finds another wait holding
+	// it still postpones the flush of quiet news.
+	_ = wait.MarkActive(r.Store, opts)
 	var gcLock func()
 	var retry time.Time
 	for {
-		res, err := wait.Run(ctx, r, wait.Options{Owner: owner, Projects: true, Holder: autoarmHolder})
+		res, err := wait.Run(ctx, r, opts)
 		switch {
 		case err != nil:
 			return 0

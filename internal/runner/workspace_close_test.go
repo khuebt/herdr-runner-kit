@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,12 @@ func TestCleanableLeavesAReusedWorkspaceID(t *testing.T) {
 	r.closeOrphanWorkspace(context.Background(), tk)
 	if n := fake.count("workspace", "close"); n != 1 {
 		t.Errorf("workspace close ran %d times after a restart", n)
+	}
+	// Or the label it got when its runner closed.
+	fake.on("workspace get", ok(`{"result":{"workspace":{"workspace_id":"w2","label":"`+keptLabel(tk)+`"}}}`))
+	r.closeOrphanWorkspace(context.Background(), tk)
+	if n := fake.count("workspace", "close"); n != 2 {
+		t.Errorf("workspace close ran %d times after a restart with the kept label", n)
 	}
 }
 
@@ -169,5 +176,80 @@ func TestStopSaysWhatItKept(t *testing.T) {
 	}
 	if closed[wt.ID] != "agent quit; workspace kept" || closed[plain.ID] != "tab closed" {
 		t.Errorf("closed events = %q", closed)
+	}
+}
+
+// paneRuns returns the pane run commands the fake herdr saw.
+func paneRuns(fake *fakeHerdr) []string {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	var runs []string
+	for _, c := range fake.calls {
+		if len(c) == 4 && c[0] == "pane" && c[1] == "run" {
+			runs = append(runs, c[3])
+		}
+	}
+	return runs
+}
+
+func TestStopMarksAKeptWorktreeWorkspace(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedWorktreeRunner(t, r, fake)
+	before := len(paneRuns(fake))
+	for range 2 { // a second stop finds it closed and does nothing more
+		if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"workspace", "rename", "w2", tk.ID + " · done · worktree kept"}
+	if n, c := fake.count("workspace", "rename"), fake.call("workspace", "rename"); n != 1 || !slices.Equal(c, want) {
+		t.Errorf("workspace rename ran %d times: %q", n, c)
+	}
+	runs := paneRuns(fake)[before:]
+	if len(runs) != 1 || !strings.HasPrefix(runs[0], "clear; printf '%s\\n' ") ||
+		!strings.Contains(runs[0], tk.ID+" is done") || !strings.Contains(runs[0], "hrk stop "+tk.ID+" --remove-worktree") {
+		t.Errorf("pane runs after the stop = %q", runs)
+	}
+}
+
+func TestStopMarksNoWorkspaceItDoesNotKeep(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent get", ok(`{"result":{"agent":{"agent_status":"idle"}}}`)) // shell only
+	plain := spawnStarting(t, r, SpawnOptions{Prompt: "y", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), plain.ID); err != nil {
+		t.Fatal(err)
+	}
+	removed := finishedWorktreeRunner(t, r, fake)
+	before := len(paneRuns(fake))
+	for _, c := range []struct {
+		id     string
+		remove bool
+	}{{plain.ID, false}, {removed.ID, true}} {
+		if _, err := r.Stop(context.Background(), c.id, c.remove); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, runs := fake.count("workspace", "rename"), paneRuns(fake)[before:]; n != 0 || len(runs) != 0 {
+		t.Errorf("%d renames, pane runs %q", n, runs)
+	}
+}
+
+func TestStopKeepsTheLabelOfAWorkspaceAnotherTaskUses(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedWorktreeRunner(t, r, fake)
+	// A later plan phase runs in the anchor's workspace.
+	phase := spawnStarting(t, r, SpawnOptions{Prompt: "y", Cwd: plainDir(t)})
+	if _, err := r.Store.Update(phase.ID, func(t *task.Task) error {
+		t.Status, t.Herdr.WorkspaceID = task.Running, "w2"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(paneRuns(fake))
+	if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if n, runs := fake.count("workspace", "rename"), paneRuns(fake)[before:]; n != 0 || len(runs) != 1 {
+		t.Errorf("%d renames, pane runs %q", n, runs)
 	}
 }

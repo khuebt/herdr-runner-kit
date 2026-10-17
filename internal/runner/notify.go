@@ -17,8 +17,8 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/telegram"
 )
 
-// record appends an event and, for event types the config selects, hands it
-// to the detached notifier. A task that ends failed or stopped goes to the
+// record marks quiet news, appends the event and, for event types the
+// config selects, hands it to the detached notifier. A task that ends failed or stopped goes to the
 // notifier too when done is selected, so the dones held back for its chain
 // are sent. Sending never runs in the caller's process, so report, wait and
 // the turn-end hook stay fast with the network down.
@@ -26,6 +26,7 @@ func (r *Runner) record(ev state.Event) error {
 	if ev.TS.IsZero() {
 		ev.TS = time.Now().UTC()
 	}
+	ev.Quiet = r.quietNews(ev)
 	if err := r.Store.Append(ev); err != nil {
 		return err
 	}
@@ -33,6 +34,32 @@ func (r *Runner) record(ev state.Event) error {
 		r.Notify(ev)
 	}
 	return nil
+}
+
+// quietNews reports whether ev can wait for the main session's next wake:
+// a cleanup offer, processes left behind, a task the main session or the
+// user stopped, or a done without decisions that a later line reports, as
+// a chain step whose next task has not started or a plan-run phase, which
+// plan-done reports. A task that cannot be read makes a done loud.
+func (r *Runner) quietNews(ev state.Event) bool {
+	switch ev.Type {
+	case "cleanable", "processes-left", "stopped":
+		return true
+	case "done":
+		if len(ev.Decisions) > 0 {
+			return false
+		}
+		t, err := r.Store.Get(ev.Task)
+		if err != nil {
+			return false
+		}
+		if t.Plan != "" {
+			return true
+		}
+		internal, err := r.chainInternal(ev, t)
+		return err == nil && internal
+	}
+	return false
 }
 
 // endsChain reports whether ev ends a task without the chain report its
@@ -107,11 +134,20 @@ func (r *Runner) send(ctx context.Context, creds telegram.Creds, credErr error, 
 	return err
 }
 
-// deferDone holds back ev, a done of t, when the chain's last task will
-// report instead: it is t's first round, it settled no decisions, and a
-// task waiting for t has not started yet. A held-back done is recorded as
+// deferDone holds back ev, a done of t, when it is chain-internal: the
+// chain's last task will report instead. A held-back done is recorded as
 // notify-deferred.
 func (r *Runner) deferDone(ev state.Event, t *task.Task) (bool, error) {
+	if internal, err := r.chainInternal(ev, t); err != nil || !internal {
+		return false, err
+	}
+	return true, r.Store.Append(state.Event{Task: t.ID, Owner: t.Owner, Type: "notify-deferred", Summary: "done"})
+}
+
+// chainInternal reports whether ev, a done of t, sits inside a chain whose
+// last task reports instead: it is t's first round, it settled no
+// decisions, and a task waiting for t has not started yet.
+func (r *Runner) chainInternal(ev state.Event, t *task.Task) (bool, error) {
 	if len(ev.Decisions) > 0 {
 		return false, nil
 	}
@@ -134,7 +170,7 @@ func (r *Runner) deferDone(ev state.Event, t *task.Task) (bool, error) {
 			return false, nil
 		}
 	}
-	return true, r.Store.Append(state.Event{Task: t.ID, Owner: t.Owner, Type: "notify-deferred", Summary: "done"})
+	return true, nil
 }
 
 // laterRoundEvents mark that a done is not the task's first round: an

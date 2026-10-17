@@ -77,6 +77,7 @@ func newSpawnCommand() *cobra.Command {
 	f.StringVar(&o.Reason, "reason", "", "with --gate human: why the task waits, such as the dependency D2 it needs; only a release that names the task opens it")
 	f.StringVar(&o.ClaudeConfig, "claude-config", "", "Claude config folder of a Claude runner, as a path or a name such as claude2 for ~/.claude2 (default: the main session's)")
 	f.StringVar(&o.Language, "language", "", "language of the runner's report summaries and questions, such as Vietnamese (default: the config's language)")
+	f.BoolVar(&o.MCP, "mcp", false, "keep the user's MCP servers in a Claude runner, which starts without them by default")
 	f.StringVar(&o.Cwd, "cwd", "", "folder the task works in (default: current folder)")
 	f.StringVar(&o.Title, "title", "", "short title (default: from the prompt)")
 	f.BoolVar(&stdin, "stdin", false, "read the prompt from stdin")

@@ -146,8 +146,8 @@ func (l *learning) tabAnswer() {
 // reports, unreported turns, agent switches, the time from spawn to its last
 // finish, the time it worked in rounds (ACTIVE, a "time on the task" that
 // includes turns idled without a report), the time blocked or stalled, the
-// time a kept tab stayed open after the finish, and the time it waited on a
-// human after its spawn. Open rounds and stalls count up to now. Every number
+// time a kept tab stayed open after the finish, the time it waited on a
+// human after its spawn, and the cost units of its token usage. Open rounds and stalls count up to now. Every number
 // comes from the events given; tasks only add the kind, agents and current
 // status. ids, when set, limits the rows, and so does project: to the tasks
 // of that project.
@@ -177,13 +177,16 @@ func printLearning(out io.Writer, events []state.Event, tasks []*task.Task, ids 
 		l.observe(ev)
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TASK\tPROJECT\tKIND\tAGENTS\tSTATUS\tATTEMPTS\tNUDGES\tSENDS\tANSWERS\tNEEDS-HUMAN\tUNREPORTED\tSWITCHES\tDURATION\tACTIVE\tSTALLED\tIDLE-KEPT\tWAITED")
+	fmt.Fprintln(w, "TASK\tPROJECT\tKIND\tAGENTS\tSTATUS\tATTEMPTS\tNUDGES\tSENDS\tANSWERS\tNEEDS-HUMAN\tUNREPORTED\tSWITCHES\tDURATION\tACTIVE\tSTALLED\tIDLE-KEPT\tWAITED\tUNITS")
 	for _, id := range order {
 		l := rows[id]
-		proj, kind, agents, status := "-", "-", "-", l.lastStatus
+		proj, kind, agents, status, units := "-", "-", "-", l.lastStatus, "-"
 		if t := byID[id]; t != nil {
 			proj, kind, status = orDash(t.Project), t.Kind, t.Status
 			agents = strings.Join(append(slices.Clone(t.FallbackFrom), t.Agent), "->")
+			if t.Usage != nil {
+				units = task.Count(t.Usage.Units)
+			}
 		}
 		waited := l.waited
 		if !l.waitingSince.IsZero() && (status == task.NeedsHuman || status == task.Held) {
@@ -202,10 +205,10 @@ func printLearning(out io.Writer, events []state.Event, tasks []*task.Task, ids 
 		if l.kept {
 			idleKept = rounded(l.idleKept)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			id, proj, kind, agents, orDash(string(status)), l.attempts, l.nudges, l.sends, l.answers,
 			l.needsHuman, l.unreported, l.switches, roundedSpan(l.spawned, l.ended),
-			rounded(active), rounded(stalled), idleKept, rounded(waited))
+			rounded(active), rounded(stalled), idleKept, rounded(waited), units)
 	}
 	return w.Flush()
 }

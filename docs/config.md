@@ -40,6 +40,7 @@ worktreeSetup:            # run in each new runner worktree of this repository
     - cp "$HRK_REPO_ROOT/.env" .env
     - npm ci
 runnerInput: open         # let text typed in a runner's tab reach its agent
+wakeOn: all               # wake the main session for every news line
 ```
 
 ## Keys
@@ -50,6 +51,7 @@ runnerInput: open         # let text typed in a runner's tab reach its agent
 | `defaultKind` | `code` | Kind used when `spawn` gets no `--kind`. It must be defined under `kinds`. |
 | `kinds.<name>.agent` | see below | Agent spec for tasks of this kind. Required for a new kind. |
 | `kinds.<name>.worktree` | see below | `true` runs the task in a new git worktree when its cwd is inside a git repository. |
+| `kinds.<name>.mcp` | `false` | `true` keeps your MCP servers in the kind's Claude runners, as `spawn --mcp` does for one task. See [Runner tools and MCP](#runner-tools-and-mcp). |
 | `worktreeBranchPrefix` | `hrk/` | Prefix of runner branches, for example `hrk/t3-fix-login`. |
 | `language` | none | Language runners write report summaries and questions in, as free text such as `Vietnamese`, on one line of at most 40 characters. `spawn --language` overrides it per task. See [report-contract.md](report-contract.md). |
 | `telegram.envFile` | none | Dotenv file holding `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used instead of the plugin's files. `~/` is expanded. See [telegram.md](telegram.md). |
@@ -65,6 +67,7 @@ runnerInput: open         # let text typed in a runner's tab reach its agent
 | `heavySlots` | `2` | How many commands wrapped in `hrk heavy` run at once across every runner and the main session; the others wait for a free slot. From 0 to 64; `0` runs them at once and drops the rule from the runner contract. See [commands.md](commands.md#heavy-commands). |
 | `worktreeSetup` | none | Shell commands, per repository, that run in each new runner worktree before its agent starts. Each key is a repository's main checkout, as an absolute or `~/` path; each value a list of at least one command. See [Worktree setup](#worktree-setup). |
 | `runnerInput` | `locked` | `locked` lets a Claude, pi or omp runner take prompts only from the kit: `spawn`, `send`, `answer`, Telegram replies and the kit's own nudges. `open` lets text typed in the runner's tab reach its agent, as before this key existed. A change applies to runners spawned after it. Codex runners stay open. See [Runner input](#runner-input). |
+| `wakeOn` | `actionable` | <a id="wake-on"></a>`actionable` wakes the main session, through its own `wait` and the auto re-arm hook, only for news it has to act on; quiet news, such as a chain step's `done` without decisions, `stopped`, `cleanable` or `processes-left`, comes with the next wake, and at the latest 50 minutes after the main session was last active. `all` wakes for every news line, as before this key existed. Telegram is unaffected. See [commands.md](commands.md#what-wait-reports). |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.
@@ -76,8 +79,8 @@ The token and chat ids are read when a message is sent. They are never copied in
 | `code` | `claude:claude-sonnet-5-5:medium` | yes |
 | `flow` | `claude:claude-opus-5-5:high` | yes |
 | `fix` | `claude:claude-sonnet-5-5:medium` | no |
-| `research` | `claude:claude-opus-5-5:high` | no |
-| `report` | `claude:claude-opus-5-5:high` | no |
+| `research` | `claude:claude-sonnet-5-5:medium` | no |
+| `report` | `claude:claude-sonnet-5-5:medium` | no |
 
 An explicit `--agent` or `--worktree` / `--no-worktree` on `spawn` always wins over the table.
 
@@ -123,6 +126,17 @@ A runner's tab shows its agent at work, and nothing stops a stray keystroke ther
 - **Failing open.** When the gate cannot read its input or the state, it lets the prompt through and writes the reason to stderr: the lock prevents accidents, and must never cut the kit off from its own runner.
 - **What a locked pi or omp tab still allows.** Watching and scrolling; `esc` to interrupt; and built-in slash commands such as pi's `/session`, which the extension never sees.
 - **Codex.** Codex marks a per-run prompt hook `New hook - review required` and skips it until you trust it, so Codex runners stay open; their `started` event says `input open (Codex cannot lock it yet)`.
+
+## Runner tools and MCP
+
+Every tool schema and MCP server rides on each call a runner makes, so a Claude runner starts without the ones it has no use for. Its per-task `claude-settings.json` sets `permissions.deny`:
+
+- always: `Artifact`, `SendFeedback`, `ShareOnboardingGuide` and `ListAgents`, which publish pages, report on Claude Code, share its onboarding guide or message other sessions;
+- with `runnerInput: locked`: also `AskUserQuestion`, which nobody can answer in a locked tab (the runner asks with a `needs-human` report instead), and `ScheduleWakeup`, which paces a `/loop` no locked runner is given.
+
+`Workflow`, `ReportFindings`, `Agent`, `Skill` and the file and shell tools stay. A denied call fails visibly in the runner's tab.
+
+A Claude runner also starts with `--strict-mcp-config`, so none of your MCP servers, plugin servers or claude.ai connectors load. On Claude Code 2.1.302 the flag alone is enough: only Claude Code's built-in Chrome tools stay, listed by name and loaded on demand. To keep them for one task, pass `spawn --mcp`; for every task of a kind, set `kinds.<name>.mcp: true`. The choice is stored on the task, so a handoff or quota fallback relaunch keeps it, and the `started` event says `mcp: on`. Codex, pi and omp runners start as before.
 
 ## Runner memory cap
 

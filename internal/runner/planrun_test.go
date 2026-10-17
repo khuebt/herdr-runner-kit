@@ -294,3 +294,34 @@ func TestSharedCheckoutGoneFailsTheLaunch(t *testing.T) {
 		t.Error("--branch with a shared checkout must be refused")
 	}
 }
+
+func TestPlanReportShowsUnitsAndTheirTotal(t *testing.T) {
+	dir := t.TempDir()
+	plan := &planrun.Plan{Title: "Demo", Dir: dir, File: filepath.Join(dir, "plan.md"), Phases: []planrun.Phase{
+		{Number: 1, Title: "Claude phase"}, {Number: 2, Title: "Codex phase"}, {Number: 3, Title: "Not run", Status: "pending"},
+	}}
+	latest := map[int]*task.Task{
+		1: {ID: "t1", Agent: "claude", Summary: "did one", Usage: &task.Usage{Calls: 40, MaxContext: 120_000, Units: 1_250_000}},
+		2: {ID: "t2", Agent: "codex", Summary: "did two"},
+	}
+	path, _, err := writePlanReport(plan, latest, time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := string(data)
+	for _, want := range []string{
+		"| Phase | Task | Agent | Units | Claim | Verified |",
+		"| 1 Claude phase | t1 | claude | 1.2M | did one |",
+		"| 2 Codex phase | t2 | codex | - | did two |",
+		"| 3 Not run | none | | | | status pending",
+		"| Total | | | 1.2M | 40 calls, max context 120k, 1.2M units | |",
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report lacks %q:\n%s", want, report)
+		}
+	}
+}

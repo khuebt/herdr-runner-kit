@@ -483,13 +483,19 @@ func writePlanReport(plan *planrun.Plan, latest map[int]*task.Task, now time.Tim
 	fmt.Fprintf(&b, "# Plan run: %s\n\n", plan.Title)
 	fmt.Fprintf(&b, "- Plan: %s\n- Finished: %s\n\n", plan.File, now.Format("2006-01-02 15:04 MST"))
 	b.WriteString("Each row puts the runner's claim next to what the kit verified in the checkout.\n\n")
-	b.WriteString("| Phase | Task | Agent | Claim | Verified |\n|---|---|---|---|---|\n")
+	b.WriteString("| Phase | Task | Agent | Units | Claim | Verified |\n|---|---|---|---|---|---|\n")
+	var total task.Usage
 	for _, ph := range plan.Phases {
 		t := latest[ph.Number]
 		name := fmt.Sprintf("%d %s", ph.Number, ph.Title)
 		if t == nil {
-			fmt.Fprintf(&b, "| %s | none | | | status %s in its file, not run by the kit |\n", cell(name), cell(ph.Status))
+			fmt.Fprintf(&b, "| %s | none | | | | status %s in its file, not run by the kit |\n", cell(name), cell(ph.Status))
 			continue
+		}
+		units := "-"
+		if t.Usage != nil {
+			units = task.Count(t.Usage.Units)
+			total.Add(t.Usage)
 		}
 		claim := t.Summary
 		if len(t.Decisions) > 0 {
@@ -502,7 +508,10 @@ func writePlanReport(plan *planrun.Plan, latest map[int]*task.Task, now time.Tim
 			}
 			verification = phaseEvidence(ph.Number, c)
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n", cell(name), t.ID, cell(t.Agent), cell(claim), cell(verification))
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n", cell(name), t.ID, cell(t.Agent), units, cell(claim), cell(verification))
+	}
+	if total.Calls > 0 {
+		fmt.Fprintf(&b, "| Total | | | %s | %s | |\n", task.Count(total.Units), cell(total.String()))
 	}
 	dir := filepath.Join(plan.Dir, "reports")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
