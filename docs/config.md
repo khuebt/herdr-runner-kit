@@ -16,11 +16,14 @@ defaultKind: code
 kinds:
   code:
     agent: codex:gpt-6-astra:high
+    review: true          # every code task gets a review runner after it
   fix:
     worktree: true
-  review:                 # a new kind
+  audit:                  # a new kind
     agent: claude:claude-opus-5-5:high
     worktree: false
+review:
+  agent: codex::xhigh      # reviewer for plan run and spawn --review, instead of the default
 worktreeBranchPrefix: hrk/
 language: Vietnamese
 telegram:
@@ -52,6 +55,9 @@ wakeOn: all               # wake the main session for every news line
 | `kinds.<name>.agent` | see below | Agent spec for tasks of this kind. Required for a new kind. |
 | `kinds.<name>.worktree` | see below | `true` runs the task in a new git worktree when its cwd is inside a git repository. |
 | `kinds.<name>.mcp` | `false` | `true` keeps your MCP servers in the kind's Claude runners, as `spawn --mcp` does for one task. See [Runner tools and MCP](#runner-tools-and-mcp). |
+| `kinds.<name>.review` | `false` | `true` chains a read-only review runner after each task of the kind, as `spawn --review` does for one task; `spawn --review=false` skips it. Not allowed for `fix`, `research` and `report`. `plan run` does not use it; see `review` in `plan.md` ([commands.md](commands.md#plans)). |
+| `review.agent` | none | Agent spec of review runners. Without it the reviewer runs on another harness than the writer, at high effort: Codex for a Claude writer, Claude Opus otherwise, or the writer's harness on another model when that command is not installed. `review_agent` in a plan's `plan.md` wins over it. |
+| `review.skill` | `ak:code-review` | Skill a review runner invokes first. An empty value sends the brief without a skill, for a harness without AgentKit. |
 | `worktreeBranchPrefix` | `hrk/` | Prefix of runner branches, for example `hrk/t3-fix-login`. |
 | `language` | none | Language runners write report summaries and questions in, as free text such as `Vietnamese`, on one line of at most 40 characters. `spawn --language` overrides it per task. See [report-contract.md](report-contract.md). |
 | `telegram.envFile` | none | Dotenv file holding `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used instead of the plugin's files. `~/` is expanded. See [telegram.md](telegram.md). |

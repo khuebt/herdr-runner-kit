@@ -144,11 +144,13 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--branch NAME` | Branch of the run's worktree, after the repository's convention. Refused on a rerun that already has a checkout. |
 | `--kind`, `--agent`, `--claude-config`, `--language`, `--skill` | As for `spawn`, for every phase runner (default kind `flow`, skill `ak:cook`). |
 | `--gate human` | Hold every phase after the first for `release`. |
+| `--review required\|skip` | Overrides `plan.md`'s `review` key. `required` adds an independent read-only review runner on another harness. |
 
 - The first phase opens the worktree; every later phase works in the same checkout and branch, so the user gets one branch and one pull request.
 - When a phase is `done`, the kit checks its commits and the checkout against the phase's declared files and sets the phase file's `status: completed`. A phase that changed files outside its scope, or left uncommitted files, holds the next wave: `tN held · … (phase 3 changed files outside its scope: a.go; release to continue)`. Ask the user before `release`; they may prefer to `send` the runner a fix first.
 - `plan-done` names the report `<plan dir>/reports/plan-run-<YYMMDD-HHMM>.md`, with each runner's claim next to the kit's check, and `N/N phases done, K verified in scope`. Relay both.
 - After a failed or stopped phase, `plan run` again resumes: done phases are kept and the checkout is reused. It refuses while a phase is still running or held.
+- Review: `plan.md` frontmatter `review: required|skip`, `review_after: <phase>` (the first phase later phases build on) and `review_agent: <spec>`. The first review runs after the wave holding `review_after`, and the next wave fixes its verified findings in its own scope; a final review of what changed since runs before `plan-done`, and a fixup runner follows it unless the verdict is `pass`. `--dry-run` lists them for the brief. Relay `plan-done`'s review verdict and the review report path (`<plan dir>/reports/review-<YYMMDD-HHMM>.md`); on `fix`, say what the fixup runner did. `review-verdict` and `fixup-skipped` are progress, never news.
 - Runners never edit plan status; the kit does.
 
 ## spawn flags
@@ -161,6 +163,7 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--branch NAME` | Name of the new worktree branch, following the repository's convention. |
 | `--base REF` | Git ref a new worktree branch starts from. |
 | `--skill NAME` | Skill to invoke first, such as `ak:cook`. |
+| `--review` | Queue a read-only review runner on another harness after this `flow` or `code` task, in its checkout. Only with the user's yes in the brief; refused for `fix`, `research` and `report`. `--review=false` skips a kind's `review: true`. |
 | `--after t1,t2` | Start when every listed task is `done`. |
 | `--gate auto\|human` | `human` holds the task for `release`. |
 | `--reason TEXT` | With `--gate human`: why it waits, such as `needs D2`. A bare Telegram `ok` does not release it. |
@@ -183,7 +186,7 @@ Lines marked *quiet* never wake you alone while other tasks run: they come first
 
 | Line starts with | Meaning | What you do |
 |---|---|---|
-| `tN done` | Finished; *quiet* for a chain step whose next task has not started, or a `plan run` phase, when it has no `decided:`; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. |
+| `tN done` | Finished; *quiet* for a chain step whose next task has not started, or a `plan run` phase, when it has no `decided:`; `decided: …`, `git: …`, `tab closes HH:MM` or `tab kept`, summary and outputs follow | Relay `decided:` first, so the user can veto; remind about uncommitted or unpushed work; offer `keep <id>`. A review runner's `done` starts with `Verdict: pass` or `Verdict: fix` and names its report: relay both. On `fix`, offer `send <writer id>` with the report path while the writer's tab is open, or a new runner. |
 | `tN needs-human` | The runner asks a question, or a round: `N questions` and one numbered line each; `attempt N` when the runner continues in a fresh session after a context handoff | Ask the user, all of a round in one message, then `answer` once, such as `1a 2b`, the same way for any attempt. An answer refused as `for attempt N of tN, which ended`: ask the user again. |
 | `tN held` | A `--gate human` task waits; `(reason)` when held with `--reason` | Ask the user, then `release`. |
 | `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. For `runner lost: herdr pane gone` (herdr or the machine restarted), relay it and offer a new `spawn`; `show <id>` names the worktree and branch with the partial work. |
@@ -194,7 +197,7 @@ Lines marked *quiet* never wake you alone while other tasks run: they come first
 | `tN api-error` | The runner's turn failed twice in a row on an API error (lost connection, overloaded or failing server); it waits at its prompt | Tell the user; once the connection or the API is back, offer `send <id>` with "continue". |
 | `tN stopped` | *Quiet.* Stopped by `stop` | Relay it. |
 | `tN cleanable` | *Quiet.* Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
-| `tN plan-done` | Every phase of a `plan run` is done; `out:` is the run report | Relay the verified count and the report path. |
+| `tN plan-done` | Every phase of a `plan run` is done; `out:` is the run report | Relay the verified count, the report path, and the final review's verdict and fixup when the line names them. |
 
 ## Context handoff
 
