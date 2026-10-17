@@ -179,7 +179,7 @@ Picking an agent: the brief names each runner's harness, model and effort with o
 
 ## News that wait reports
 
-Lines marked *quiet* never wake you alone: they come first with the next line that does, with `idle`, or at the latest 50 minutes after your last turn. `wait --all-news`, `wait --task` and `wakeOn: all` wake for them too.
+Lines marked *quiet* never wake you alone while other tasks run: they come first with the next line that does, with `idle`, or at the latest 50 minutes after your last turn. `wait --all-news`, `wait --task` and `wakeOn: all` wake for them too.
 
 | Line starts with | Meaning | What you do |
 |---|---|---|
