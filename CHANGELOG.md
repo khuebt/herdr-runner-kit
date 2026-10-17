@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.13.0...v0.14.0) (2026-10-17)
+
+
+### Features
+
+* chain an independent read-only review runner for plan run and spawn ([#78](https://github.com/khuebt/herdr-runner-kit/issues/78)) ([2e7c331](https://github.com/khuebt/herdr-runner-kit/commit/2e7c331a2cb59a4d2f9d39bdcf570d186c356f0b))
+* continue a claude runner once after a transient api error and report api-error news ([#77](https://github.com/khuebt/herdr-runner-kit/issues/77)) ([2e7c331](https://github.com/khuebt/herdr-runner-kit/commit/2e7c331a2cb59a4d2f9d39bdcf570d186c356f0b))
+
+
+### Bug Fixes
+
+* give wait --task its own cursor so it never moves the main session's ([#76](https://github.com/khuebt/herdr-runner-kit/issues/76)) ([2e7c331](https://github.com/khuebt/herdr-runner-kit/commit/2e7c331a2cb59a4d2f9d39bdcf570d186c356f0b))
+* keep user text out of kit prompts in locked tabs and record a heavy command's pid before it runs ([#63](https://github.com/khuebt/herdr-runner-kit/issues/63)) ([2e7c331](https://github.com/khuebt/herdr-runner-kit/commit/2e7c331a2cb59a4d2f9d39bdcf570d186c356f0b))
+* record when a runner started on the task instead of scanning the event log ([#62](https://github.com/khuebt/herdr-runner-kit/issues/62)) ([2e7c331](https://github.com/khuebt/herdr-runner-kit/commit/2e7c331a2cb59a4d2f9d39bdcf570d186c356f0b))
+
 ## [0.13.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.12.0...v0.13.0) (2026-10-17)
 
 
