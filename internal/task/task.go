@@ -171,6 +171,10 @@ type Task struct {
 	// Unreported counts turns that ended without a report since the last
 	// prompt from the main session: the first is nudged, the second is news.
 	Unreported int `json:"unreported,omitempty"`
+	// APIErrors counts turns that ended on a transient API error since the
+	// runner last ended a turn normally, reported, was prompted by the main
+	// session or switched agents: the first is continued, the second is news.
+	APIErrors int `json:"apiErrors,omitempty"`
 	// CodexThread is the thread of the runner's first Codex turn. Notify
 	// calls from other threads, such as title generation, are ignored.
 	CodexThread string `json:"codexThread,omitempty"`

@@ -57,6 +57,15 @@ telegram:
 	}
 }
 
+func TestAPIErrorIsANotifyEvent(t *testing.T) {
+	if !slices.Contains(Default().Telegram.Notify, "api-error") {
+		t.Errorf("default notify = %v", Default().Telegram.Notify)
+	}
+	if _, err := Parse([]byte("telegram:\n  notify: [api-error]\n")); err != nil {
+		t.Errorf("api-error refused: %v", err)
+	}
+}
+
 func TestParseLanguage(t *testing.T) {
 	if cfg, err := Parse(nil); err != nil || cfg.Language != "" {
 		t.Fatalf("default language = %q, %v", cfg.Language, err)

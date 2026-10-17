@@ -37,6 +37,7 @@ func NewRootCommand() *cobra.Command {
 		newReportCommand(),
 		newAfterCommand(),
 		newUsageReaderCommand(),
+		newAPIRetryCommand(),
 		newTurnEndCommand(),
 		newContextCommand(),
 		newPromptGateCommand(),

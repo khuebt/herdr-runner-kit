@@ -136,6 +136,15 @@ func TestMessage(t *testing.T) {
 	}
 }
 
+func TestMessageAPIError(t *testing.T) {
+	tk := &task.Task{ID: "t3", Title: "fix login"}
+	got := Message(state.Event{Task: "t3", Type: "api-error", Summary: "the turn failed again on an API error"}, tk)
+	want := "#t3 hit an API error twice · fix login\nthe turn failed again on an API error\nCheck its herdr tab, or reply: #t3 <instruction>"
+	if got != want {
+		t.Errorf("api-error = %q", got)
+	}
+}
+
 func TestMessageDoneWithGit(t *testing.T) {
 	tk := &task.Task{ID: "t3", Title: "fix login"}
 	got := Message(state.Event{Task: "t3", Type: "done", Summary: "Fixed.", Git: "on b, 1 commit not pushed"}, tk)

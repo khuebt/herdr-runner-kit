@@ -52,6 +52,9 @@ type Runner struct {
 	// StartUsage starts the detached reader of a task's usage, which waits
 	// for the agent to write its turn.
 	StartUsage func(id string) error
+	// StartAPIRetry starts the detached continue of a runner whose turn ended
+	// on an API error.
+	StartAPIRetry func(id string) error
 	// Notify hands a news event to the detached Telegram notifier.
 	Notify func(ev state.Event)
 	// Telegram sends notifications in the notifier process.
@@ -86,6 +89,10 @@ func New(store *state.Store, cfg config.Config, bin string) *Runner {
 	}
 	r.StartUsage = func(id string) error {
 		_, err := r.startDetached(id, "__usage", "usage.log")
+		return err
+	}
+	r.StartAPIRetry = func(id string) error {
+		_, err := r.startDetached(id, "__api-retry", "api-retry.log")
 		return err
 	}
 	return r

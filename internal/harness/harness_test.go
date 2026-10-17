@@ -941,6 +941,33 @@ func TestClaudeUsageLimit(t *testing.T) {
 	}
 }
 
+func TestClaudeTransientError(t *testing.T) {
+	const lost = "API Error: Connection lost mid-response. The response above may be incomplete."
+	const capacity = "API Error: Request rejected (429) · this may be a temporary capacity issue."
+	tests := []struct {
+		name, payload string
+		want          string // empty means not a transient error
+	}{
+		{"lost connection", `{"hook_event_name":"StopFailure","error":"server_error","last_assistant_message":"` + lost + `"}`, lost},
+		{"overloaded without a message", `{"hook_event_name":"StopFailure","error":"overloaded"}`, "API error: overloaded"},
+		{"capacity", `{"hook_event_name":"StopFailure","error":"rate_limit","last_assistant_message":"` + capacity + `"}`, capacity},
+		{"usage limit", `{"hook_event_name":"StopFailure","error":"rate_limit","last_assistant_message":"You've hit your session limit · resets 3pm"}`, ""},
+		{"limit fixture", readFixture(t, "stop-failure-claude.json"), ""},
+		{"authentication", `{"hook_event_name":"StopFailure","error":"authentication_failed"}`, ""},
+		{"invalid request", `{"hook_event_name":"StopFailure","error":"invalid_request"}`, ""},
+		{"unknown", `{"hook_event_name":"StopFailure","error":"unknown"}`, ""},
+		{"max output tokens", `{"hook_event_name":"StopFailure","error":"max_output_tokens"}`, ""},
+		{"stop hook", `{"hook_event_name":"Stop","error":"server_error"}`, ""},
+		{"not json", `server_error`, ""},
+	}
+	for _, tt := range tests {
+		msg, ok := ClaudeTransientError([]byte(tt.payload))
+		if msg != tt.want || ok != (tt.want != "") {
+			t.Errorf("%s = %q, %v; want %q", tt.name, msg, ok, tt.want)
+		}
+	}
+}
+
 func TestParseClaudeCompaction(t *testing.T) {
 	for name, want := range map[string]ClaudeCompaction{
 		"precompact-auto.json":      {Event: "PreCompact", Trigger: "auto"},
@@ -1044,7 +1071,8 @@ func TestReadTurnEnd(t *testing.T) {
 		want    TurnSignal
 	}{
 		{"claude limit", claude{}, readFixture(t, "stop-failure-claude.json"), "", TurnSignal{LimitConfirmed: true}},
-		{"claude other failure", claude{}, `{"hook_event_name":"StopFailure","error":"server_error"}`, "", TurnSignal{Ignore: true}},
+		{"claude server error", claude{}, `{"hook_event_name":"StopFailure","error":"server_error"}`, "", TurnSignal{APIError: "API error: server_error"}},
+		{"claude other failure", claude{}, `{"hook_event_name":"StopFailure","error":"authentication_failed"}`, "", TurnSignal{Ignore: true}},
 		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true}},
 		{"claude all finished", claude{}, readFixture(t, "stop-background-none-claude.json"), "background-agents-claude-2.txt", TurnSignal{}},
 		{"claude mode line", claude{}, `{"hook_event_name":"Stop"}`, "background-agents-claude-2.txt", TurnSignal{Background: true}},

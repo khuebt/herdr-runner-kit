@@ -132,7 +132,7 @@ const MaxHeavySlots = 64
 const MinStallAfter = 2 * time.Minute
 
 // NotifyEvents lists the event types the telegram.notify key accepts.
-var NotifyEvents = []string{"needs-human", "failed", "stalled", "held", "done", "turn-ended-unreported", "usage-limit"}
+var NotifyEvents = []string{"needs-human", "failed", "stalled", "held", "done", "turn-ended-unreported", "usage-limit", "api-error"}
 
 // The file types use pointers so that an absent key keeps its default.
 type fileConfig struct {

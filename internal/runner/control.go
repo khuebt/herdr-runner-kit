@@ -71,7 +71,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		case t.Status == task.Stopped:
 			return errStopped
 		}
-		t.Unreported = 0
+		t.Unreported, t.APIErrors = 0, 0
 		if head != "" {
 			t.RoundHead = head
 		}
@@ -134,7 +134,7 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	nt, changed, err := r.Store.Transition(id, task.Running, []task.Status{task.NeedsHuman}, func(t *task.Task) {
-		t.Question, t.Unreported = "", 0
+		t.Question, t.Unreported, t.APIErrors = "", 0, 0
 		if head != "" {
 			t.RoundHead = head
 		}

@@ -49,7 +49,7 @@ const (
 // newsTypes are the events that wake the main session, or come with its next
 // wake when marked quiet. Everything else is progress and only moves the
 // cursor.
-var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "cleanable", "processes-left", "plan-done"}
+var newsTypes = []string{"done", "needs-human", "failed", "held", "stalled", "stopped", "turn-ended-unreported", "usage-limit", "api-error", "cleanable", "processes-left", "plan-done"}
 
 // IsNews reports whether an event type wakes the main session.
 func IsNews(typ string) bool { return slices.Contains(newsTypes, typ) }

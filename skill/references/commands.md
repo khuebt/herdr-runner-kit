@@ -191,6 +191,7 @@ Lines marked *quiet* never wake you alone while other tasks run: they come first
 | `tN processes-left` | *Quiet.* Processes the closed runner started still run, with pids and commands | Name them to the user; never kill them yourself. |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |
 | `tN usage-limit` | The runner's screen shows its agent's usage limit and no `quotaFallback` agent is left | Tell the user; offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the reset. |
+| `tN api-error` | The runner's turn failed twice in a row on an API error (lost connection, overloaded or failing server); it waits at its prompt | Tell the user; once the connection or the API is back, offer `send <id>` with "continue". |
 | `tN stopped` | *Quiet.* Stopped by `stop` | Relay it. |
 | `tN cleanable` | *Quiet.* Its branch is merged and its worktree is clean | Ask the user, then `cleanup --yes <id>`. |
 | `tN plan-done` | Every phase of a `plan run` is done; `out:` is the run report | Relay the verified count and the report path. |

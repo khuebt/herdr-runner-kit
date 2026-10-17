@@ -117,6 +117,21 @@ func newAfterCommand() *cobra.Command {
 	}
 }
 
+func newAPIRetryCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "__api-retry <id>",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			r, err := openRunner()
+			if err != nil {
+				return err
+			}
+			return r.ContinueAfterAPIError(context.Background(), args[0])
+		},
+	}
+}
+
 func newUsageReaderCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:    "__usage <id>",

@@ -118,7 +118,7 @@ func (r *Runner) claimSwitch(seen *task.Task, from []task.Status, toStarting, co
 		t.Agent, t.ClaudeConfigDir = agent, dir
 		t.Relaunched = task.RelaunchUsageLimit
 		// A new agent starts a new Codex thread and a fresh turn count.
-		t.CodexThread, t.Unreported, t.Stalled, t.Question, t.Error = "", 0, false, "", ""
+		t.CodexThread, t.Unreported, t.APIErrors, t.Stalled, t.Question, t.Error = "", 0, 0, false, "", ""
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
 		if toStarting {
 			t.Status, t.LauncherPID = task.Starting, 0

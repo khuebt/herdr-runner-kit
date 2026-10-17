@@ -79,8 +79,8 @@ type TurnInput struct {
 }
 
 // TurnSignal is an adapter's reading of one turn end. The runner acts on it
-// in a fixed order: a confirmed limit, an ignored turn, the thread, a limit
-// on screen, low context, background work, and only then the nudge.
+// in a fixed order: a confirmed limit, an API error, an ignored turn, the
+// thread, a limit on screen, low context, background work, and only then the nudge.
 type TurnSignal struct {
 	// Ignore says the hook is not the end of one of the runner's own turns,
 	// or ended it with nothing the kit can act on.
@@ -92,6 +92,10 @@ type TurnSignal struct {
 	LimitConfirmed bool
 	// LimitOnScreen says the agent's own usage-limit line shows.
 	LimitOnScreen bool
+	// APIError is the message of a turn the agent ended on an API error that
+	// may pass, such as a lost connection or an overloaded or failing
+	// server. The runner continues it once.
+	APIError string
 	// Background says the agent ended its turn with background work still
 	// running, so it wakes on its own later.
 	Background bool
