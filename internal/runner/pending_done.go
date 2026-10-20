@@ -33,8 +33,8 @@ var (
 // on its screen, the done becomes final, superseded or not. A gone agent is
 // left to WatchAgent, which finishes the done (see finishHeldDone). A done
 // held for running subagents waits for the turn end their result brings, and
-// becomes final after pendingDoneCeiling if none comes, with a
-// done-hold-timeout event. It returns when the task finishes or its runner
+// becomes final after pendingDoneCeiling if none comes and the agent sits
+// idle, with a done-hold-timeout event; a working agent keeps it held. It returns when the task finishes or its runner
 // closes, and at once for an agent whose done is never held.
 func (r *Runner) WatchPendingDone(ctx context.Context, id string) {
 	for sleepCtx(ctx, pendingDoneEvery) {
@@ -45,21 +45,19 @@ func (r *Runner) WatchPendingDone(ctx context.Context, id string) {
 		if t.PendingDone == nil || time.Since(t.PendingDone.Since) < pendingDoneAge {
 			continue
 		}
-		if t.PendingDone.Subagents {
-			if time.Since(t.PendingDone.Since) < pendingDoneCeiling || t.PendingDone.Superseded {
-				continue
-			}
-			r.emit(t, "done-hold-timeout", fmt.Sprintf("a done held for background subagents became final after %s without a turn end", pendingDoneCeiling), "")
-			if _, err := r.FinishDone(id, false); err != nil && !errors.Is(err, errNothingHeld) {
-				fmt.Fprintf(os.Stderr, "hrk: %s: finish held done: %v\n", id, err)
-			}
+		waiting := t.PendingDone.Subagents && !t.PendingDone.Superseded
+		if waiting && time.Since(t.PendingDone.Since) < pendingDoneCeiling {
 			continue
 		}
 		if !r.agentSettled(ctx, t) || !sleepCtx(ctx, pendingDoneRecheck) || !r.agentSettled(ctx, t) {
 			continue
 		}
-		if _, err := r.FinishDone(id, true); err != nil && !errors.Is(err, errNothingHeld) {
+		done, err := r.FinishDone(id, true)
+		switch {
+		case err != nil && !errors.Is(err, errNothingHeld):
 			fmt.Fprintf(os.Stderr, "hrk: %s: finish held done: %v\n", id, err)
+		case err == nil && waiting:
+			r.emit(done, "done-hold-timeout", fmt.Sprintf("a done held for background work became final after %s, with the agent idle and no turn end", pendingDoneCeiling), "")
 		}
 	}
 }

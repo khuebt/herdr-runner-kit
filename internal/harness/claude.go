@@ -442,9 +442,16 @@ func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
 // ClaudeBackgroundEnding is ClaudeBackgroundWork for the work that ends and
 // wakes the runner with its result: subagents, workflows and any type the
 // kit does not know. A shell or a monitor, such as a dev server, may run
-// for as long as the session does.
+// for as long as the session does, and Claude's own housekeeping (memory
+// consolidation, an auto-mode scan, a memory import) ends without waking it.
 func ClaudeBackgroundEnding(payload []byte) (running int, known bool) {
-	return claudeBackgroundRunning(payload, func(kind string) bool { return kind != "shell" && kind != "monitor" })
+	return claudeBackgroundRunning(payload, func(kind string) bool {
+		switch kind {
+		case "shell", "monitor", "dream", "auto-mode scan", "memory import":
+			return false
+		}
+		return true
+	})
 }
 
 // claudeBackgroundRunning counts the running entries of the list whose type

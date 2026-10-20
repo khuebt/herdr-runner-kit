@@ -481,3 +481,24 @@ func TestWatcherKeepsADoneHeldForASubagentUntilTheCeiling(t *testing.T) {
 		t.Errorf("status %s, done events %d, timeouts %d", got.Status, len(doneEvents(t, r, tk.ID)), countEvents(t, r, tk.ID, "done-hold-timeout"))
 	}
 }
+
+func TestWatcherNeverFinishesAWorkingAgentsDoneAtTheCeiling(t *testing.T) {
+	defer func(every, recheck, age, ceiling time.Duration) {
+		pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = every, recheck, age, ceiling
+	}(pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling)
+	pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = time.Millisecond, time.Millisecond, 0, 0
+	r, fake, _ := newTestRunner(t)
+	fake.on("pane read", ok(""))
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
+	tk := running(t, r, SpawnOptions{Kind: "fix", Agent: "claude", Prompt: "x", Cwd: gitRepo(t)})
+	runnerDone(t, r, tk.ID, "fixed")
+	claudeStop(t, r, tk.ID, `{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}`)
+	watchBriefly(r, tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || countEvents(t, r, tk.ID, "done-hold-timeout") != 0 {
+		t.Fatalf("a working agent's done was finished: %s", got.Status)
+	}
+	// Its correcting report still lands.
+	if got := runnerDone(t, r, tk.ID, "corrected"); got.PendingDone == nil || got.PendingDone.Summary != "corrected" {
+		t.Errorf("correcting report: %+v", got.PendingDone)
+	}
+}

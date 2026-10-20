@@ -128,15 +128,17 @@ func TestClaudeBackgroundEnding(t *testing.T) {
 	if n, known := ClaudeBackgroundEnding([]byte(shell)); !known || n != 0 {
 		t.Errorf("a running shell counted: %d %v", n, known)
 	}
-	for _, kind := range []string{"workflow", "mcp", "remote_agent"} {
+	for _, kind := range []string{"workflow", "MCP task", "cloud session", "teammate"} {
 		in := `{"background_tasks":[{"type":"` + kind + `","status":"running"}]}`
 		if n, known := ClaudeBackgroundEnding([]byte(in)); !known || n != 1 {
 			t.Errorf("a running %s did not count: %d %v", kind, n, known)
 		}
 	}
-	monitor := `{"background_tasks":[{"type":"monitor","status":"running"}]}`
-	if n, _ := ClaudeBackgroundEnding([]byte(monitor)); n != 0 {
-		t.Errorf("a running monitor counted: %d", n)
+	for _, kind := range []string{"monitor", "dream", "auto-mode scan", "memory import"} {
+		in := `{"background_tasks":[{"type":"` + kind + `","status":"running"}]}`
+		if n, _ := ClaudeBackgroundEnding([]byte(in)); n != 0 {
+			t.Errorf("a running %s counted: %d", kind, n)
+		}
 	}
 	if _, known := ClaudeBackgroundEnding([]byte(`{}`)); known {
 		t.Error("no list is known")
