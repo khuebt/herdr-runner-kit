@@ -193,7 +193,7 @@ func (r *Runner) settleTurn(id string) (bool, error) {
 	if !finish {
 		return false, nil
 	}
-	if _, err := r.FinishDone(id, false, time.Time{}); errors.Is(err, errNothingHeld) {
+	if _, err := r.FinishDone(id, false, nil); errors.Is(err, errNothingHeld) {
 		return false, nil // a report or another turn end took it first
 	} else if err != nil {
 		return false, err

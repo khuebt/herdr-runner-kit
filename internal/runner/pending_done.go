@@ -36,9 +36,10 @@ var (
 // and becomes final after pendingDoneCeiling if none comes and no turn is
 // running, with a done-hold-timeout event. herdr reports Claude working
 // while it waits for a subagent, so the kit's own record of turn starts,
-// not herdr, tells a hung subagent from a running turn. It returns when the
-// task finishes or its runner closes, and at once for an agent whose done
-// is never held.
+// not herdr, tells a hung subagent from a running turn; only a recorded
+// turn no turn end cleared, as after an interrupt, falls back to the agent
+// settling. It returns when the task finishes or its runner closes, and at
+// once for an agent whose done is never held.
 func (r *Runner) WatchPendingDone(ctx context.Context, id string) {
 	for sleepCtx(ctx, pendingDoneEvery) {
 		t, err := r.Store.Get(id)
@@ -57,14 +58,17 @@ func (r *Runner) finishStaleDone(ctx context.Context, t *task.Task) {
 		return
 	}
 	waiting := p.Subagents && !p.Superseded
-	if waiting {
-		if time.Since(p.Since) < pendingDoneCeiling || !p.TurnStart.IsZero() {
-			return
-		}
-	} else if !r.agentSettled(ctx, t) || !sleepCtx(ctx, pendingDoneRecheck) || !r.agentSettled(ctx, t) {
+	if waiting && time.Since(p.Since) < pendingDoneCeiling {
 		return
 	}
-	done, err := r.FinishDone(t.ID, true, p.Since)
+	// A turn interrupted with esc fires no Stop, so a turn start the kit
+	// recorded may never be cleared: at the ceiling, herdr's idle says the
+	// turn is over.
+	if (!waiting || !p.TurnStart.IsZero()) &&
+		(!r.agentSettled(ctx, t) || !sleepCtx(ctx, pendingDoneRecheck) || !r.agentSettled(ctx, t)) {
+		return
+	}
+	done, err := r.FinishDone(t.ID, true, p)
 	switch {
 	case err != nil && !errors.Is(err, errNothingHeld):
 		fmt.Fprintf(os.Stderr, "hrk: %s: finish held done: %v\n", t.ID, err)
@@ -82,7 +86,7 @@ func (r *Runner) finishHeldDone(id string) bool {
 	if err != nil || cur.Status != task.Running || cur.PendingDone == nil || cur.PendingDone.Superseded {
 		return false
 	}
-	t, err := r.FinishDone(id, false, time.Time{})
+	t, err := r.FinishDone(id, false, nil)
 	if err != nil && t == nil {
 		return false // a report or a turn end took it first, or the task changed
 	}

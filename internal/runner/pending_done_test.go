@@ -327,7 +327,7 @@ func TestLaterReportReplacesAHeldDone(t *testing.T) {
 	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman || len(doneEvents(t, r, tk.ID)) != 0 {
 		t.Errorf("status %s after the turn end", got.Status)
 	}
-	if _, err := r.FinishDone(tk.ID, true, time.Time{}); err == nil || !strings.Contains(err.Error(), errNothingHeld.Error()) {
+	if _, err := r.FinishDone(tk.ID, true, nil); err == nil || !strings.Contains(err.Error(), errNothingHeld.Error()) {
 		t.Errorf("finish with nothing held = %v", err)
 	}
 }
@@ -451,12 +451,29 @@ func TestFailedSendTakesItsQueuedMarkBack(t *testing.T) {
 func heldForSubagent(t *testing.T) (*Runner, *fakeHerdr, *task.Task) {
 	t.Helper()
 	r, fake, _ := newTestRunner(t)
+	return r, fake, holdForSubagent(t, r, fake)
+}
+
+// holdForSubagent runs a Claude task on r whose done is held for a running
+// subagent, with herdr reporting it working.
+func holdForSubagent(t *testing.T, r *Runner, fake *fakeHerdr) *task.Task {
+	t.Helper()
 	fake.on("pane read", ok(""))
 	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
 	tk := running(t, r, SpawnOptions{Kind: "fix", Agent: "claude", Prompt: "x", Cwd: gitRepo(t)})
 	runnerDone(t, r, tk.ID, "fixed")
 	claudeStop(t, r, tk.ID, subagentStop)
-	return r, fake, tk
+	return tk
+}
+
+// subagentWakes submits the note Claude gets when a subagent ends, which
+// starts a turn.
+func subagentWakes(t *testing.T, r *Runner, id string) {
+	t.Helper()
+	gate, _ := harness.For(task.Claude)
+	if _, err := r.GatePrompt(id, gate, []byte(`{"prompt":"<task-notification>agent done</task-notification>"}`)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 const subagentStop = `{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}`
@@ -498,10 +515,7 @@ func TestTurnInProgressKeepsADoneHeldPastTheCeiling(t *testing.T) {
 	shortWatch(t, 0)
 	r, _, tk := heldForSubagent(t)
 	// The subagent's result wakes Claude for a turn.
-	gate, _ := harness.For(task.Claude)
-	if _, err := r.GatePrompt(tk.ID, gate, []byte(`{"prompt":"<task-notification>agent done</task-notification>"}`)); err != nil {
-		t.Fatal(err)
-	}
+	subagentWakes(t, r, tk.ID)
 	watchBriefly(r, tk.ID)
 	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || countEvents(t, r, tk.ID, "done-hold-timeout") != 0 {
 		t.Fatalf("a done was finished while a turn ran: %s", got.Status)
@@ -545,5 +559,66 @@ func TestSupersededDoneHeldForSubagentsIsFinishedOnceTheAgentSettles(t *testing.
 	watchBriefly(r, tk.ID)
 	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done || countEvents(t, r, tk.ID, "done-hold-timeout") != 0 {
 		t.Errorf("status %s, timeouts %d", got.Status, countEvents(t, r, tk.ID, "done-hold-timeout"))
+	}
+}
+
+func TestInterruptedTurnFinishesAHeldDoneOnceTheAgentSettles(t *testing.T) {
+	shortWatch(t, 0)
+	r, fake, tk := heldForSubagent(t)
+	subagentWakes(t, r, tk.ID)
+	// esc ends the turn, and no Stop reports it.
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
+	watchBriefly(r, tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done || countEvents(t, r, tk.ID, "done-hold-timeout") != 1 {
+		t.Errorf("status %s, timeouts %d", got.Status, countEvents(t, r, tk.ID, "done-hold-timeout"))
+	}
+}
+
+func TestWatcherNeverFinishesADoneWhoseTurnStartedAfterItsRead(t *testing.T) {
+	for _, superseded := range []bool{false, true} {
+		shortWatch(t, 0)
+		r, fake, tk := heldForSubagent(t)
+		if superseded {
+			// The 2-minute branch, which waits for the agent to settle.
+			fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
+			if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+				t.PendingDone.Superseded = true
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		judged, _ := r.Store.Get(tk.ID)
+		subagentWakes(t, r, tk.ID)
+		r.finishStaleDone(context.Background(), judged)
+		if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || countEvents(t, r, tk.ID, "done-hold-timeout") != 0 {
+			t.Errorf("superseded %v: a done was finished while a turn ran: %s", superseded, got.Status)
+		}
+	}
+}
+
+func TestLockedRunnersTurnFromTheKitKeepsADoneHeldPastTheCeiling(t *testing.T) {
+	shortWatch(t, 0)
+	r, fake := lockedRunner(t)
+	tk := holdForSubagent(t, r, fake)
+	if !InputLocked(tk) {
+		t.Fatal("the runner's input is open")
+	}
+	// A prompt the kit typed, which takes the token the kit left.
+	if err := r.Store.AddPromptToken(tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	gate, _ := harness.For(task.Claude)
+	if block, err := r.GatePrompt(tk.ID, gate, []byte(`{"prompt":"next step"}`)); block != "" || err != nil {
+		t.Fatalf("the kit's prompt was blocked: %q, %v", block, err)
+	}
+	watchBriefly(r, tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || countEvents(t, r, tk.ID, "done-hold-timeout") != 0 {
+		t.Fatalf("a done was finished while the kit's turn ran: %s", got.Status)
+	}
+
+	claudeStop(t, r, tk.ID, `{"hook_event_name":"Stop"}`)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done {
+		t.Errorf("status %s once the turn ended", got.Status)
 	}
 }
