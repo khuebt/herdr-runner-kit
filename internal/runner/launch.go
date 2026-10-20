@@ -34,6 +34,9 @@ const (
 	// found the pane busy.
 	exportShellWait = 3 * time.Second
 	busyShellWait   = 10 * time.Second
+	// nameFreeWait caps the wait for herdr to release the name of an agent
+	// that just quit, which took up to 280 ms.
+	nameFreeWait = 5 * time.Second
 )
 
 // errHandled means the launch ended in a state that is already recorded.
@@ -252,6 +255,14 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 		r.waitShell(ctx, pane, busyShellWait)
 		_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
 	}
+	if herdr.HasCode(err, herdr.CodeAgentNameTaken) {
+		name, err = r.retakeName(ctx, t, name, adapter.HerdrKind(), pane, args)
+	}
+	if name != t.Herdr.AgentName {
+		if _, uerr := r.Store.Update(t.ID, func(t *task.Task) error { t.Herdr.AgentName = name; return nil }); uerr != nil {
+			return spec, nil, "", uerr
+		}
+	}
 	if err := r.settleStartup(ctx, t, adapter, pane, err); err != nil {
 		return spec, nil, "", err
 	}
@@ -259,6 +270,26 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 		return spec, nil, "", errUsageLimit
 	}
 	return spec, adapter, contract, nil
+}
+
+// retakeName starts the agent once more after herdr refused name as taken.
+// herdr keeps the name of an agent that quit for a moment after it exits, so
+// a fresh session in the same pane waits for the name to come free first. A
+// name still held after that gives way to one scoped to the attempt. It
+// returns the name the agent was started under.
+func (r *Runner) retakeName(ctx context.Context, t *task.Task, name, kind, pane string, args []string) (string, error) {
+	for range int(nameFreeWait / shellPollEvery) {
+		if _, err := r.Herdr.AgentGet(ctx, name); isGone(err) || ctx.Err() != nil {
+			break
+		}
+		r.Sleep(shellPollEvery)
+	}
+	_, err := r.Herdr.AgentStart(ctx, name, kind, pane, agentStartTimeout, args)
+	if herdr.HasCode(err, herdr.CodeAgentNameTaken) {
+		name = fmt.Sprintf("%s-%d", name, task.AttemptOf(t))
+		_, err = r.Herdr.AgentStart(ctx, name, kind, pane, agentStartTimeout, args)
+	}
+	return name, err
 }
 
 // writeRunnerFiles creates the output directory and writes the adapter's

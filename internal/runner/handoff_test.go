@@ -309,3 +309,54 @@ func TestHandoffAfterAQuotaSwitchSaysWhyItRelaunched(t *testing.T) {
 		t.Errorf("prompt = %q", prompt)
 	}
 }
+
+// herdr keeps the name of an agent that quit for a moment after it exits, so
+// the next session's start can find the name taken by the session it
+// replaces.
+func TestHandoffWaitsForTheQuitSessionToReleaseItsName(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		heldFor  int // name lookups that still find the quit session
+		wantName string
+	}{
+		{"released", 2, "hrk-t1"},
+		{"never released", 1000, "hrk-t1-2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+			if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.AgentName = "hrk-" + t.ID; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Handoff(tk.ID, ReportOptions{Summary: "s", Outputs: []string{handoffFile(t, r, tk.ID)}, Attempt: 1}); err != nil {
+				t.Fatal(err)
+			}
+			quitsThenIdle(fake)
+			lookups := 0
+			fake.on("agent get", func(args []string) (string, error) {
+				if args[2] == "hrk-t1" {
+					if lookups++; lookups > tc.heldFor {
+						return herdrErr(herdr.CodeAgentNotFound)(args)
+					}
+					return `{"result":{"agent":{"agent":null,"agent_status":"idle","name":"hrk-t1"}}}`, nil
+				}
+				return `{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`, nil
+			})
+			fake.on("agent start", func(args []string) (string, error) {
+				if args[2] == "hrk-t1" && lookups <= tc.heldFor {
+					return herdrErr(herdr.CodeAgentNameTaken)(args)
+				}
+				return `{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`, nil
+			})
+			if err := r.Launch(context.Background(), tk.ID); err != nil {
+				t.Fatal(err)
+			}
+			if start := lastCall(fake, "agent", "start"); start[2] != tc.wantName {
+				t.Errorf("agent start = %q, want name %s", start, tc.wantName)
+			}
+			if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || got.Herdr.AgentName != tc.wantName {
+				t.Errorf("task = %s agent name %q", got.Status, got.Herdr.AgentName)
+			}
+		})
+	}
+}
