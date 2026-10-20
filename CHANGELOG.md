@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.0...v0.15.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* wait for herdr to release a quit session's agent name before a relaunch ([#86](https://github.com/khuebt/herdr-runner-kit/issues/86)) ([da240ff](https://github.com/khuebt/herdr-runner-kit/commit/da240ff95d3e5e5012fafd715235f5ee6ee828b5))
+
 ## [0.15.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.14.0...v0.15.0) (2026-10-20)
 
 
