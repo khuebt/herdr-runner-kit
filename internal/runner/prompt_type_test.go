@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -122,6 +123,13 @@ func TestOpenOrCodexRunnerPromptsAsBefore(t *testing.T) {
 			}
 			if n := tokens(t, r, tk.ID); n != 0 {
 				t.Errorf("tokens = %d", n)
+			}
+			// Open Claude input has the gate too, which lets a prompt typed
+			// in the tab through.
+			if a, _ := harness.For(task.Claude); tt.input == config.InputOpen {
+				if block, err := r.GatePrompt(tk.ID, a, []byte(`{"prompt":"typed in the tab"}`)); block != "" || err != nil {
+					t.Errorf("open gate: block %q, err %v", block, err)
+				}
 			}
 		})
 	}

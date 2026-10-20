@@ -2,8 +2,10 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
@@ -92,9 +94,10 @@ func (r *Runner) boxIs(ctx context.Context, adapter harness.Adapter, pane, text 
 // event keeps.
 const blockedHead = 60
 
-// GatePrompt is the prompt gate of task id's locked runner, fed the
-// agent's prompt-submit hook input. It lets the prompt through when the
-// agent says it is its own, or when the kit left a token for it; otherwise
+// GatePrompt is the prompt gate of task id's runner, fed the agent's
+// prompt-submit hook input. It lets the prompt through when the runner's
+// input is open, when the agent says it is its own, or when the kit left a
+// token for it, and records the turn it starts on a held done; otherwise
 // it records an input-blocked event and returns the adapter's block reply,
 // which tells the human where to ask instead. An error lets the prompt
 // through: the lock prevents accidents, and must never cut the kit off from
@@ -108,11 +111,14 @@ func (r *Runner) GatePrompt(id string, adapter harness.Adapter, payload []byte) 
 	}
 	r.recordTranscript(t, adapter.Harness(), adapter.HookTranscript(payload))
 	prompt, synthetic, err := adapter.GatePrompt(payload)
-	if err != nil || synthetic {
-		return "", err
+	pass := err != nil || synthetic || !InputLocked(t)
+	if !pass {
+		var taken bool
+		taken, err = r.Store.TakePromptToken(t.ID)
+		pass = taken || err != nil
 	}
-	if taken, err := r.Store.TakePromptToken(t.ID); err != nil || taken {
-		return "", err
+	if pass {
+		return "", errors.Join(err, r.turnStarted(t))
 	}
 	head := []rune(strings.Join(strings.Fields(redact.Secrets(prompt)), " "))
 	summary := string(head[:min(blockedHead, len(head))])
@@ -121,4 +127,19 @@ func (r *Runner) GatePrompt(id string, adapter harness.Adapter, payload []byte) 
 	}
 	r.emit(t, "input-blocked", summary, "")
 	return adapter.GateBlock(fmt.Sprintf("%s is a runner: it takes prompts only from the main session. Ask there, or run: hrk send %s \"…\"", t.ID, t.ID)), nil
+}
+
+// turnStarted records on t's held done that a turn of its agent started, so
+// the done stays held until that turn ends (see WatchPendingDone).
+func (r *Runner) turnStarted(t *task.Task) error {
+	if t.PendingDone == nil {
+		return nil
+	}
+	_, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		if t.PendingDone != nil {
+			t.PendingDone.TurnStart = time.Now().UTC()
+		}
+		return nil
+	})
+	return err
 }

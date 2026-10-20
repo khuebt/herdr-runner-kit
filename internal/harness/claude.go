@@ -478,12 +478,12 @@ func claudeBackgroundRunning(payload []byte, counts func(kind string) bool) (run
 // StopFailure hooks that call `<bin> __turn-end`, which tells the two apart
 // by the hook input, and PreCompact and SessionStart(compact) hooks that
 // call `<bin> __context`. PreCompact has no matcher: a manual compaction
-// must cancel an automatic one Claude announced but never ran. With
-// InputLocked, a UserPromptSubmit hook calls `<bin> __prompt-gate`;
-// without it, a SessionStart(startup) hook calls `<bin> __context`. Either
-// records the session's transcript as it starts. Claude
-// merges them with the user's own hooks. It also denies the tools a runner
-// has no use for, whose schemas would ride on every call.
+// must cancel an automatic one Claude announced but never ran. A
+// UserPromptSubmit hook calls `<bin> __prompt-gate`, which records the
+// session's transcript and each turn start, and with InputLocked refuses a
+// prompt typed in the tab. Claude merges them with the user's own hooks. It
+// also denies the tools a runner has no use for, whose schemas would ride
+// on every call.
 func ClaudeSettings(in ClaudeSettingsInput) ([]byte, error) {
 	bin := in.Bin
 	if !filepath.IsAbs(bin) {
@@ -491,21 +491,17 @@ func ClaudeSettings(in ClaudeSettingsInput) ([]byte, error) {
 	}
 	turnEnd := map[string]any{"type": "command", "command": ShellQuote(bin) + " __turn-end --harness claude"}
 	onCompact := map[string]any{"type": "command", "command": ShellQuote(bin) + " __context --harness claude"}
+	gate := map[string]any{"type": "command", "command": ShellQuote(bin) + " __prompt-gate --harness claude"}
 	hooks := map[string]any{
-		"Stop":         []any{map[string]any{"hooks": []any{turnEnd}}},
-		"StopFailure":  []any{map[string]any{"hooks": []any{turnEnd}}},
-		"PreCompact":   []any{map[string]any{"hooks": []any{onCompact}}},
-		"SessionStart": []any{map[string]any{"matcher": "compact", "hooks": []any{onCompact}}},
+		"Stop":             []any{map[string]any{"hooks": []any{turnEnd}}},
+		"StopFailure":      []any{map[string]any{"hooks": []any{turnEnd}}},
+		"PreCompact":       []any{map[string]any{"hooks": []any{onCompact}}},
+		"SessionStart":     []any{map[string]any{"matcher": "compact", "hooks": []any{onCompact}}},
+		"UserPromptSubmit": []any{map[string]any{"hooks": []any{gate}}},
 	}
 	deny := slices.Clone(claudeRunnerDeny)
 	if in.InputLocked {
-		// The prompt gate also records the session's transcript.
-		gate := map[string]any{"type": "command", "command": ShellQuote(bin) + " __prompt-gate --harness claude"}
-		hooks["UserPromptSubmit"] = []any{map[string]any{"hooks": []any{gate}}}
 		deny = append(deny, claudeLockedDeny...)
-	} else {
-		// SessionStart(startup) records the session's transcript.
-		hooks["SessionStart"] = append(hooks["SessionStart"].([]any), map[string]any{"matcher": "startup", "hooks": []any{onCompact}})
 	}
 	settings := map[string]any{"hooks": hooks, "permissions": map[string]any{"deny": deny}}
 	return json.MarshalIndent(settings, "", "  ")

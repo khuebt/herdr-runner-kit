@@ -546,21 +546,8 @@ func TestClaudeSettings(t *testing.T) {
 	if len(pre) != 1 || pre[0].Matcher != "" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
 		t.Errorf("PreCompact hooks = %s", data)
 	}
-	// Open input records the transcript at startup; the prompt gate does it
-	// for locked input.
-	if len(start) != 2 || start[0].Matcher != "compact" || start[1].Matcher != "startup" {
+	if len(start) != 1 || start[0].Matcher != "compact" || len(start[0].Hooks) != 1 || start[0].Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
 		t.Fatalf("SessionStart hooks = %s", data)
-	}
-	for _, s := range start {
-		if len(s.Hooks) != 1 || s.Hooks[0].Command != "/home/u/bin/hrk __context --harness claude" {
-			t.Errorf("SessionStart hooks = %s", data)
-		}
-	}
-	if locked, _ := ClaudeSettings(ClaudeSettingsInput{Bin: "/home/u/bin/hrk", InputLocked: true}); strings.Contains(string(locked), `"startup"`) {
-		t.Errorf("locked input has a startup hook: %s", locked)
-	}
-	if strings.Contains(string(data), "UserPromptSubmit") {
-		t.Errorf("open input has a prompt gate: %s", data)
 	}
 	data, _ = ClaudeSettings(ClaudeSettingsInput{Bin: "/opt/it's here/hrk"})
 	if !strings.Contains(string(data), `'/opt/it'\\''s here/hrk' __turn-end`) {
@@ -599,28 +586,31 @@ func TestClaudeSettingsDeny(t *testing.T) {
 }
 
 func TestClaudeSettingsPromptGate(t *testing.T) {
-	data, err := ClaudeSettings(ClaudeSettingsInput{Bin: "/home/u/bin/hrk", InputLocked: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var s struct {
-		Hooks struct {
-			Stop, UserPromptSubmit []struct {
-				Matcher string
-				Hooks   []struct{ Type, Command string }
+	// Open input has the gate too: it records the transcript and the turns.
+	for _, locked := range []bool{false, true} {
+		data, err := ClaudeSettings(ClaudeSettingsInput{Bin: "/home/u/bin/hrk", InputLocked: locked})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s struct {
+			Hooks struct {
+				Stop, UserPromptSubmit []struct {
+					Matcher string
+					Hooks   []struct{ Type, Command string }
+				}
 			}
 		}
-	}
-	if err := json.Unmarshal(data, &s); err != nil {
-		t.Fatal(err)
-	}
-	gate := s.Hooks.UserPromptSubmit
-	if len(gate) != 1 || gate[0].Matcher != "" || len(gate[0].Hooks) != 1 ||
-		gate[0].Hooks[0].Type != "command" || gate[0].Hooks[0].Command != "/home/u/bin/hrk __prompt-gate --harness claude" {
-		t.Errorf("UserPromptSubmit hooks = %s", data)
-	}
-	if len(s.Hooks.Stop) != 1 {
-		t.Errorf("the gate replaced the other hooks: %s", data)
+		if err := json.Unmarshal(data, &s); err != nil {
+			t.Fatal(err)
+		}
+		gate := s.Hooks.UserPromptSubmit
+		if len(gate) != 1 || gate[0].Matcher != "" || len(gate[0].Hooks) != 1 ||
+			gate[0].Hooks[0].Type != "command" || gate[0].Hooks[0].Command != "/home/u/bin/hrk __prompt-gate --harness claude" {
+			t.Errorf("locked %v: UserPromptSubmit hooks = %s", locked, data)
+		}
+		if len(s.Hooks.Stop) != 1 {
+			t.Errorf("locked %v: the gate replaced the other hooks: %s", locked, data)
+		}
 	}
 	files, err := claude{}.Files(FilesInput{Bin: "/home/u/bin/hrk", Contract: "C", InputLocked: true})
 	if err != nil || len(files) == 0 || !strings.Contains(string(files[0].Data), "__prompt-gate") {

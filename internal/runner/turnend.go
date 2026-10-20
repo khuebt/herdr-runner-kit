@@ -45,6 +45,16 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if err != nil {
 		return "", err
 	}
+	if p := t.PendingDone; p != nil && !p.TurnStart.IsZero() {
+		if _, err := r.Store.Update(id, func(t *task.Task) error {
+			if t.PendingDone != nil {
+				t.PendingDone.TurnStart = time.Time{}
+			}
+			return nil
+		}); err != nil {
+			return "", err
+		}
+	}
 	// The turn after a report holds the session's last calls, so a task
 	// that finished, or finishes now with a held done, has its usage read
 	// once the turn end is handled, or, while the agent has still to write
@@ -183,7 +193,7 @@ func (r *Runner) settleTurn(id string) (bool, error) {
 	if !finish {
 		return false, nil
 	}
-	if _, err := r.FinishDone(id, false); errors.Is(err, errNothingHeld) {
+	if _, err := r.FinishDone(id, false, time.Time{}); errors.Is(err, errNothingHeld) {
 		return false, nil // a report or another turn end took it first
 	} else if err != nil {
 		return false, err

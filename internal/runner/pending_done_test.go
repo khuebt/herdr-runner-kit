@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -326,7 +327,7 @@ func TestLaterReportReplacesAHeldDone(t *testing.T) {
 	if got, _ := r.Store.Get(tk.ID); got.Status != task.NeedsHuman || len(doneEvents(t, r, tk.ID)) != 0 {
 		t.Errorf("status %s after the turn end", got.Status)
 	}
-	if _, err := r.FinishDone(tk.ID, true); err == nil || !strings.Contains(err.Error(), errNothingHeld.Error()) {
+	if _, err := r.FinishDone(tk.ID, true, time.Time{}); err == nil || !strings.Contains(err.Error(), errNothingHeld.Error()) {
 		t.Errorf("finish with nothing held = %v", err)
 	}
 }
@@ -445,17 +446,20 @@ func TestFailedSendTakesItsQueuedMarkBack(t *testing.T) {
 }
 
 // heldForSubagent returns a Claude runner whose done waits for a running
-// subagent while herdr sees its agent idle.
-func heldForSubagent(t *testing.T) (*Runner, *task.Task) {
+// subagent, with herdr seeing its agent working, as it does while Claude
+// waits for one.
+func heldForSubagent(t *testing.T) (*Runner, *fakeHerdr, *task.Task) {
 	t.Helper()
 	r, fake, _ := newTestRunner(t)
 	fake.on("pane read", ok(""))
-	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
 	tk := running(t, r, SpawnOptions{Kind: "fix", Agent: "claude", Prompt: "x", Cwd: gitRepo(t)})
 	runnerDone(t, r, tk.ID, "fixed")
-	claudeStop(t, r, tk.ID, `{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}`)
-	return r, tk
+	claudeStop(t, r, tk.ID, subagentStop)
+	return r, fake, tk
 }
+
+const subagentStop = `{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}`
 
 func watchBriefly(r *Runner, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -463,15 +467,23 @@ func watchBriefly(r *Runner, id string) {
 	r.WatchPendingDone(ctx, id)
 }
 
-func TestWatcherKeepsADoneHeldForASubagentUntilTheCeiling(t *testing.T) {
-	defer func(every, recheck, age, ceiling time.Duration) {
-		pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = every, recheck, age, ceiling
-	}(pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling)
-	pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = time.Millisecond, time.Millisecond, 0, time.Hour
-	r, tk := heldForSubagent(t)
+// shortWatch makes the watcher fast, with a done held for subagents until
+// ceiling, and restores it when t ends.
+func shortWatch(t *testing.T, ceiling time.Duration) {
+	t.Helper()
+	every, recheck, age, old := pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling
+	t.Cleanup(func() {
+		pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = every, recheck, age, old
+	})
+	pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = time.Millisecond, time.Millisecond, 0, ceiling
+}
+
+func TestWatcherFinishesADoneHeldForAHungSubagentAtTheCeiling(t *testing.T) {
+	shortWatch(t, time.Hour)
+	r, _, tk := heldForSubagent(t)
 	watchBriefly(r, tk.ID)
 	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || got.PendingDone == nil {
-		t.Fatalf("an idle agent waiting for a subagent was finished: %s", got.Status)
+		t.Fatalf("a done waiting for a subagent was finished before the ceiling: %s", got.Status)
 	}
 
 	pendingDoneCeiling = 0
@@ -482,23 +494,56 @@ func TestWatcherKeepsADoneHeldForASubagentUntilTheCeiling(t *testing.T) {
 	}
 }
 
-func TestWatcherNeverFinishesAWorkingAgentsDoneAtTheCeiling(t *testing.T) {
-	defer func(every, recheck, age, ceiling time.Duration) {
-		pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = every, recheck, age, ceiling
-	}(pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling)
-	pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = time.Millisecond, time.Millisecond, 0, 0
-	r, fake, _ := newTestRunner(t)
-	fake.on("pane read", ok(""))
-	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"working"}}}`))
-	tk := running(t, r, SpawnOptions{Kind: "fix", Agent: "claude", Prompt: "x", Cwd: gitRepo(t)})
-	runnerDone(t, r, tk.ID, "fixed")
-	claudeStop(t, r, tk.ID, `{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}`)
+func TestTurnInProgressKeepsADoneHeldPastTheCeiling(t *testing.T) {
+	shortWatch(t, 0)
+	r, _, tk := heldForSubagent(t)
+	// The subagent's result wakes Claude for a turn.
+	gate, _ := harness.For(task.Claude)
+	if _, err := r.GatePrompt(tk.ID, gate, []byte(`{"prompt":"<task-notification>agent done</task-notification>"}`)); err != nil {
+		t.Fatal(err)
+	}
 	watchBriefly(r, tk.ID)
 	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || countEvents(t, r, tk.ID, "done-hold-timeout") != 0 {
-		t.Fatalf("a working agent's done was finished: %s", got.Status)
+		t.Fatalf("a done was finished while a turn ran: %s", got.Status)
 	}
-	// Its correcting report still lands.
-	if got := runnerDone(t, r, tk.ID, "corrected"); got.PendingDone == nil || got.PendingDone.Summary != "corrected" {
-		t.Errorf("correcting report: %+v", got.PendingDone)
+
+	// The turn ends with another subagent running, which hangs.
+	claudeStop(t, r, tk.ID, subagentStop)
+	watchBriefly(r, tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done || countEvents(t, r, tk.ID, "done-hold-timeout") != 1 {
+		t.Errorf("status %s once the turn ended", got.Status)
+	}
+}
+
+func TestWatcherNeverFinishesANewerDoneThanTheOneItJudged(t *testing.T) {
+	shortWatch(t, 0)
+	r, _, tk := heldForSubagent(t)
+	judged, _ := r.Store.Get(tk.ID)
+	runnerDone(t, r, tk.ID, "newer")
+	r.finishStaleDone(context.Background(), judged)
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Running || got.PendingDone == nil || got.PendingDone.Summary != "newer" {
+		t.Fatalf("the newer done was finished: %s %+v", got.Status, got.PendingDone)
+	}
+	if n := countEvents(t, r, tk.ID, "done-hold-timeout"); n != 0 || len(doneEvents(t, r, tk.ID)) != 0 {
+		t.Errorf("timeouts %d, done events %d for a done the watcher never finished", n, len(doneEvents(t, r, tk.ID)))
+	}
+}
+
+func TestSupersededDoneHeldForSubagentsIsFinishedOnceTheAgentSettles(t *testing.T) {
+	shortWatch(t, time.Hour)
+	r, fake, tk := heldForSubagent(t)
+	// A message sent after the done superseded it at a turn end with no
+	// subagent left, so its subagent flag is stale.
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.PendingDone.Superseded = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
+	watchBriefly(r, tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done || countEvents(t, r, tk.ID, "done-hold-timeout") != 0 {
+		t.Errorf("status %s, timeouts %d", got.Status, countEvents(t, r, tk.ID, "done-hold-timeout"))
 	}
 }

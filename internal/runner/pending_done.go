@@ -32,33 +32,44 @@ var (
 // done on two reads pendingDoneRecheck apart, with no working status line
 // on its screen, the done becomes final, superseded or not. A gone agent is
 // left to WatchAgent, which finishes the done (see finishHeldDone). A done
-// held for running subagents waits for the turn end their result brings, and
-// becomes final after pendingDoneCeiling if none comes and the agent sits
-// idle, with a done-hold-timeout event; a working agent keeps it held. It returns when the task finishes or its runner
-// closes, and at once for an agent whose done is never held.
+// held for running subagents waits for the turn end their result brings,
+// and becomes final after pendingDoneCeiling if none comes and no turn is
+// running, with a done-hold-timeout event. herdr reports Claude working
+// while it waits for a subagent, so the kit's own record of turn starts,
+// not herdr, tells a hung subagent from a running turn. It returns when the
+// task finishes or its runner closes, and at once for an agent whose done
+// is never held.
 func (r *Runner) WatchPendingDone(ctx context.Context, id string) {
 	for sleepCtx(ctx, pendingDoneEvery) {
 		t, err := r.Store.Get(id)
 		if err != nil || t.Status.Terminal() || t.Herdr.PaneID == "" || t.Herdr.Closed || !doneAtTurnEnd(t) {
 			return
 		}
-		if t.PendingDone == nil || time.Since(t.PendingDone.Since) < pendingDoneAge {
-			continue
+		r.finishStaleDone(ctx, t)
+	}
+}
+
+// finishStaleDone makes the held done of t, as the watcher read it, final
+// when WatchPendingDone says so.
+func (r *Runner) finishStaleDone(ctx context.Context, t *task.Task) {
+	p := t.PendingDone
+	if p == nil || time.Since(p.Since) < pendingDoneAge {
+		return
+	}
+	waiting := p.Subagents && !p.Superseded
+	if waiting {
+		if time.Since(p.Since) < pendingDoneCeiling || !p.TurnStart.IsZero() {
+			return
 		}
-		waiting := t.PendingDone.Subagents && !t.PendingDone.Superseded
-		if waiting && time.Since(t.PendingDone.Since) < pendingDoneCeiling {
-			continue
-		}
-		if !r.agentSettled(ctx, t) || !sleepCtx(ctx, pendingDoneRecheck) || !r.agentSettled(ctx, t) {
-			continue
-		}
-		done, err := r.FinishDone(id, true)
-		switch {
-		case err != nil && !errors.Is(err, errNothingHeld):
-			fmt.Fprintf(os.Stderr, "hrk: %s: finish held done: %v\n", id, err)
-		case err == nil && waiting:
-			r.emit(done, "done-hold-timeout", fmt.Sprintf("a done held for background work became final after %s, with the agent idle and no turn end", pendingDoneCeiling), "")
-		}
+	} else if !r.agentSettled(ctx, t) || !sleepCtx(ctx, pendingDoneRecheck) || !r.agentSettled(ctx, t) {
+		return
+	}
+	done, err := r.FinishDone(t.ID, true, p.Since)
+	switch {
+	case err != nil && !errors.Is(err, errNothingHeld):
+		fmt.Fprintf(os.Stderr, "hrk: %s: finish held done: %v\n", t.ID, err)
+	case err == nil && waiting:
+		r.emit(done, "done-hold-timeout", fmt.Sprintf("a done held for background work became final after %s, with no turn running and no turn end", pendingDoneCeiling), "")
 	}
 }
 
@@ -71,7 +82,7 @@ func (r *Runner) finishHeldDone(id string) bool {
 	if err != nil || cur.Status != task.Running || cur.PendingDone == nil || cur.PendingDone.Superseded {
 		return false
 	}
-	t, err := r.FinishDone(id, false)
+	t, err := r.FinishDone(id, false, time.Time{})
 	if err != nil && t == nil {
 		return false // a report or a turn end took it first, or the task changed
 	}

@@ -38,10 +38,9 @@ func (r *Runner) Compactions(id string) int { return r.loadProgress(id).Compacti
 // fresh session: out is then the adapter's session output that adds the
 // request to its context, if it takes any, and the request is also queued
 // in its pane as a message, which a model busy with its task heeds where it
-// may pass over added context. A manual /compact never asks. Any of these
-// hooks, and SessionStart(startup), records the session's transcript, so
-// usage covers a session that hands off before its first turn ends; other
-// hooks of an attempt that already ended are ignored.
+// may pass over added context. A manual /compact never asks. Either hook
+// records the session's transcript; other hooks of an attempt that already
+// ended are ignored.
 func (r *Runner) ContextHook(ctx context.Context, id string, h task.Harness, payload []byte) (out string, err error) {
 	adapter, err := harness.For(h)
 	if err != nil {
