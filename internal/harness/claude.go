@@ -96,7 +96,8 @@ func (c claude) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 		}
 		return TurnSignal{Ignore: true}, nil
 	}
-	return TurnSignal{Background: c.background(in)}, nil
+	subagents, _ := ClaudeBackgroundEnding(in.Payload)
+	return TurnSignal{Background: c.background(in), Subagents: subagents > 0}, nil
 }
 
 // HookTranscript reads the session transcript a hook input names: every
@@ -125,9 +126,11 @@ func (c claude) background(in TurnInput) bool {
 // NudgeInHook is true: the Stop hook returns the nudge as a block.
 func (claude) NudgeInHook() bool { return true }
 
-// DoneAtTurnEnd is false: the Stop hook ends Claude's turn, and no Claude
-// runner was seen working on after its done.
-func (claude) DoneAtTurnEnd() bool      { return false }
+// DoneAtTurnEnd is true: a Claude runner may report done while a background
+// subagent still runs, and works on when the subagent's result wakes it.
+// The Stop hook makes the done final at the first turn end with no
+// subagent running.
+func (claude) DoneAtTurnEnd() bool      { return true }
 func (claude) ShowsWorking(string) bool { return false }
 
 func (claude) HookPayload(_ []string, stdin io.Reader) ([]byte, error) { return readStdin(stdin) }
@@ -433,8 +436,30 @@ func ClaudeTransientError(payload []byte) (message string, ok bool) {
 // it; known is false when the input has no such list, as from an older
 // Claude, or does not parse.
 func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
+	return claudeBackgroundRunning(payload, func(string) bool { return true })
+}
+
+// ClaudeBackgroundEnding is ClaudeBackgroundWork for the work that ends and
+// wakes the runner with its result: subagents, workflows and any type the
+// kit does not know. A shell or a monitor, such as a dev server, may run
+// for as long as the session does, and Claude's own housekeeping (memory
+// consolidation, an auto-mode scan, a memory import) ends without waking it.
+func ClaudeBackgroundEnding(payload []byte) (running int, known bool) {
+	return claudeBackgroundRunning(payload, func(kind string) bool {
+		switch kind {
+		case "shell", "monitor", "dream", "auto-mode scan", "memory import":
+			return false
+		}
+		return true
+	})
+}
+
+// claudeBackgroundRunning counts the running entries of the list whose type
+// counts.
+func claudeBackgroundRunning(payload []byte, counts func(kind string) bool) (running int, known bool) {
 	var in struct {
 		Tasks *[]struct {
+			Type   string `json:"type"`
 			Status string `json:"status"`
 		} `json:"background_tasks"`
 	}
@@ -442,7 +467,7 @@ func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
 		return 0, false
 	}
 	for _, t := range *in.Tasks {
-		if t.Status == "running" || t.Status == "pending" {
+		if counts(t.Type) && (t.Status == "running" || t.Status == "pending") {
 			running++
 		}
 	}
@@ -453,12 +478,12 @@ func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
 // StopFailure hooks that call `<bin> __turn-end`, which tells the two apart
 // by the hook input, and PreCompact and SessionStart(compact) hooks that
 // call `<bin> __context`. PreCompact has no matcher: a manual compaction
-// must cancel an automatic one Claude announced but never ran. With
-// InputLocked, a UserPromptSubmit hook calls `<bin> __prompt-gate`;
-// without it, a SessionStart(startup) hook calls `<bin> __context`. Either
-// records the session's transcript as it starts. Claude
-// merges them with the user's own hooks. It also denies the tools a runner
-// has no use for, whose schemas would ride on every call.
+// must cancel an automatic one Claude announced but never ran. A
+// UserPromptSubmit hook calls `<bin> __prompt-gate`, which records the
+// session's transcript and each turn start, and with InputLocked refuses a
+// prompt typed in the tab. Claude merges them with the user's own hooks. It
+// also denies the tools a runner has no use for, whose schemas would ride
+// on every call.
 func ClaudeSettings(in ClaudeSettingsInput) ([]byte, error) {
 	bin := in.Bin
 	if !filepath.IsAbs(bin) {
@@ -466,21 +491,17 @@ func ClaudeSettings(in ClaudeSettingsInput) ([]byte, error) {
 	}
 	turnEnd := map[string]any{"type": "command", "command": ShellQuote(bin) + " __turn-end --harness claude"}
 	onCompact := map[string]any{"type": "command", "command": ShellQuote(bin) + " __context --harness claude"}
+	gate := map[string]any{"type": "command", "command": ShellQuote(bin) + " __prompt-gate --harness claude"}
 	hooks := map[string]any{
-		"Stop":         []any{map[string]any{"hooks": []any{turnEnd}}},
-		"StopFailure":  []any{map[string]any{"hooks": []any{turnEnd}}},
-		"PreCompact":   []any{map[string]any{"hooks": []any{onCompact}}},
-		"SessionStart": []any{map[string]any{"matcher": "compact", "hooks": []any{onCompact}}},
+		"Stop":             []any{map[string]any{"hooks": []any{turnEnd}}},
+		"StopFailure":      []any{map[string]any{"hooks": []any{turnEnd}}},
+		"PreCompact":       []any{map[string]any{"hooks": []any{onCompact}}},
+		"SessionStart":     []any{map[string]any{"matcher": "compact", "hooks": []any{onCompact}}},
+		"UserPromptSubmit": []any{map[string]any{"hooks": []any{gate}}},
 	}
 	deny := slices.Clone(claudeRunnerDeny)
 	if in.InputLocked {
-		// The prompt gate also records the session's transcript.
-		gate := map[string]any{"type": "command", "command": ShellQuote(bin) + " __prompt-gate --harness claude"}
-		hooks["UserPromptSubmit"] = []any{map[string]any{"hooks": []any{gate}}}
 		deny = append(deny, claudeLockedDeny...)
-	} else {
-		// SessionStart(startup) records the session's transcript.
-		hooks["SessionStart"] = append(hooks["SessionStart"].([]any), map[string]any{"matcher": "startup", "hooks": []any{onCompact}})
 	}
 	settings := map[string]any{"hooks": hooks, "permissions": map[string]any{"deny": deny}}
 	return json.MarshalIndent(settings, "", "  ")

@@ -99,6 +99,29 @@ func TestManualCompactionNeverAsks(t *testing.T) {
 	}
 }
 
+func TestDoneHeldForASubagentIsNeverHandedOff(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("pane read", ok(""))
+	tk := running(t, r, SpawnOptions{Kind: "fix", Agent: "claude", Prompt: "x", Cwd: gitRepo(t)})
+	runnerDone(t, r, tk.ID, "fixed")
+	claudeStop(t, r, tk.ID, `{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}`)
+	compactHook(t, r, tk.ID, "precompact-auto.json")
+	if out := compactHook(t, r, tk.ID, "sessionstart-compact.json"); out != "" {
+		t.Errorf("a runner holding a done was asked to hand off: %q", out)
+	}
+	if ev := lastEvent(t, r); ev.Type != "context-low" || !strings.HasSuffix(ev.Summary, "it holds a done") {
+		t.Errorf("event = %+v", ev)
+	}
+	file := r.OutDir(tk.ID) + "/handoff-a2.md"
+	writeFile(t, file)
+	if _, err := r.Handoff(tk.ID, ReportOptions{Attempt: 1, Outputs: []string{file}, Summary: "x"}); err == nil || !strings.Contains(err.Error(), "holds a done") {
+		t.Errorf("handoff of a held done: %v", err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || got.PendingDone == nil || len(got.Handoffs) != 0 {
+		t.Errorf("task = %+v", got)
+	}
+}
+
 func TestCompactionAsksNothingWhenTheHandoffIsUnavailable(t *testing.T) {
 	r, _, e := newTestRunner(t)
 	used := handedOff(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})

@@ -349,6 +349,12 @@ type PendingDone struct {
 	// done: the runner reports again on it, and no turn end finalizes this
 	// one.
 	Superseded bool `json:"superseded,omitempty"`
+	// Subagents says a turn ended with background subagents still running,
+	// so only the turn end that finds none makes this done final.
+	Subagents bool `json:"subagents,omitempty"`
+	// TurnStart is when a turn started while this done was held, such as
+	// one Claude's note that a subagent ended wakes; the turn end clears it.
+	TurnStart time.Time `json:"turnStart,omitzero"`
 }
 
 // Reasons a runner's agent was restarted in its pane, as Relaunched

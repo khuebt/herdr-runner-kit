@@ -70,7 +70,7 @@ func (r *Runner) Report(id string, o ReportOptions) (*task.Task, error) {
 	if err := validateReport(&o); err != nil {
 		return nil, err
 	}
-	return r.report(id, o, finishNone)
+	return r.report(id, o, finishNone, time.Time{})
 }
 
 // How report treats a held done.
@@ -85,17 +85,19 @@ var errNothingHeld = errors.New("no held done")
 
 // FinishDone makes t's held done final through the normal report path: a
 // fresh git snapshot, the done event and the dependents. superseded also
-// finishes a done a queued message superseded. It returns errNothingHeld
-// when the task holds none, so two callers finish it once.
-func (r *Runner) FinishDone(id string, superseded bool) (*task.Task, error) {
+// finishes a done a queued message superseded, and a non-zero since only
+// the held done of that Since, so a caller that judged an older done never
+// finishes a newer one. It returns errNothingHeld when the task holds no
+// such done, so two callers finish it once.
+func (r *Runner) FinishDone(id string, superseded bool, since time.Time) (*task.Task, error) {
 	mode := finishHeld
 	if superseded {
 		mode = finishSuperseded
 	}
-	return r.report(id, ReportOptions{Status: task.Done}, mode)
+	return r.report(id, ReportOptions{Status: task.Done}, mode, since)
 }
 
-func (r *Runner) report(id string, o ReportOptions, finish int) (*task.Task, error) {
+func (r *Runner) report(id string, o ReportOptions, finish int, since time.Time) (*task.Task, error) {
 	cur, err := r.Store.Get(id)
 	if err != nil {
 		return nil, err
@@ -128,7 +130,7 @@ func (r *Runner) report(id string, o ReportOptions, finish int) (*task.Task, err
 		}
 		if finish != finishNone {
 			p := t.PendingDone
-			if p == nil || p.Superseded && finish != finishSuperseded {
+			if p == nil || p.Superseded && finish != finishSuperseded || !since.IsZero() && !p.Since.Equal(since) {
 				return errNothingHeld
 			}
 			o.Summary, o.Decisions, o.Outputs = p.Summary, p.Decisions, p.Outputs

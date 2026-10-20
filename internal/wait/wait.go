@@ -426,13 +426,12 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 }
 
 // Line formats one news event of task t for the main session, at most
-// MaxLine characters. A done line lists the decisions the runner took
-// itself right after the title; a done or failed line then carries the git
-// snapshot of that report, and a done line says when the runner's tab
-// closes, all ahead of the summary so the cut drops the summary first. A
-// round of questions is a header line followed by one indented line per
-// question, each at most MaxLine characters. t may be nil. keepFor is how
-// long a kept tab stays open.
+// MaxLine characters. A done or failed line carries the git snapshot of
+// that report, and a done line says when the runner's tab closes, ahead of
+// the summary so the cut drops the summary's end first. The decisions a done
+// runner took itself, and a round of questions, follow the header line as
+// one indented line each, each at most MaxLine characters. t may be nil.
+// keepFor is how long a kept tab stays open.
 func Line(ev state.Event, t *task.Task, keepFor time.Duration) string {
 	parts := []string{ev.Task + " " + ev.Type}
 	if ev.Type == "cleanable" && ev.Status != "" && ev.Status != task.Done {
@@ -451,9 +450,6 @@ func Line(ev state.Event, t *task.Task, keepFor time.Duration) string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	if ev.Type == "done" && len(ev.Decisions) > 0 {
-		parts = append(parts, "decided: "+strings.Join(ev.Decisions, "; "))
-	}
 	if (ev.Type == "done" || ev.Type == "failed") && ev.Git != "" {
 		parts = append(parts, "git: "+ev.Git)
 	}
@@ -470,7 +466,13 @@ func Line(ev state.Event, t *task.Task, keepFor time.Duration) string {
 	if len(ev.Outputs) > 0 {
 		parts = append(parts, "out: "+strings.Join(ev.Outputs, ", "))
 	}
-	return oneLine(parts)
+	lines := []string{oneLine(parts)}
+	if ev.Type == "done" {
+		for _, d := range ev.Decisions {
+			lines = append(lines, "  "+truncate("decided: "+strings.Join(strings.Fields(d), " "), MaxLine-2))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // oneLine joins parts with " · " on a single line of at most MaxLine
@@ -502,7 +504,12 @@ func truncate(s string, n int) string {
 	if len(runes) <= n {
 		return s
 	}
-	return string(runes[:n-1]) + "…"
+	cut := string(runes[:n-1])
+	// Cut at a word boundary unless that drops more than a third of the line.
+	if i := strings.LastIndexByte(cut, ' '); i > len(cut)/3 {
+		cut = cut[:i]
+	}
+	return cut + "…"
 }
 
 // lostEvery is how often wait checks that herdr still has each live

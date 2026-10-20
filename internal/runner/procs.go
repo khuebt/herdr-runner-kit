@@ -155,7 +155,7 @@ func (r *Runner) snapshotProcs(ctx context.Context, t *task.Task) ([]proc, bool)
 		r.emit(t, "process-check-skipped", "could not list the runner's processes: "+firstLine(err.Error(), 160), "")
 		return nil, false
 	}
-	scoped := scopedProcs(table, t.Scopes)
+	scoped := slices.DeleteFunc(scopedProcs(table, t.Scopes), r.kitOwn)
 	if paneErr != nil {
 		return scoped, true
 	}
@@ -190,11 +190,8 @@ func (r *Runner) markedProcs(table []proc, t *task.Task, shell int) []proc {
 	}
 	marks := [][]byte{[]byte("HRK_TASK=" + t.ID), []byte("HRK_STATE_DIR=" + r.Store.Dir())}
 	var out []proc
-	// The kit's own calls, under either name: runners started before the
-	// rename call it as herdr-runner-kit.
-	kit := map[string]bool{filepath.Base(r.Bin): true, "hrk": true, "herdr-runner-kit": true}
 	for _, p := range table {
-		if inTree[p.PID] || kit[filepath.Base(strings.Fields(p.Command + " x")[0])] {
+		if inTree[p.PID] || r.kitOwn(p) {
 			continue
 		}
 		env, err := r.ProcEnv(p.PID)
@@ -206,6 +203,21 @@ func (r *Runner) markedProcs(table []proc, t *task.Task, shell int) []proc {
 		}
 	}
 	return out
+}
+
+// kitOwn reports whether p is this process or one of the kit's own commands,
+// such as a handoff's detached launcher or a report's follow-up, under
+// either name: runners started before the rename call it as
+// herdr-runner-kit. Neither is ever a process the runner left behind.
+func (r *Runner) kitOwn(p proc) bool {
+	if p.PID == os.Getpid() {
+		return true
+	}
+	switch filepath.Base(strings.Fields(p.Command + " x")[0]) {
+	case filepath.Base(r.Bin), "hrk", "herdr-runner-kit":
+		return true
+	}
+	return false
 }
 
 // hasEnv reports whether a NUL-separated environment holds every one of
@@ -248,7 +260,7 @@ func (r *Runner) scopeLeft(ctx context.Context, t *task.Task) ([]proc, error) {
 	if err != nil {
 		return nil, err
 	}
-	return scopedProcs(table, t.Scopes), nil
+	return slices.DeleteFunc(scopedProcs(table, t.Scopes), r.kitOwn), nil
 }
 
 // reportScopeLeft names the processes scopeLeft found once t's runner was

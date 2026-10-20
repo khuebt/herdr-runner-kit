@@ -38,7 +38,7 @@ Telegram shows the same round with `Reply: #t4 1<option> 2<option>, such as 1a 2
 
 ### Decisions
 
-`done` takes up to 7 `--decision "<question> -> <choice>"` (each at most 200 characters): open questions the runner settled itself with the recommended option. `wait` shows them first, as `decided: d1; d2` right after the title, and Telegram as `Decided:` lines. `--decision` with `needs-human` or `failed` is refused.
+`done` takes up to 7 `--decision "<question> -> <choice>"` (each at most 200 characters): open questions the runner settled itself with the recommended option. `wait` shows each on its own indented line below the news line, as `decided: d`, and Telegram as `Decided:` lines. `--decision` with `needs-human` or `failed` is refused.
 
 ### Answers typed in the tab
 
@@ -51,7 +51,8 @@ Rules the runner follows:
 - `needs-human` is only for decisions the runner cannot make. It asks one question or one round of up to 5, lists the options for each, recommends one, and stops. The answer arrives in the same session with `send`; the runner continues and reports again.
 - Every open question it settles itself with the recommended option is passed to `done` as `--decision`.
 - It never asks for, types or echoes a secret value in a question, summary or file; it asks where the secret is stored instead. `report` hides anything that looks like a secret (token-like strings, values of `password=`-style keys, credentials in URLs) in its summary, questions and decisions before it stores them or sends them to Telegram, and the `answered` event of `answer` and the `sent` event of `send` do the same.
-- Background shells and subagents finish before `done` is reported.
+- Background shells and subagents finish before `done` is reported. A Claude `done` is held until a turn end with no background subagent running (see below).
+- Shared services (databases, containers, dev servers) it did not create for the task stay running; it stops only what it created, and names any shared service it started in its report.
 - A read-only lookup goes to a fresh read-only subagent on a cheaper model, such as Claude Code's `Explore` agent with `model: sonnet`, briefed with paths; the runner never forks its whole context for it. The rule is added to contract version 3 as is.
 - A `done` summary names each check the runner ran and its result, such as `go test ./... passed`, and any check it could not run and why. It never claims a check it did not run. The rule is added to contract version 3 as is.
 - Only when the kit says its context is nearly full, it commits or saves its work at a stable point, writes a handoff under `tasks/<id>/out/` naming what is done, what is left, the checks it ran and any background process it started (command and pid), then runs `report handoff` and stops.
@@ -103,7 +104,7 @@ Each runner's turn-end hook (Claude's Stop hook, Codex's `notify`) checks whethe
 - Later turns are ignored until the main session sends or answers again.
 - A Claude turn that ends on a transient API error, such as a lost connection, is not counted: the kit types its own continue prompt once instead of a nudge, and a second failure in a row is `api-error` news.
 
-A Claude turn that ends while background shells or agents still run is not counted, because Claude wakes on its own when they finish. The kit reads them from the Stop hook's `background_tasks` list (Claude Code 2.1.300 and later): any entry still `running` or `pending` means the turn is not over. Claude's mode line is read only when the hook input has no such list, because it counts shells but not subagents, and draws its count a second or more after they start. Codex's internal title-generation turn is ignored. If your Codex `config.toml` sets its own `notify`, the kit still calls it with the same argument.
+A Claude turn that ends while background shells or agents still run is not counted, because Claude wakes on its own when they finish. The kit reads them from the Stop hook's `background_tasks` list (Claude Code 2.1.300 and later): any entry still `running` or `pending` means the turn is not over. A Claude `done` stays held while the input lists running background work that ends, such as a `subagent` or `workflow` (any type but `shell`, `monitor` and Claude's own housekeeping); a background shell, such as a dev server, never holds it. A held done is never handed off, and becomes final after 30 minutes without a turn end, once no turn is running (`done-hold-timeout` event; a turn that started after the last turn end, such as one a finished subagent woke, keeps it held until it ends). Claude's mode line is read only when the hook input has no such list, because it counts shells but not subagents, and draws its count a second or more after they start. Codex's internal title-generation turn is ignored. If your Codex `config.toml` sets its own `notify`, the kit still calls it with the same argument.
 
 ## Compatibility
 

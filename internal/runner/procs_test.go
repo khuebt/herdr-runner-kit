@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -222,6 +224,30 @@ func TestCloseFindsAProcessThatLeftTheTree(t *testing.T) {
 	left := eventsOf(t, r, tk.ID, "processes-left")
 	if len(left) != 1 || !strings.Contains(left[0].Summary, "1 process the runner started still run after its tab closed: 300 `python3 -m http.server 8765`") {
 		t.Fatalf("processes-left = %+v", left)
+	}
+}
+
+func TestScopedProcessesLeaveOutTheKitsOwn(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := finishedRunner(t, r, fake)
+	path := scopeDir(t, "101\n102\n103\n")
+	tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes = []string{path}; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.on("pane process-info", herdrErr("pane_not_found"))
+	table := append(slices.Clone(runnerTree), proc{PID: 103, PPID: 1, Start: "b", Command: "/usr/local/bin/hrk __launch t1 --attempt 2"})
+	self := os.Getpid()
+	table = append(table, proc{PID: self, PPID: 1, Start: "c", Command: "node worker"})
+	path = scopeDir(t, fmt.Sprintf("101\n102\n103\n%d\n", self))
+	tk, err = r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes = []string{path}; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ProcTable = procTables(table)
+	procs, ok := r.snapshotProcs(context.Background(), tk)
+	if !ok || len(procs) != 2 || procs[0].PID != 101 || procs[1].PID != 102 {
+		t.Errorf("procs = %+v", procs)
 	}
 }
 
