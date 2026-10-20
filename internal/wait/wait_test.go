@@ -498,7 +498,7 @@ func TestWaitSeesAProjectStartedAfterIt(t *testing.T) {
 	}
 }
 
-func TestDoneLineStartsWithDecisions(t *testing.T) {
+func TestDoneLineListsDecisionsBelow(t *testing.T) {
 	tk := &task.Task{Title: "export", Status: task.Done, Herdr: task.Herdr{PaneID: "w1:p1", Closed: true}}
 	ev := state.Event{
 		Task: "t1", Type: "done", Summary: "Export added.", Git: "on b, clean",

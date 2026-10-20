@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -235,6 +237,13 @@ func TestScopedProcessesLeaveOutTheKitsOwn(t *testing.T) {
 	}
 	fake.on("pane process-info", herdrErr("pane_not_found"))
 	table := append(slices.Clone(runnerTree), proc{PID: 103, PPID: 1, Start: "b", Command: "/usr/local/bin/hrk __launch t1 --attempt 2"})
+	self := os.Getpid()
+	table = append(table, proc{PID: self, PPID: 1, Start: "c", Command: "node worker"})
+	path = scopeDir(t, fmt.Sprintf("101\n102\n103\n%d\n", self))
+	tk, err = r.Store.Update(tk.ID, func(t *task.Task) error { t.Scopes = []string{path}; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	r.ProcTable = procTables(table)
 	procs, ok := r.snapshotProcs(context.Background(), tk)
 	if !ok || len(procs) != 2 || procs[0].PID != 101 || procs[1].PID != 102 {

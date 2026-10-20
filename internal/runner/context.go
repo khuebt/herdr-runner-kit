@@ -154,9 +154,16 @@ func (r *Runner) contextLow(ctx context.Context, t *task.Task, left int) (bool, 
 }
 
 // mayHandOff reports whether t may still be asked to hand off: the feature
-// is on, the task runs in a pane, and its one replacement is unused.
+// is on, the task runs in a pane, it holds no finished done, and its one
+// replacement is unused.
 func (r *Runner) mayHandOff(t *task.Task) bool {
-	return r.Config.ContextHandoff && t.Status == task.Running && t.Herdr.PaneID != "" && len(t.Handoffs) < MaxHandoffs
+	return r.Config.ContextHandoff && t.Status == task.Running && t.Herdr.PaneID != "" && len(t.Handoffs) < MaxHandoffs && !holdsDone(t)
+}
+
+// holdsDone reports whether t holds a done its runner reported and no
+// message superseded: the work is finished, and only a turn end is awaited.
+func holdsDone(t *task.Task) bool {
+	return t.PendingDone != nil && !t.PendingDone.Superseded
 }
 
 // noHandoffReason says why an automatic compaction asked for no handoff.
@@ -166,6 +173,8 @@ func (r *Runner) noHandoffReason(t *task.Task, asked bool) string {
 		return "contextHandoff is off"
 	case len(t.Handoffs) >= MaxHandoffs:
 		return "it already used its one context replacement"
+	case holdsDone(t):
+		return "it holds a done"
 	case asked:
 		return "it was already asked to hand off"
 	}

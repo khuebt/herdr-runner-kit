@@ -96,7 +96,7 @@ func (c claude) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 		}
 		return TurnSignal{Ignore: true}, nil
 	}
-	subagents, _ := ClaudeBackgroundSubagents(in.Payload)
+	subagents, _ := ClaudeBackgroundEnding(in.Payload)
 	return TurnSignal{Background: c.background(in), Subagents: subagents > 0}, nil
 }
 
@@ -436,19 +436,20 @@ func ClaudeTransientError(payload []byte) (message string, ok bool) {
 // it; known is false when the input has no such list, as from an older
 // Claude, or does not parse.
 func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
-	return claudeBackgroundRunning(payload, "")
+	return claudeBackgroundRunning(payload, func(string) bool { return true })
 }
 
-// ClaudeBackgroundSubagents is ClaudeBackgroundWork for subagents only: a
-// shell, such as a dev server, may run for as long as the session does, but
-// a subagent ends and wakes the runner with its result.
-func ClaudeBackgroundSubagents(payload []byte) (running int, known bool) {
-	return claudeBackgroundRunning(payload, "subagent")
+// ClaudeBackgroundEnding is ClaudeBackgroundWork for the work that ends and
+// wakes the runner with its result: subagents, workflows and any type the
+// kit does not know. A shell or a monitor, such as a dev server, may run
+// for as long as the session does.
+func ClaudeBackgroundEnding(payload []byte) (running int, known bool) {
+	return claudeBackgroundRunning(payload, func(kind string) bool { return kind != "shell" && kind != "monitor" })
 }
 
-// claudeBackgroundRunning counts the running entries of the list, of one
-// type when kind is set.
-func claudeBackgroundRunning(payload []byte, kind string) (running int, known bool) {
+// claudeBackgroundRunning counts the running entries of the list whose type
+// counts.
+func claudeBackgroundRunning(payload []byte, counts func(kind string) bool) (running int, known bool) {
 	var in struct {
 		Tasks *[]struct {
 			Type   string `json:"type"`
@@ -459,7 +460,7 @@ func claudeBackgroundRunning(payload []byte, kind string) (running int, known bo
 		return 0, false
 	}
 	for _, t := range *in.Tasks {
-		if (kind == "" || t.Type == kind) && (t.Status == "running" || t.Status == "pending") {
+		if counts(t.Type) && (t.Status == "running" || t.Status == "pending") {
 			running++
 		}
 	}

@@ -105,6 +105,8 @@ func (r *Runner) Handoff(id string, o ReportOptions) (*task.Task, error) {
 			return fmt.Errorf("%s is %s; report handoff only works while it runs", t.ID, t.Status)
 		case t.Herdr.PaneID == "":
 			return fmt.Errorf("%s has no runner pane to continue in", t.ID)
+		case holdsDone(t):
+			return fmt.Errorf("%s holds a done that waits for the turn end; no handoff is needed", t.ID)
 		}
 		t.Attempt = task.AttemptOf(t) + 1
 		t.Handoffs = append(t.Handoffs, file)

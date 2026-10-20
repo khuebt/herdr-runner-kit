@@ -430,8 +430,8 @@ func wake(r *runner.Runner, owner string, news []state.Event) []string {
 // that report, and a done line says when the runner's tab closes, ahead of
 // the summary so the cut drops the summary's end first. The decisions a done
 // runner took itself, and a round of questions, follow the header line as
-// one indented line each, each at most MaxLine characters. t may be nil. keepFor is how
-// long a kept tab stays open.
+// one indented line each, each at most MaxLine characters. t may be nil.
+// keepFor is how long a kept tab stays open.
 func Line(ev state.Event, t *task.Task, keepFor time.Duration) string {
 	parts := []string{ev.Task + " " + ev.Type}
 	if ev.Type == "cleanable" && ev.Status != "" && ev.Status != task.Done {

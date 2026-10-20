@@ -119,16 +119,26 @@ func TestClaudeBackgroundWork(t *testing.T) {
 	}
 }
 
-func TestClaudeBackgroundSubagents(t *testing.T) {
+func TestClaudeBackgroundEnding(t *testing.T) {
 	in := `{"background_tasks":[{"type":"shell","status":"running"},{"type":"subagent","status":"completed"},{"type":"subagent","status":"running"}]}`
-	if n, known := ClaudeBackgroundSubagents([]byte(in)); !known || n != 1 {
+	if n, known := ClaudeBackgroundEnding([]byte(in)); !known || n != 1 {
 		t.Errorf("one subagent running beside a shell: %d %v", n, known)
 	}
 	shell := `{"background_tasks":[{"type":"shell","status":"running"}]}`
-	if n, known := ClaudeBackgroundSubagents([]byte(shell)); !known || n != 0 {
+	if n, known := ClaudeBackgroundEnding([]byte(shell)); !known || n != 0 {
 		t.Errorf("a running shell counted: %d %v", n, known)
 	}
-	if _, known := ClaudeBackgroundSubagents([]byte(`{}`)); known {
+	for _, kind := range []string{"workflow", "mcp", "remote_agent"} {
+		in := `{"background_tasks":[{"type":"` + kind + `","status":"running"}]}`
+		if n, known := ClaudeBackgroundEnding([]byte(in)); !known || n != 1 {
+			t.Errorf("a running %s did not count: %d %v", kind, n, known)
+		}
+	}
+	monitor := `{"background_tasks":[{"type":"monitor","status":"running"}]}`
+	if n, _ := ClaudeBackgroundEnding([]byte(monitor)); n != 0 {
+		t.Errorf("a running monitor counted: %d", n)
+	}
+	if _, known := ClaudeBackgroundEnding([]byte(`{}`)); known {
 		t.Error("no list is known")
 	}
 }

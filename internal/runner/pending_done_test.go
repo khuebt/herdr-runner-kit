@@ -278,6 +278,8 @@ func TestClaudeDoneWaitsForBackgroundSubagents(t *testing.T) {
 	}{
 		"a running subagent holds it":                   {[]string{subagent}, false},
 		"until a turn end with none":                    {[]string{subagent, subagent, shell}, true},
+		"a workflow holds it like a subagent":           {[]string{`{"hook_event_name":"Stop","background_tasks":[{"type":"workflow","status":"running"}]}`}, false},
+		"a monitor never holds it":                      {[]string{`{"hook_event_name":"Stop","background_tasks":[{"type":"monitor","status":"running"}]}`}, true},
 		"a dev server never holds it":                   {[]string{shell}, true},
 		"an input without a list, as from older Claude": {[]string{`{"hook_event_name":"Stop"}`}, true},
 	} {
@@ -439,5 +441,43 @@ func TestFailedSendTakesItsQueuedMarkBack(t *testing.T) {
 	}
 	if got, _ := r.Store.Get(tk.ID); !got.QueuedSend.IsZero() {
 		t.Error("a send that never went in left the held done to be superseded")
+	}
+}
+
+// heldForSubagent returns a Claude runner whose done waits for a running
+// subagent while herdr sees its agent idle.
+func heldForSubagent(t *testing.T) (*Runner, *task.Task) {
+	t.Helper()
+	r, fake, _ := newTestRunner(t)
+	fake.on("pane read", ok(""))
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
+	tk := running(t, r, SpawnOptions{Kind: "fix", Agent: "claude", Prompt: "x", Cwd: gitRepo(t)})
+	runnerDone(t, r, tk.ID, "fixed")
+	claudeStop(t, r, tk.ID, `{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}`)
+	return r, tk
+}
+
+func watchBriefly(r *Runner, id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	r.WatchPendingDone(ctx, id)
+}
+
+func TestWatcherKeepsADoneHeldForASubagentUntilTheCeiling(t *testing.T) {
+	defer func(every, recheck, age, ceiling time.Duration) {
+		pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = every, recheck, age, ceiling
+	}(pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling)
+	pendingDoneEvery, pendingDoneRecheck, pendingDoneAge, pendingDoneCeiling = time.Millisecond, time.Millisecond, 0, time.Hour
+	r, tk := heldForSubagent(t)
+	watchBriefly(r, tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || got.PendingDone == nil {
+		t.Fatalf("an idle agent waiting for a subagent was finished: %s", got.Status)
+	}
+
+	pendingDoneCeiling = 0
+	watchBriefly(r, tk.ID)
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Done || len(doneEvents(t, r, tk.ID)) != 1 || countEvents(t, r, tk.ID, "done-hold-timeout") != 1 {
+		t.Errorf("status %s, done events %d, timeouts %d", got.Status, len(doneEvents(t, r, tk.ID)), countEvents(t, r, tk.ID, "done-hold-timeout"))
 	}
 }
