@@ -23,6 +23,7 @@ const (
 	CodeAgentNotRunning = "agent_not_running"
 	CodeAgentNotFound   = "agent_not_found"
 	CodeAgentPaneBusy   = "agent_pane_busy"
+	CodeAgentNameTaken  = "agent_name_taken"
 	CodeTimeout         = "timeout"
 	CodePromptStalled   = "agent_prompt_stalled"
 	CodeAgentBlocked    = "agent_blocked"
