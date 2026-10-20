@@ -7,11 +7,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newPromptGateCommand is the prompt-submit hook of a runner with locked
-// input: Claude's UserPromptSubmit hook, or the input handler of the pi and
-// omp runner extension, which shows what it prints as a warning. It prints the block reply for a prompt typed in the runner's tab,
-// and nothing for one the kit typed or the agent's own. It fails open:
-// errors go to stderr, the prompt goes through, and the command exits 0.
+// newPromptGateCommand is the prompt-submit hook: Claude's
+// UserPromptSubmit hook, which runs for every Claude runner, or the input
+// handler of the pi and omp runner extension, which shows what it prints as
+// a warning. It blocks only when the runner's input is locked: it prints the
+// block reply for a prompt typed in the runner's tab, and nothing for one
+// the kit typed or the agent's own. It fails open: errors go to stderr, the
+// prompt goes through, and the command exits 0.
 func newPromptGateCommand() *cobra.Command {
 	var h string
 	cmd := &cobra.Command{
