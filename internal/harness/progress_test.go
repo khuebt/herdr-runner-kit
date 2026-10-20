@@ -119,6 +119,20 @@ func TestClaudeBackgroundWork(t *testing.T) {
 	}
 }
 
+func TestClaudeBackgroundSubagents(t *testing.T) {
+	in := `{"background_tasks":[{"type":"shell","status":"running"},{"type":"subagent","status":"completed"},{"type":"subagent","status":"running"}]}`
+	if n, known := ClaudeBackgroundSubagents([]byte(in)); !known || n != 1 {
+		t.Errorf("one subagent running beside a shell: %d %v", n, known)
+	}
+	shell := `{"background_tasks":[{"type":"shell","status":"running"}]}`
+	if n, known := ClaudeBackgroundSubagents([]byte(shell)); !known || n != 0 {
+		t.Errorf("a running shell counted: %d %v", n, known)
+	}
+	if _, known := ClaudeBackgroundSubagents([]byte(`{}`)); known {
+		t.Error("no list is known")
+	}
+}
+
 func TestPiProgressText(t *testing.T) {
 	progress := func(a Adapter, name string) string { return a.ProgressText(readFixture(t, name)) }
 	// The model ran its command between these two frames.

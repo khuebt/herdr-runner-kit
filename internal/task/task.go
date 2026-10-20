@@ -349,6 +349,9 @@ type PendingDone struct {
 	// done: the runner reports again on it, and no turn end finalizes this
 	// one.
 	Superseded bool `json:"superseded,omitempty"`
+	// Subagents says a turn ended with background subagents still running,
+	// so only the turn end that finds none makes this done final.
+	Subagents bool `json:"subagents,omitempty"`
 }
 
 // Reasons a runner's agent was restarted in its pane, as Relaunched

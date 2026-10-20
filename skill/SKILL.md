@@ -121,12 +121,12 @@ In the session `hrk main` started, news can also arrive as Stop hook feedback st
 - The user wants to steer a runner, or give a done or failed one more work while its tab is open: `hrk send <id> --stdin`. It runs again and reports again; a stopped task cannot be reopened.
 - Reuse a runner: before spawning a follow-up on the same topic, check `list`. If a recent runner's TAB is open, propose `send <id>` in the brief instead of a new runner.
 - The user asks to merge main into a runner's branch, or its branch is behind the default branch: `hrk sync <id>`. On a conflict, offer to `send` the printed text to the runner.
-- `hrk focus <id>` switches to a runner's tab, to watch it or answer a dialog with keys. A locked Claude, pi or omp tab refuses typed prompts and names `hrk send <id>`; only Codex tabs, and every tab under `runnerInput: open`, take them.
+- Never assume user input you cannot see, such as "the user typed into your tab"; ask the user first. `hrk focus <id>` switches to a runner's tab, to watch it or answer a dialog with keys. A locked Claude, pi or omp tab refuses typed prompts and names `hrk send <id>`; only Codex tabs, and every tab under `runnerInput: open`, take them.
 - `stop <id>...` (several ids in one call) only when the user asks. Branches stay local; merge or open a PR only when asked.
 
 ## Clean up
 
-- `tN cleanable` news: the task's branch is merged and its worktree has no changes. Ask the user whether to remove the worktree and branch; on yes, run `hrk cleanup --yes <id>...`. Never run it without the user's yes.
+- `tN cleanable` news: the task's branch is merged and its worktree has no changes. Ask the user whether to remove the worktree and branch; on yes, run `hrk cleanup --yes <id>...`. Never run it without the user's yes. Run it alone, never chained with `;`, `&&` or other commands; if the harness refuses it, give the user the exact command to run with `!`, such as `! hrk cleanup --yes t3 t4`.
 - When the user asks to clean up, run `hrk cleanup` without `--owner`, so project tasks are included, show its list, and ask before `--yes`. Squash-merged branches count as merged; unmerged branches and worktrees with changes are never removed.
 
 ## Telegram

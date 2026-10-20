@@ -1073,7 +1073,7 @@ func TestReadTurnEnd(t *testing.T) {
 		{"claude limit", claude{}, readFixture(t, "stop-failure-claude.json"), "", TurnSignal{LimitConfirmed: true}},
 		{"claude server error", claude{}, `{"hook_event_name":"StopFailure","error":"server_error"}`, "", TurnSignal{APIError: "API error: server_error"}},
 		{"claude other failure", claude{}, `{"hook_event_name":"StopFailure","error":"authentication_failed"}`, "", TurnSignal{Ignore: true}},
-		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true}},
+		{"claude agents running", claude{}, readFixture(t, "stop-background-running-claude.json"), "background-agents-claude-1.txt", TurnSignal{Background: true, Subagents: true}},
 		{"claude all finished", claude{}, readFixture(t, "stop-background-none-claude.json"), "background-agents-claude-2.txt", TurnSignal{}},
 		{"claude mode line", claude{}, `{"hook_event_name":"Stop"}`, "background-agents-claude-2.txt", TurnSignal{Background: true}},
 		{"claude no list, no pane", claude{}, `{"hook_event_name":"Stop"}`, "", TurnSignal{}},
@@ -1106,7 +1106,7 @@ func TestReadTurnEnd(t *testing.T) {
 
 func TestDoneAtTurnEnd(t *testing.T) {
 	for _, a := range All() {
-		if got, want := a.DoneAtTurnEnd(), a.Harness() == task.Codex; got != want {
+		if got, want := a.DoneAtTurnEnd(), a.Harness() == task.Codex || a.Harness() == task.Claude; got != want {
 			t.Errorf("%s: DoneAtTurnEnd = %v, want %v", a.Harness(), got, want)
 		}
 	}

@@ -96,7 +96,8 @@ func (c claude) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 		}
 		return TurnSignal{Ignore: true}, nil
 	}
-	return TurnSignal{Background: c.background(in)}, nil
+	subagents, _ := ClaudeBackgroundSubagents(in.Payload)
+	return TurnSignal{Background: c.background(in), Subagents: subagents > 0}, nil
 }
 
 // HookTranscript reads the session transcript a hook input names: every
@@ -125,9 +126,11 @@ func (c claude) background(in TurnInput) bool {
 // NudgeInHook is true: the Stop hook returns the nudge as a block.
 func (claude) NudgeInHook() bool { return true }
 
-// DoneAtTurnEnd is false: the Stop hook ends Claude's turn, and no Claude
-// runner was seen working on after its done.
-func (claude) DoneAtTurnEnd() bool      { return false }
+// DoneAtTurnEnd is true: a Claude runner may report done while a background
+// subagent still runs, and works on when the subagent's result wakes it.
+// The Stop hook makes the done final at the first turn end with no
+// subagent running.
+func (claude) DoneAtTurnEnd() bool      { return true }
 func (claude) ShowsWorking(string) bool { return false }
 
 func (claude) HookPayload(_ []string, stdin io.Reader) ([]byte, error) { return readStdin(stdin) }
@@ -433,8 +436,22 @@ func ClaudeTransientError(payload []byte) (message string, ok bool) {
 // it; known is false when the input has no such list, as from an older
 // Claude, or does not parse.
 func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
+	return claudeBackgroundRunning(payload, "")
+}
+
+// ClaudeBackgroundSubagents is ClaudeBackgroundWork for subagents only: a
+// shell, such as a dev server, may run for as long as the session does, but
+// a subagent ends and wakes the runner with its result.
+func ClaudeBackgroundSubagents(payload []byte) (running int, known bool) {
+	return claudeBackgroundRunning(payload, "subagent")
+}
+
+// claudeBackgroundRunning counts the running entries of the list, of one
+// type when kind is set.
+func claudeBackgroundRunning(payload []byte, kind string) (running int, known bool) {
 	var in struct {
 		Tasks *[]struct {
+			Type   string `json:"type"`
 			Status string `json:"status"`
 		} `json:"background_tasks"`
 	}
@@ -442,7 +459,7 @@ func ClaudeBackgroundWork(payload []byte) (running int, known bool) {
 		return 0, false
 	}
 	for _, t := range *in.Tasks {
-		if t.Status == "running" || t.Status == "pending" {
+		if (kind == "" || t.Type == kind) && (t.Status == "running" || t.Status == "pending") {
 			running++
 		}
 	}

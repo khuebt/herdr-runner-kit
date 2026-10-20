@@ -504,13 +504,19 @@ func TestDoneLineStartsWithDecisions(t *testing.T) {
 		Task: "t1", Type: "done", Summary: "Export added.", Git: "on b, clean",
 		Decisions: []string{"CSV or JSON? -> CSV", "Page size? -> 50"},
 	}
-	want := "t1 done · export · decided: CSV or JSON? -> CSV; Page size? -> 50 · git: on b, clean · Export added."
+	want := "t1 done · export · git: on b, clean · Export added.\n  decided: CSV or JSON? -> CSV\n  decided: Page size? -> 50"
 	if got := Line(ev, tk, 0); got != want {
 		t.Errorf("done line = %q", got)
 	}
 	ev.Summary = strings.Repeat("word ", 200)
-	if got := Line(ev, tk, 0); !strings.HasPrefix(got, "t1 done · export · decided: CSV or JSON? -> CSV; Page size? -> 50 · git: on b, clean · word") {
+	got := strings.Split(Line(ev, tk, 0), "\n")
+	if len(got) != 3 || !strings.HasPrefix(got[0], "t1 done · export · git: on b, clean · word") || !strings.HasSuffix(got[0], "word…") ||
+		got[1] != "  decided: CSV or JSON? -> CSV" || got[2] != "  decided: Page size? -> 50" {
 		t.Errorf("the cut dropped more than the summary: %q", got)
+	}
+	ev.Decisions = []string{"What? -> " + strings.Repeat("lorem ", 80)}
+	if got := strings.Split(Line(ev, tk, 0), "\n"); len(got) != 2 || len([]rune(got[1])) > MaxLine || !strings.HasSuffix(got[1], "lorem…") {
+		t.Errorf("a long decision was not cut at a word: %q", got)
 	}
 }
 

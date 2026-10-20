@@ -81,7 +81,17 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 			return "", err
 		}
 	}
-	if t.PendingDone != nil || !t.QueuedSend.IsZero() {
+	if sig.Subagents && t.PendingDone != nil && !t.PendingDone.Subagents {
+		if _, err := r.Store.Update(id, func(t *task.Task) error {
+			if t.PendingDone != nil {
+				t.PendingDone.Subagents = true
+			}
+			return nil
+		}); err != nil {
+			return "", err
+		}
+	}
+	if !sig.Subagents && (t.PendingDone != nil || !t.QueuedSend.IsZero()) {
 		if settled, err := r.settleTurn(t.ID); settled || err != nil {
 			return "", err
 		}

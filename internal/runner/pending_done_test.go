@@ -249,11 +249,52 @@ func TestClaudeDoneIsFinalAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := runnerDone(t, r, tk.ID, "fixed")
-	if got.Status != task.Done || got.PendingDone != nil || !got.QueuedSend.IsZero() || got.Git == nil {
+	if got.Status != task.Running || got.PendingDone == nil {
 		t.Fatalf("claude done: %+v", got)
+	}
+	claudeStop(t, r, tk.ID, `{"hook_event_name":"Stop","background_tasks":[]}`)
+	got, _ = r.Store.Get(tk.ID)
+	if got.Status != task.Done || got.PendingDone != nil || got.Git == nil {
+		t.Fatalf("claude done at the turn end: %+v", got)
 	}
 	if len(doneEvents(t, r, tk.ID)) != 1 || !slices.Equal(after, []string{tk.ID}) {
 		t.Errorf("done events %d, dependents %q", len(doneEvents(t, r, tk.ID)), after)
+	}
+}
+
+func claudeStop(t *testing.T, r *Runner, id, payload string) {
+	t.Helper()
+	if _, err := r.TurnEnd(context.Background(), id, task.Claude, []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudeDoneWaitsForBackgroundSubagents(t *testing.T) {
+	subagent := `{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"},{"type":"shell","status":"running"}]}`
+	shell := `{"hook_event_name":"Stop","background_tasks":[{"type":"shell","status":"running"}]}`
+	for name, tc := range map[string]struct {
+		stops []string
+		final bool
+	}{
+		"a running subagent holds it":                   {[]string{subagent}, false},
+		"until a turn end with none":                    {[]string{subagent, subagent, shell}, true},
+		"a dev server never holds it":                   {[]string{shell}, true},
+		"an input without a list, as from older Claude": {[]string{`{"hook_event_name":"Stop"}`}, true},
+	} {
+		r, fake, _ := newTestRunner(t)
+		fake.on("pane read", ok(""))
+		tk := running(t, r, SpawnOptions{Kind: "fix", Agent: "claude", Prompt: "x", Cwd: gitRepo(t)})
+		runnerDone(t, r, tk.ID, "fixed")
+		for _, stop := range tc.stops {
+			claudeStop(t, r, tk.ID, stop)
+		}
+		got, _ := r.Store.Get(tk.ID)
+		if final := got.Status == task.Done; final != tc.final {
+			t.Errorf("%s: status %s, want final %v", name, got.Status, tc.final)
+		}
+		if !tc.final && (got.PendingDone == nil || !got.PendingDone.Subagents || got.Unreported != 0) {
+			t.Errorf("%s: %+v", name, got.PendingDone)
+		}
 	}
 }
 

@@ -99,6 +99,9 @@ type TurnSignal struct {
 	// Background says the agent ended its turn with background work still
 	// running, so it wakes on its own later.
 	Background bool
+	// Subagents says background subagents are still running, which wake
+	// the agent with their result: a done it reported is not final yet.
+	Subagents bool
 	// ContextLeft is the percent of its context the agent has left, valid
 	// when ContextKnown.
 	ContextLeft  int
