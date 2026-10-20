@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.14.0...v0.15.0) (2026-10-20)
+
+
+### Features
+
+* hold a Claude done for background subagents, shared-service rule, readable news lines ([#83](https://github.com/khuebt/herdr-runner-kit/issues/83)) ([f15515a](https://github.com/khuebt/herdr-runner-kit/commit/f15515ab677a01e0fdf140c2d423d0228d997e1d))
+
+
+### Bug Fixes
+
+* finish a held done after an interrupted turn, and only the done the watcher judged ([#85](https://github.com/khuebt/herdr-runner-kit/issues/85)) ([46f8b55](https://github.com/khuebt/herdr-runner-kit/commit/46f8b55e5d1278be9be74988e1e1948e007917b4))
+
 ## [0.14.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.13.0...v0.14.0) (2026-10-17)
 
 
