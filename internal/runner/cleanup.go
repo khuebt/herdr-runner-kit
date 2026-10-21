@@ -444,10 +444,30 @@ func deleteMergedBranch(ctx context.Context, root, branch, base string, tips []s
 }
 
 // checkedOut reports whether any worktree of the repository at root has
-// branch checked out.
+// branch checked out, or is rebasing or bisecting it, as git branch -D
+// checks: such a worktree shows a detached HEAD.
 func checkedOut(ctx context.Context, root, branch string) bool {
-	list := gitOut(ctx, root, "worktree", "list", "--porcelain")
-	return slices.Contains(strings.Split(list, "\n"), "branch refs/heads/"+branch)
+	for line := range strings.SplitSeq(gitOut(ctx, root, "worktree", "list", "--porcelain"), "\n") {
+		if line == "branch refs/heads/"+branch {
+			return true
+		}
+		wt, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		for _, f := range []string{"rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"} {
+			path := gitOut(ctx, wt, "rev-parse", "--git-path", f)
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(wt, path)
+			}
+			if b, err := os.ReadFile(path); err == nil {
+				if name := strings.TrimSpace(string(b)); name == branch || name == "refs/heads/"+branch {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // startedInLog returns the ids of the tasks with a started event. It reads

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -58,6 +59,7 @@ func TestCleanupRemovesASquashMergedWorktree(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
 	tk, repo := worktreeTask(t, r, "feat/a")
 	herdrOwnsWorktree(fake, repo, tk.Worktree.Path)
+	git(t, tk.Worktree.Path, "push", "-q", "-u", "origin", "feat/a")
 	squashMerge(t, repo, "feat/a")
 	it := cleanable(t, r, repo)
 	if it.Verdict != Merged || it.Detail != "merged into origin/main (squash or rebase)" {
@@ -68,6 +70,9 @@ func TestCleanupRemovesASquashMergedWorktree(t *testing.T) {
 	}
 	if isDir(tk.Worktree.Path) || BranchExists(context.Background(), repo, "feat/a") {
 		t.Error("worktree or branch left")
+	}
+	if cfg := gitOut(context.Background(), repo, "config", "--get-regexp", `^branch\.feat/a\.`); cfg != "" {
+		t.Errorf("branch config left: %s", cfg)
 	}
 }
 
@@ -468,8 +473,37 @@ func TestCleanupKeepsABranchThatMovedPastTheCheckedCommit(t *testing.T) {
 		if !BranchExists(ctx, repo, "feat/a") {
 			t.Errorf("worktree %v: branch deleted", withWorktree)
 		}
+		if withWorktree && !isDir(tk.Worktree.Path) {
+			t.Error("worktree removed although HEAD moved past the checked commit")
+		}
 		if got, err := r.Store.Get(tk.ID); err != nil || got.Worktree.MergedTip != checked {
 			t.Errorf("worktree %v: recorded %q, want the checked %s", withWorktree, got.Worktree.MergedTip, checked)
 		}
+	}
+}
+
+func TestCleanupKeepsABranchAnotherWorktreeIsRebasing(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "feat/a")
+	squashMerge(t, repo, "feat/a")
+	git(t, repo, "worktree", "remove", tk.Worktree.Path)
+	// A rebase stopped at an edit leaves the other worktree's HEAD detached.
+	other := filepath.Join(t.TempDir(), "other")
+	git(t, repo, "worktree", "add", "-q", "--detach", other, "feat/a")
+	cmd := exec.Command("git", "-C", other, "rebase", "-q", "-i", "feat/a~1", "feat/a")
+	cmd.Env = append(os.Environ(), "GIT_SEQUENCE_EDITOR=sed -i 1s/^pick/edit/")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("rebase: %v\n%s", err, out)
+	}
+	it := cleanable(t, r, repo)
+	if it.Verdict != Merged || it.Worktree || !it.Branch {
+		t.Fatalf("item = %+v", it)
+	}
+	if _, err := r.Cleanup(ctx, []CleanupItem{it}); err != nil {
+		t.Fatal(err)
+	}
+	if !BranchExists(ctx, repo, "feat/a") {
+		t.Error("deleted a branch another worktree is rebasing")
 	}
 }
