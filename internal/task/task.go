@@ -74,11 +74,12 @@ type Worktree struct {
 	// versions have no value.
 	BranchCreated *bool `json:"branchCreated,omitempty"`
 	// MergedTip is the branch's commit the kit found merged: set when
-	// cleanup removes the merged branch, or when milestone done finds the
-	// release branch merged. Cleanup counts a branch of the same owner and
-	// repository whose tip is an ancestor of it as merged too, since a
-	// squash merge leaves the branches stacked under it off the default
-	// branch.
+	// cleanup's check finds the branch merged or removes it, or when
+	// milestone done finds the release branch merged. Cleanup counts a
+	// branch of the same owner and repository whose tip is an ancestor of it
+	// as merged too: the branch itself, once later commits on the default
+	// branch change the lines it changed, and the branches stacked under a
+	// squash merge, which it leaves off the default branch.
 	MergedTip string `json:"mergedTip,omitempty"`
 }
 

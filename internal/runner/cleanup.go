@@ -48,6 +48,9 @@ type CleanupItem struct {
 	// commits the kit found merged that count as merged references too.
 	base string
 	tips []string
+	// stacked is set when the branch counts as merged only through another
+	// branch's tip.
+	stacked bool
 }
 
 // scratchDir holds the plan files runners write. Untracked files there are
@@ -142,7 +145,34 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 			it.Verdict, it.Detail = verdict(ctx, it.Task, it.base, it)
 		}
 	}
+	for _, it := range items {
+		if it.Verdict == Merged && !it.stacked {
+			r.recordMergedTip(ctx, it)
+		}
+	}
 	return items, nil
+}
+
+// recordMergedTip records the commit of a branch the check found merged by
+// itself, so the branch still counts as merged once later commits on the
+// default branch change the same lines and its squash merge no longer applies
+// cleanly. A tip already at or under the recorded one is left as it is.
+func (r *Runner) recordMergedTip(ctx context.Context, it CleanupItem) {
+	t := it.Task
+	tip := itemTip(ctx, it)
+	if tip == "" || (t.Worktree.MergedTip != "" && isAncestor(ctx, t.RepoRoot, tip, t.Worktree.MergedTip)) {
+		return
+	}
+	// Keeps the commit from being pruned once the branch is gone.
+	if exec.CommandContext(ctx, "git", "-C", t.RepoRoot, "update-ref", task.MergedTipRef(t.ID), tip).Run() != nil {
+		return
+	}
+	_, _ = r.Store.Update(t.ID, func(t *task.Task) error {
+		if t.Worktree != nil {
+			t.Worktree.MergedTip = tip
+		}
+		return nil
+	})
 }
 
 // tipKey scopes merged tips to one owner and repository.
@@ -227,12 +257,16 @@ func verdict(ctx context.Context, t *task.Task, base string, it *CleanupItem) (s
 	squashed, stacked := false, false
 	for _, r := range refs {
 		ok, bySquash, under := mergedOrUnder(ctx, r.dir, r.ref, base, it.tips)
+		if own := t.Worktree.MergedTip; under && own != "" && isAncestor(ctx, r.dir, r.ref, own) {
+			under = false // its own recorded tip, not a branch stacked on it
+		}
 		if !ok {
 			n := gitOut(ctx, r.dir, "rev-list", "--count", base+".."+r.ref)
 			return Unmerged, fmt.Sprintf("%s on %s not in %s", plural(n, "commit"), r.ref, base)
 		}
 		squashed, stacked = squashed || bySquash, stacked || under
 	}
+	it.stacked = stacked
 	detail := "merged into " + base
 	switch {
 	case stacked:

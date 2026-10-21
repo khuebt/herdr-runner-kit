@@ -307,3 +307,51 @@ func TestCleanupKeepsAStackedBranchWithWorkNoReleaseHolds(t *testing.T) {
 		}
 	}
 }
+
+// editMain commits a change to path on origin/main, as a later pull request
+// does, and fetches it.
+func editMain(t *testing.T, repo, path, body string) {
+	t.Helper()
+	land := filepath.Join(t.TempDir(), "land")
+	git(t, repo, "worktree", "add", "-q", "--detach", land, "origin/main")
+	if err := os.WriteFile(filepath.Join(land, path), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, land, "commit", "-q", "-am", "fix: later edit")
+	git(t, land, "push", "-q", "origin", "HEAD:main")
+	git(t, repo, "worktree", "remove", land)
+	git(t, repo, "fetch", "-q", "origin")
+}
+
+func TestCleanupRemembersASquashMergedBranchAfterMainEditsItsLines(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "feat/a")
+	squashMerge(t, repo, "feat/a")
+	if it := cleanable(t, r, repo); it.Verdict != Merged {
+		t.Fatalf("verdict = %s %s", it.Verdict, it.Detail)
+	}
+	tip := gitOut(ctx, repo, "rev-parse", "feat/a")
+	if got, err := r.Store.Get(tk.ID); err != nil || got.Worktree.MergedTip != tip {
+		t.Fatalf("MergedTip not recorded: %+v, %v", got.Worktree, err)
+	}
+	if ref := gitOut(ctx, repo, "rev-parse", task.MergedTipRef(tk.ID)); ref != tip {
+		t.Errorf("merged ref = %q, want %q", ref, tip)
+	}
+
+	editMain(t, repo, "a.txt", "changed on main\n")
+	if ok, _ := merged(ctx, repo, "feat/a", "origin/main"); ok {
+		t.Fatal("the squash still applies; the test proves nothing")
+	}
+	if it := cleanable(t, r, repo); it.Verdict != Merged || it.Detail != "merged into origin/main (squash or rebase)" {
+		t.Errorf("after main edited its lines: %s %s", it.Verdict, it.Detail)
+	}
+
+	// A commit after the recorded tip is checked again, and is work main lacks.
+	writeFile(t, filepath.Join(tk.Worktree.Path, "b.txt"))
+	git(t, tk.Worktree.Path, "add", "b.txt")
+	git(t, tk.Worktree.Path, "commit", "-q", "-m", "feat: b")
+	if it := cleanable(t, r, repo); it.Verdict != Unmerged {
+		t.Errorf("with a later commit: %s %s", it.Verdict, it.Detail)
+	}
+}
