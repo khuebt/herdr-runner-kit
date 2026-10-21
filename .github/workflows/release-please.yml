@@ -2,8 +2,10 @@ name: Release
 
 # release-please keeps a release PR up to date on every push to main. Merging
 # that PR tags vX.Y.Z and creates the GitHub Release; GoReleaser then attaches
-# binaries in the same workflow, because a tag pushed with GITHUB_TOKEN does not
-# trigger other workflows.
+# binaries in the same workflow. release-please uses RELEASE_PLEASE_TOKEN (a PAT)
+# when it exists, so its pull request and tag start workflows (CI and the title
+# check); events made with GITHUB_TOKEN do not. The vX.Y.Z tag does not start
+# release-candidate.yml, which only listens to v*-rc.* tags.
 on:
   push:
     branches: [main]
@@ -22,6 +24,7 @@ jobs:
       - id: release
         uses: googleapis/release-please-action@v5.0.0
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
