@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -353,5 +354,87 @@ func TestCleanupRemembersASquashMergedBranchAfterMainEditsItsLines(t *testing.T)
 	git(t, tk.Worktree.Path, "commit", "-q", "-m", "feat: b")
 	if it := cleanable(t, r, repo); it.Verdict != Unmerged {
 		t.Errorf("with a later commit: %s %s", it.Verdict, it.Detail)
+	}
+}
+
+func TestCleanupKeepsARecordedReleaseTipWhenTheReleaseMoves(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	repo, stacked, release := stackedRelease(t, r)
+	tip := gitOut(ctx, repo, "rev-parse", "release/M1")
+	// milestone done records the squash-merged release's tip.
+	if _, err := r.Store.Update(release.ID, func(t *task.Task) error {
+		t.Worktree.MergedTip = tip
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "update-ref", task.MergedTipRef(release.ID), tip)
+	// The release branch is then reset onto main, which holds it by ancestry.
+	git(t, release.Worktree.Path, "reset", "-q", "--hard", "origin/main")
+	if _, err := r.Cleanable(ctx, Owners{Owner: repo}, false); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "reflog", "expire", "--expire=now", "--all")
+	git(t, repo, "gc", "-q", "--prune=now")
+	items, err := r.Cleanable(ctx, Owners{Owner: repo}, false)
+	if err != nil || len(items) != len(stacked)+1 {
+		t.Fatalf("Cleanable = %+v, %v", items, err)
+	}
+	for _, it := range items {
+		if it.Verdict != Merged {
+			t.Errorf("%s: %s %s", it.Task.Worktree.Branch, it.Verdict, it.Detail)
+		}
+	}
+	if got, err := r.Store.Get(release.ID); err != nil || !slices.Contains(got.Worktree.MergedTips(), tip) {
+		t.Errorf("the release tip was dropped: %+v, %v", got.Worktree, err)
+	}
+}
+
+func TestCleanupRemembersAWorktreeOnAnotherBranch(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "feat/a")
+	// The runner left the work on another branch, which was squash-merged.
+	git(t, tk.Worktree.Path, "checkout", "-q", "-b", "feat/a2")
+	writeFile(t, filepath.Join(tk.Worktree.Path, "c.txt"))
+	git(t, tk.Worktree.Path, "add", "c.txt")
+	git(t, tk.Worktree.Path, "commit", "-q", "-m", "feat: c")
+	squashMerge(t, repo, "feat/a2")
+	if it := cleanable(t, r, repo); it.Verdict != Merged {
+		t.Fatalf("verdict = %s %s", it.Verdict, it.Detail)
+	}
+	editMain(t, repo, "c.txt", "changed on main\n")
+	if it := cleanable(t, r, repo); it.Verdict != Merged {
+		t.Errorf("after main edited its lines: %s %s", it.Verdict, it.Detail)
+	}
+}
+
+func TestCleanupLabelsAKeptStackedBranchAsStacked(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	repo, stacked, release := stackedRelease(t, r)
+	if _, err := r.Store.Update(release.ID, func(t *task.Task) error {
+		t.Worktree.MergedTip = gitOut(ctx, repo, "rev-parse", "release/M1")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// feat/a is checked out in a second worktree too, so cleanup keeps it.
+	git(t, repo, "worktree", "add", "-q", "-f", filepath.Join(t.TempDir(), "second"), "feat/a")
+	items, err := r.Cleanable(ctx, Owners{Owner: repo}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items = slices.DeleteFunc(items, func(it CleanupItem) bool { return it.Task.ID != stacked[0].ID })
+	if cleaned, err := r.Cleanup(ctx, items); err != nil || len(cleaned) != 1 {
+		t.Fatalf("Cleanup = %v, %v", cleaned, err)
+	}
+	items, err = r.Cleanable(ctx, Owners{Owner: repo}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items = slices.DeleteFunc(items, func(it CleanupItem) bool { return it.Task.ID != stacked[0].ID })
+	if len(items) != 1 || items[0].Detail != "merged into origin/main (squash or rebase of a branch stacked on it)" {
+		t.Errorf("kept branch: %+v", items)
 	}
 }

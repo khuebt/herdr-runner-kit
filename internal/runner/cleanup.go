@@ -87,9 +87,8 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 	bases := map[string]string{}
 	tips := map[string][]string{}
 	for _, t := range tasks {
-		if t.Worktree != nil && t.Worktree.MergedTip != "" {
-			k := tipKey(t)
-			tips[k] = append(tips[k], t.Worktree.MergedTip)
+		if t.Worktree != nil {
+			tips[tipKey(t)] = append(tips[tipKey(t)], t.Worktree.MergedTips()...)
 		}
 	}
 	var items []CleanupItem
@@ -134,9 +133,7 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 		if it.Verdict != Merged {
 			continue
 		}
-		if tip := itemTip(ctx, it); tip != "" {
-			live[tipKey(it.Task)] = append(live[tipKey(it.Task)], tip)
-		}
+		live[tipKey(it.Task)] = append(live[tipKey(it.Task)], itemTips(ctx, it)...)
 	}
 	for i := range items {
 		it := &items[i]
@@ -147,32 +144,39 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 	}
 	for _, it := range items {
 		if it.Verdict == Merged && !it.stacked {
-			r.recordMergedTip(ctx, it)
+			// The branch still counts as merged once later commits on the
+			// default branch change the same lines and its squash merge no
+			// longer applies cleanly.
+			r.recordMergedTips(ctx, it.Task, itemTips(ctx, it))
 		}
 	}
 	return items, nil
 }
 
-// recordMergedTip records the commit of a branch the check found merged by
-// itself, so the branch still counts as merged once later commits on the
-// default branch change the same lines and its squash merge no longer applies
-// cleanly. A tip already at or under the recorded one is left as it is.
-func (r *Runner) recordMergedTip(ctx context.Context, it CleanupItem) {
-	t := it.Task
-	tip := itemTip(ctx, it)
-	if tip == "" || (t.Worktree.MergedTip != "" && isAncestor(ctx, t.RepoRoot, tip, t.Worktree.MergedTip)) {
-		return
-	}
-	// Keeps the commit from being pruned once the branch is gone.
-	if exec.CommandContext(ctx, "git", "-C", t.RepoRoot, "update-ref", task.MergedTipRef(t.ID), tip).Run() != nil {
-		return
-	}
-	_, _ = r.Store.Update(t.ID, func(t *task.Task) error {
-		if t.Worktree != nil {
-			t.Worktree.MergedTip = tip
+// recordMergedTips records tips, commits the check found merged, on task t,
+// keeping every tip recorded before that is not an ancestor of them. Refs
+// under refs/hrk/merged keep each recorded tip from being pruned once no
+// branch holds it.
+func (r *Runner) recordMergedTips(ctx context.Context, t *task.Task, tips []string) {
+	errSame := errors.New("unchanged")
+	nt, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		changed := false
+		for _, tip := range tips {
+			if t.Worktree != nil && t.Worktree.AddMergedTip(tip, func(a, b string) bool { return isAncestor(ctx, t.RepoRoot, a, b) }) {
+				changed = true
+			}
+		}
+		if !changed {
+			return errSame
 		}
 		return nil
 	})
+	if err != nil {
+		return
+	}
+	for _, ref := range nt.Worktree.MergedTipRefs(nt.ID) {
+		gitOut(ctx, nt.RepoRoot, "update-ref", ref[0], ref[1])
+	}
 }
 
 // tipKey scopes merged tips to one owner and repository.
@@ -180,16 +184,17 @@ func tipKey(t *task.Task) string {
 	return t.Owner + "\x00" + t.RepoRoot
 }
 
-// itemTip returns the commit of the item's branch, or of its worktree when the
-// task has no branch of its own, or "".
-func itemTip(ctx context.Context, it CleanupItem) string {
-	switch {
-	case it.Branch:
-		return gitOut(ctx, it.Task.RepoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+it.Task.Worktree.Branch+"^{commit}")
-	case it.Worktree:
-		return gitOut(ctx, it.Task.Worktree.Path, "rev-parse", "--verify", "--quiet", "HEAD")
+// itemTips returns the commits the verdict checks: the item's branch and its
+// worktree's HEAD, which may be on another branch.
+func itemTips(ctx context.Context, it CleanupItem) []string {
+	var tips []string
+	if it.Branch {
+		tips = append(tips, gitOut(ctx, it.Task.RepoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+it.Task.Worktree.Branch+"^{commit}"))
 	}
-	return ""
+	if it.Worktree {
+		tips = append(tips, gitOut(ctx, it.Task.Worktree.Path, "rev-parse", "--verify", "--quiet", "HEAD"))
+	}
+	return slices.DeleteFunc(tips, func(tip string) bool { return tip == "" })
 }
 
 // markRemovedOutside records that t's worktree folder was removed outside
@@ -254,11 +259,15 @@ func verdict(ctx context.Context, t *task.Task, base string, it *CleanupItem) (s
 	if it.Worktree {
 		refs = append(refs, gitRef{"HEAD", t.Worktree.Path}) // the runner may have left another branch checked out
 	}
+	// A branch under its own recorded tip is merged by itself, unless another
+	// branch's tip holds it too.
+	own := t.Worktree.MergedTips()
+	others := slices.DeleteFunc(slices.Clone(it.tips), func(tip string) bool { return slices.Contains(own, tip) })
 	squashed, stacked := false, false
 	for _, r := range refs {
-		ok, bySquash, under := mergedOrUnder(ctx, r.dir, r.ref, base, it.tips)
-		if own := t.Worktree.MergedTip; under && own != "" && isAncestor(ctx, r.dir, r.ref, own) {
-			under = false // its own recorded tip, not a branch stacked on it
+		ok, bySquash, under := mergedOrUnder(ctx, r.dir, r.ref, base, others)
+		if !ok && underAny(ctx, r.dir, r.ref, own) {
+			ok, bySquash = true, true
 		}
 		if !ok {
 			n := gitOut(ctx, r.dir, "rev-list", "--count", base+".."+r.ref)
@@ -337,7 +346,7 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 	} else if err != nil {
 		return err
 	}
-	tip := itemTip(ctx, it)
+	tips := itemTips(ctx, it)
 	if it.Worktree {
 		force, err := recheckWorktree(ctx, t.Worktree.Path, it.base, it.tips)
 		if err != nil {
@@ -354,16 +363,10 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 			return err
 		}
 	}
-	if tip != "" {
-		// Keeps the commit from being pruned once the branch is gone.
-		gitOut(ctx, t.RepoRoot, "update-ref", task.MergedTipRef(t.ID), tip)
-	}
+	r.recordMergedTips(ctx, t, tips)
 	t, err := r.Store.Update(t.ID, func(t *task.Task) error {
 		t.Worktree.Removed = true
 		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone
-		if tip != "" {
-			t.Worktree.MergedTip = tip
-		}
 		return nil
 	})
 	if err != nil {
@@ -612,12 +615,15 @@ func mergedOrUnder(ctx context.Context, dir, ref, base string, tips []string) (o
 	if ok, bySquash := merged(ctx, dir, ref, base); ok {
 		return true, bySquash, false
 	}
-	for _, tip := range tips {
-		if isAncestor(ctx, dir, ref, tip) {
-			return true, true, true
-		}
+	if underAny(ctx, dir, ref, tips) {
+		return true, true, true
 	}
 	return false, false, false
+}
+
+// underAny reports whether ref is one of tips or an ancestor of one.
+func underAny(ctx context.Context, dir, ref string, tips []string) bool {
+	return slices.ContainsFunc(tips, func(tip string) bool { return isAncestor(ctx, dir, ref, tip) })
 }
 
 func isAncestor(ctx context.Context, dir, ref, base string) bool {

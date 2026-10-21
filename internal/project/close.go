@@ -314,14 +314,22 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 		// cleanup counts the branches stacked under the release as merged,
 		// even once the release branch is gone. Without the record they are
 		// only listed unmerged, so a failure is not worth failing done.
-		_, _ = git(ctx, p.Path, "update-ref", task.MergedTipRef(closer.ID), tip)
-		_, _ = s.Update(closer.ID, func(t *task.Task) error {
+		if t, err := s.Update(closer.ID, func(t *task.Task) error {
 			if t.Worktree == nil {
 				return errors.New("no worktree")
 			}
-			t.Worktree.MergedTip = tip
+			if !t.Worktree.AddMergedTip(tip, func(a, b string) bool {
+				_, err := git(ctx, p.Path, "merge-base", "--is-ancestor", a, b)
+				return err == nil
+			}) {
+				return errors.New("already recorded")
+			}
 			return nil
-		})
+		}); err == nil {
+			for _, ref := range t.Worktree.MergedTipRefs(t.ID) {
+				_, _ = git(ctx, p.Path, "update-ref", ref[0], ref[1])
+			}
+		}
 	}
 	if d.Commit == "" {
 		if d.Commit, err = git(ctx, p.Path, "rev-parse", "HEAD"); err != nil {

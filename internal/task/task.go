@@ -81,12 +81,58 @@ type Worktree struct {
 	// branch change the lines it changed, and the branches stacked under a
 	// squash merge, which it leaves off the default branch.
 	MergedTip string `json:"mergedTip,omitempty"`
+	// OlderMergedTips are tips recorded before MergedTip that are not
+	// ancestors of it, which still count.
+	OlderMergedTips []string `json:"olderMergedTips,omitempty"`
 }
 
 // MergedTipRef is the ref that keeps task id's MergedTip from being pruned
 // once no branch holds it.
 func MergedTipRef(id string) string {
 	return "refs/hrk/merged/" + id
+}
+
+// MergedTips returns every tip recorded as merged, the newest first.
+func (w *Worktree) MergedTips() []string {
+	if w.MergedTip == "" {
+		return nil
+	}
+	return append([]string{w.MergedTip}, w.OlderMergedTips...)
+}
+
+// AddMergedTip records tip as the newest merged tip, keeping every recorded
+// tip that is not an ancestor of it, so a tip other branches rely on is never
+// dropped. It changes nothing and reports false when tip is at or under a
+// recorded tip. isAncestor(a, b) reports whether a is b or an ancestor of it.
+func (w *Worktree) AddMergedTip(tip string, isAncestor func(a, b string) bool) bool {
+	old := w.MergedTips()
+	for _, o := range old {
+		if isAncestor(tip, o) {
+			return false
+		}
+	}
+	var keep []string
+	for _, o := range old {
+		if !isAncestor(o, tip) {
+			keep = append(keep, o)
+		}
+	}
+	w.MergedTip, w.OlderMergedTips = tip, keep
+	return true
+}
+
+// MergedTipRefs returns the refs that keep each recorded tip from being
+// pruned, as ref and commit pairs, the older tips first, so a tip that moves
+// out of MergedTipRef gets its own ref before that ref moves.
+func (w *Worktree) MergedTipRefs(id string) [][2]string {
+	var refs [][2]string
+	for _, o := range w.OlderMergedTips {
+		refs = append(refs, [2]string{MergedTipRef(id) + "-" + o, o})
+	}
+	if w.MergedTip != "" {
+		refs = append(refs, [2]string{MergedTipRef(id), w.MergedTip})
+	}
+	return refs
 }
 
 // OwnsBranch reports whether the task created its branch, so cleanup may
