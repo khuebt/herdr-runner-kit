@@ -341,13 +341,29 @@ func (r *Runner) After(ctx context.Context, id string) error {
 		return errors.Join(r.startDependents(ctx, t), r.planDone(ctx, t))
 	case task.Failed, task.Stopped:
 		err := r.failDependents(t)
-		if t.Plan != "" && planHelper(t) {
-			// A final review or fixup that ended this way still ends the run.
+		if t.Plan != "" {
+			// A final review or fixup that ended this way still ends the
+			// run, and so does an older phase task a newer one replaced.
 			err = errors.Join(err, r.planDone(ctx, t))
 		}
 		return err
 	}
 	return nil
+}
+
+// ended settles what waits on t, which a stop, a failed launch or a lost
+// runner just ended: its waiting tasks fail here, and a plan task gets the
+// follow-up a report would start, which checks whether the plan is done.
+// That check runs in the detached child, never here, because plan run
+// holds the plan's lock while it spawns, and a spawn can fail a task.
+func (r *Runner) ended(t *task.Task) {
+	_ = r.failDependents(t)
+	if t.Plan == "" {
+		return
+	}
+	if err := r.StartAfter(t.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "hrk: %s: start follow-up: %v\n", t.ID, err)
+	}
 }
 
 // startDependents settles every task that waits for parent, which just
@@ -406,7 +422,7 @@ func (r *Runner) failDependent(id, reason string) {
 		return
 	}
 	r.emit(t, "failed", reason, "")
-	_ = r.failDependents(t)
+	r.ended(t)
 }
 
 // Settle decides the waiting task id from its parents in the store. A

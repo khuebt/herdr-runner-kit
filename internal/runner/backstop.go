@@ -403,7 +403,7 @@ func (r *Runner) failLost(ctx context.Context, id, reason string) {
 	}
 	r.emit(t, "failed", reason, "")
 	r.reportScopeLeft(t, left, psErr)
-	_ = r.failDependents(t)
+	r.ended(t)
 }
 
 // errIfLost returns an error naming where t's work is when its runner is

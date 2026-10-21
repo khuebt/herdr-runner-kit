@@ -369,3 +369,26 @@ func mustList(t *testing.T, r *Runner) []*task.Task {
 	}
 	return all
 }
+
+func TestStoppedFinalReviewReportsPlanDone(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var follow []string
+	r.StartAfter = func(id string) error { follow = append(follow, id); return nil }
+	review, fixup := finalReviewFixture(t, r, writeReport(t, "Verdict: fix\n"))
+	if _, err := r.Stop(context.Background(), review.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(fixup.ID); got.Status != task.Failed {
+		t.Fatalf("fixup = %s", got.Status)
+	}
+	// Stop hands the plan check to the follow-up, which a report starts too.
+	for _, id := range follow {
+		if err := r.After(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if done := planDoneSummaries(t, r); len(done) != 1 || !strings.Contains(done[0], ", review stopped, fixup "+fixup.ID+" failed") {
+		t.Fatalf("plan-done = %q, follow-ups %v", done, follow)
+	}
+	checkStore(t, r)
+}

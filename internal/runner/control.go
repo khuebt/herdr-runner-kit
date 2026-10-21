@@ -270,7 +270,7 @@ func (r *Runner) Stop(ctx context.Context, id string, removeWorktree bool) (*tas
 	}
 	if changed {
 		r.emit(t, "stopped", "stopped by the user", "")
-		_ = r.failDependents(t)
+		r.ended(t)
 	}
 	if err := r.closeRunner(ctx, t, removeWorktree, closeCheck{}); err != nil {
 		return nil, err

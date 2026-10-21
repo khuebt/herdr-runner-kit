@@ -286,3 +286,35 @@ func TestRestartedPaneReportsItsScopeProcessesOnce(t *testing.T) {
 		t.Errorf("task = %s, shell %d", got.Status, got.ShellPID)
 	}
 }
+
+func TestAgentGoneFailsWaitingChildren(t *testing.T) {
+	r, fake, tk, child := waitingRunner(t)
+	fake.on("agent wait", herdrErr("agent_not_found"))
+	fake.on("pane read", herdrErr("pane_not_found"))
+	r.WatchAgent(context.Background(), tk.ID)
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Failed {
+		t.Fatalf("task = %s", got.Status)
+	}
+	if got, _ := r.Store.Get(child.ID); got.Status != task.Failed || got.Error != "parent "+tk.ID+" failed" {
+		t.Errorf("dependent = %s (%s)", got.Status, got.Error)
+	}
+	checkStore(t, r)
+}
+
+func TestLaunchDeadlineFailsWaitingChildren(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	p := spawnStarting(t, r, SpawnOptions{Prompt: "a", Cwd: plainDir(t)})
+	c := spawnQueued(t, r, p.ID)
+	p, err := r.Store.Update(p.ID, func(t *task.Task) error {
+		t.LaunchDeadline = time.Now().Add(-time.Second)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.CheckLaunch(p)
+	if got, _ := r.Store.Get(c); got.Status != task.Failed || got.Error != "parent "+p.ID+" failed" {
+		t.Errorf("child = %s (%s)", got.Status, got.Error)
+	}
+	checkStore(t, r)
+}

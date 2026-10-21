@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -588,4 +589,37 @@ func TestSettleDecidesAWaitingTaskOnce(t *testing.T) {
 			t.Errorf("%s = %s (%s), want failed (%s)", id, got.Status, got.Error, want)
 		}
 	}
+}
+
+func TestLaunchFailureFailsWaitingChildren(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	dir := plainDir(t)
+	p := spawnStarting(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+	c := spawnQueued(t, r, p.ID)
+	held := spawnStarting(t, r, SpawnOptions{Prompt: "c", Cwd: dir, After: []string{c}, Gate: task.GateHuman})
+	fake.on("tab create", herdrErr("workspace_not_found"))
+	if err := r.Launch(context.Background(), p.ID); err == nil {
+		t.Fatal("launch succeeded")
+	}
+	for id, want := range map[string]string{c: "parent " + p.ID + " failed", held.ID: "parent " + c + " failed"} {
+		if got, _ := r.Store.Get(id); got.Status != task.Failed || got.Error != want {
+			t.Errorf("%s = %s (%s), want failed (%s)", id, got.Status, got.Error, want)
+		}
+	}
+	checkStore(t, r)
+}
+
+func TestLauncherThatWillNotStartFailsWaitingChildren(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	dir := plainDir(t)
+	p := spawnStarting(t, r, SpawnOptions{Prompt: "a", Cwd: dir, Gate: task.GateHuman})
+	c := spawnQueued(t, r, p.ID)
+	r.StartLauncher = func(string) (int, error) { return 0, errors.New("no fork") }
+	if _, err := r.Release(p.ID, ""); err == nil {
+		t.Fatal("release succeeded")
+	}
+	if got, _ := r.Store.Get(c); got.Status != task.Failed || got.Error != "parent "+p.ID+" failed" {
+		t.Errorf("child = %s (%s)", got.Status, got.Error)
+	}
+	checkStore(t, r)
 }
