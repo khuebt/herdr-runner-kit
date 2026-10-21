@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.15.3](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.2...v0.15.3) (2026-10-21)
+
+
+### Bug Fixes
+
+* count branches stacked under a squash-merged release as merged in cleanup ([#91](https://github.com/khuebt/herdr-runner-kit/issues/91)) ([fa6998a](https://github.com/khuebt/herdr-runner-kit/commit/fa6998a62d3f7a072161fc2d87f74360a282c9f3))
+* **project:** let a roadmap block leave out done milestones ([#93](https://github.com/khuebt/herdr-runner-kit/issues/93)) ([36c16bb](https://github.com/khuebt/herdr-runner-kit/commit/36c16bbf435dea40a49abde8d2e6ef17956e685a))
+* **project:** warn in status when an approved spec or pack changed since its approval ([#90](https://github.com/khuebt/herdr-runner-kit/issues/90)) ([9515cbf](https://github.com/khuebt/herdr-runner-kit/commit/9515cbf47d46ef1319539d60ddc12a67d1e1b409))
+
 ## [0.15.2](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.1...v0.15.2) (2026-10-21)
 
 
