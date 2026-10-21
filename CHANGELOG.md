@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.4](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.3...v0.15.4) (2026-10-21)
+
+
+### Bug Fixes
+
+* **cleanup:** remember tips of branches verified as merged ([#95](https://github.com/khuebt/herdr-runner-kit/issues/95)) ([82fcde5](https://github.com/khuebt/herdr-runner-kit/commit/82fcde55c24715eae0214fedb9d98b76bbea4728))
+* **wait:** give a main session only the news of its own projects ([#94](https://github.com/khuebt/herdr-runner-kit/issues/94)) ([ead745c](https://github.com/khuebt/herdr-runner-kit/commit/ead745cc61f1198a934a668e9df41df4bc939b4c))
+
 ## [0.15.3](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.2...v0.15.3) (2026-10-21)
 
 
