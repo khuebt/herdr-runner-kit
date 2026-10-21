@@ -114,7 +114,7 @@ Two gates stop the project: the spec and the stakeholder pack. Only the user pas
 3. A feature runner failed: `send` it the failure, or run `chain` again; done nodes are kept.
 4. The close runner's `done` names `release/M<n>`. The user pushes it and merges it through a pull request; never merge or push for them.
 5. When the user says it is merged: `project milestone done M<n>`, and relay the tag and the release notes. The tag is local; the output prints the push command for the user. After a squash or rebase merge, add `--merged-commit <sha>`.
-6. A done milestone needs fixes: `project milestone reopen M<n> --reason WHY`, fix on the branch the release came from, then `project milestone close M<n>` for a new release branch, and the same merge and `done`. A failed close runner: `project milestone close M<n>` too.
+6. A done milestone needs fixes: `project milestone reopen M<n> --reason WHY`, fix on the branch the release came from, then `project milestone close M<n>` for a new release branch, and the same merge and `done`. The close runner's stage rules only allow `handbook/`, so a code change after it goes through a new `fix` runner on the release branch (`--kind fix`), no new flag. A failed close runner: `project milestone close M<n>` too.
 
 A project spawn prints `note: N runners of <name> are active …` above the project record's `parallelWarning`: mention it once; nothing was blocked.
 

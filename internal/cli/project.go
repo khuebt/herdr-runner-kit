@@ -224,6 +224,9 @@ func projectReport(ctx context.Context, s *state.Store, p state.Project) (projec
 		return project.Report{}, err
 	}
 	r := project.Status(rec, p, tasks, time.Now())
+	if rec != nil {
+		r.Drift = project.GateDrift(ctx, p.Path, *rec)
+	}
 	if r.Running != nil && r.PlanDone {
 		b, err := project.ReadPlan(ctx, p.Path, *rec, r.Running.ID)
 		if err != nil {
