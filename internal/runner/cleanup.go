@@ -51,6 +51,10 @@ type CleanupItem struct {
 	// stacked is set when the branch counts as merged only through another
 	// branch's tip.
 	stacked bool
+	// branchAt and headAt are the commits of the branch and the worktree's
+	// HEAD that a merged verdict checked. Only these are recorded, and
+	// removal stops when either moved past them.
+	branchAt, headAt string
 }
 
 // scratchDir holds the plan files runners write. Untracked files there are
@@ -133,7 +137,7 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 		if it.Verdict != Merged {
 			continue
 		}
-		live[tipKey(it.Task)] = append(live[tipKey(it.Task)], itemTips(ctx, it)...)
+		live[tipKey(it.Task)] = append(live[tipKey(it.Task)], it.checked()...)
 	}
 	for i := range items {
 		it := &items[i]
@@ -147,7 +151,7 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 			// The branch still counts as merged once later commits on the
 			// default branch change the same lines and its squash merge no
 			// longer applies cleanly.
-			r.recordMergedTips(ctx, it.Task, itemTips(ctx, it))
+			r.recordMergedTips(ctx, it.Task, it.checked())
 		}
 	}
 	return items, nil
@@ -184,17 +188,9 @@ func tipKey(t *task.Task) string {
 	return t.Owner + "\x00" + t.RepoRoot
 }
 
-// itemTips returns the commits the verdict checks: the item's branch and its
-// worktree's HEAD, which may be on another branch.
-func itemTips(ctx context.Context, it CleanupItem) []string {
-	var tips []string
-	if it.Branch {
-		tips = append(tips, gitOut(ctx, it.Task.RepoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+it.Task.Worktree.Branch+"^{commit}"))
-	}
-	if it.Worktree {
-		tips = append(tips, gitOut(ctx, it.Task.Worktree.Path, "rev-parse", "--verify", "--quiet", "HEAD"))
-	}
-	return slices.DeleteFunc(tips, func(tip string) bool { return tip == "" })
+// checked returns the commits a merged verdict checked.
+func (it CleanupItem) checked() []string {
+	return slices.DeleteFunc([]string{it.branchAt, it.headAt}, func(c string) bool { return c == "" })
 }
 
 // markRemovedOutside records that t's worktree folder was removed outside
@@ -251,29 +247,44 @@ func verdict(ctx context.Context, t *task.Task, base string, it *CleanupItem) (s
 	}
 	// The branch is checked before the worktree's HEAD, so the detail names
 	// the branch whenever it is the one not merged.
-	type gitRef struct{ ref, dir string }
+	// Each ref is read once, and its commit is checked and kept, so a commit
+	// made during the check is never taken as merged.
+	type gitRef struct {
+		ref, dir string
+		at       *string
+	}
 	var refs []gitRef
 	if it.Branch {
-		refs = append(refs, gitRef{t.Worktree.Branch, t.RepoRoot})
+		refs = append(refs, gitRef{t.Worktree.Branch, t.RepoRoot, &it.branchAt})
 	}
 	if it.Worktree {
-		refs = append(refs, gitRef{"HEAD", t.Worktree.Path}) // the runner may have left another branch checked out
+		refs = append(refs, gitRef{"HEAD", t.Worktree.Path, &it.headAt}) // the runner may have left another branch checked out
 	}
+	it.branchAt, it.headAt = "", ""
 	// A branch under its own recorded tip is merged by itself, unless another
 	// branch's tip holds it too.
 	own := t.Worktree.MergedTips()
 	others := slices.DeleteFunc(slices.Clone(it.tips), func(tip string) bool { return slices.Contains(own, tip) })
 	squashed, stacked := false, false
-	for _, r := range refs {
-		ok, bySquash, under := mergedOrUnder(ctx, r.dir, r.ref, base, others)
-		if !ok && underAny(ctx, r.dir, r.ref, own) {
+	at := make([]string, len(refs))
+	for i, r := range refs {
+		c := gitOut(ctx, r.dir, "rev-parse", "--verify", "--quiet", r.ref+"^{commit}")
+		if c == "" {
+			return Unmerged, "cannot read " + r.ref
+		}
+		ok, bySquash, under := mergedOrUnder(ctx, r.dir, c, base, others)
+		if !ok && underAny(ctx, r.dir, c, own) {
 			ok, bySquash = true, true
 		}
 		if !ok {
-			n := gitOut(ctx, r.dir, "rev-list", "--count", base+".."+r.ref)
+			n := gitOut(ctx, r.dir, "rev-list", "--count", base+".."+c)
 			return Unmerged, fmt.Sprintf("%s on %s not in %s", plural(n, "commit"), r.ref, base)
 		}
+		at[i] = c
 		squashed, stacked = squashed || bySquash, stacked || under
+	}
+	for i, r := range refs {
+		*r.at = at[i]
 	}
 	it.stacked = stacked
 	detail := "merged into " + base
@@ -346,9 +357,8 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 	} else if err != nil {
 		return err
 	}
-	tips := itemTips(ctx, it)
 	if it.Worktree {
-		force, err := recheckWorktree(ctx, t.Worktree.Path, it.base, it.tips)
+		force, err := recheckWorktree(ctx, t.Worktree.Path, it.base, it.tips, it.headAt)
 		if err != nil {
 			return err
 		}
@@ -359,11 +369,11 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 	branchGone := false
 	if it.Branch {
 		var err error
-		if branchGone, err = deleteMergedBranch(ctx, t.RepoRoot, t.Worktree.Branch, it.base, it.tips); err != nil {
+		if branchGone, err = deleteMergedBranch(ctx, t.RepoRoot, t.Worktree.Branch, it.base, it.tips, it.branchAt); err != nil {
 			return err
 		}
 	}
-	r.recordMergedTips(ctx, t, tips)
+	r.recordMergedTips(ctx, t, it.checked())
 	t, err := r.Store.Update(t.ID, func(t *task.Task) error {
 		t.Worktree.Removed = true
 		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone
@@ -381,38 +391,55 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 }
 
 // recheckWorktree reads the worktree again right before removal, since its
-// tab may have been used after the check. It reports whether removal must
-// force past untracked plan files, the only untracked files it may delete.
-func recheckWorktree(ctx context.Context, path, base string, tips []string) (bool, error) {
+// tab may have been used after the check: HEAD must still be at or under
+// verified, the commit the check found merged. It reports whether removal
+// must force past untracked plan files, the only untracked files it may
+// delete.
+func recheckWorktree(ctx context.Context, path, base string, tips []string, verified string) (bool, error) {
 	st, err := readStatus(ctx, path)
 	if err != nil {
 		return false, err
 	}
 	scratch, other := splitUntracked(st.Untracked)
-	if ok, _, _ := mergedOrUnder(ctx, path, "HEAD", base, tips); len(st.Changed) > 0 || len(other) > 0 || !ok {
+	head := gitOut(ctx, path, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	ok := head != "" && verified != "" && isAncestor(ctx, path, head, verified)
+	if ok {
+		ok, _, _ = mergedOrUnder(ctx, path, head, base, tips)
+	}
+	if len(st.Changed) > 0 || len(other) > 0 || !ok {
 		return false, errors.New("worktree changed since the check")
 	}
 	return len(scratch) > 0, nil
 }
 
-// deleteMergedBranch deletes branch if it is still merged into base, and
-// reports whether it is gone. It uses -D, because the branch may be merged
-// into the remote default branch only, which the local checkout may not have
-// pulled yet. A branch another worktree has checked out is kept: that
-// worktree's task, which shares the branch, deletes it.
-func deleteMergedBranch(ctx context.Context, root, branch, base string, tips []string) (bool, error) {
+// deleteMergedBranch deletes branch if it is still at or under verified, the
+// commit the check found merged, and still merged into base, and reports
+// whether it is gone. The branch may be merged into the remote default
+// branch only, which the local checkout may not have pulled yet, so git's
+// own merged test is not used. A branch another worktree has checked out is
+// kept: that worktree's task, which shares the branch, deletes it.
+func deleteMergedBranch(ctx context.Context, root, branch, base string, tips []string, verified string) (bool, error) {
 	if !BranchExists(ctx, root, branch) {
 		return true, nil
 	}
-	if ok, _, _ := mergedOrUnder(ctx, root, branch, base, tips); !ok {
+	ref := "refs/heads/" + branch
+	at := gitOut(ctx, root, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	ok := at != "" && verified != "" && isAncestor(ctx, root, at, verified)
+	if ok {
+		ok, _, _ = mergedOrUnder(ctx, root, at, base, tips)
+	}
+	if !ok {
 		return false, fmt.Errorf("branch %s moved since the check", branch)
 	}
 	if checkedOut(ctx, root, branch) {
 		return false, nil
 	}
-	if out, err := exec.CommandContext(ctx, "git", "-C", root, "branch", "-D", branch).CombinedOutput(); err != nil {
+	// Deleted only while it still points at the commit checked, so a commit
+	// made meanwhile keeps the branch.
+	if out, err := exec.CommandContext(ctx, "git", "-C", root, "update-ref", "-d", ref, at).CombinedOutput(); err != nil {
 		return false, fmt.Errorf("delete branch: %s", strings.TrimSpace(string(out)))
 	}
+	_ = exec.CommandContext(ctx, "git", "-C", root, "config", "--remove-section", "branch."+branch).Run()
 	return true, nil
 }
 
@@ -471,7 +498,7 @@ func (r *Runner) removeUnstarted(ctx context.Context, id string) {
 	if err := r.removeWorktree(ctx, t, false); err != nil {
 		return
 	}
-	branchGone, _ := deleteMergedBranch(ctx, t.RepoRoot, branch, base, nil)
+	branchGone, _ := deleteMergedBranch(ctx, t.RepoRoot, branch, base, nil, base)
 	t, err = r.Store.Update(id, func(t *task.Task) error {
 		t.Worktree.Removed = true
 		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone

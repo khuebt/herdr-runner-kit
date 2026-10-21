@@ -438,3 +438,38 @@ func TestCleanupLabelsAKeptStackedBranchAsStacked(t *testing.T) {
 		t.Errorf("kept branch: %+v", items)
 	}
 }
+
+func TestCleanupKeepsABranchThatMovedPastTheCheckedCommit(t *testing.T) {
+	ctx := context.Background()
+	for _, withWorktree := range []bool{true, false} {
+		r, fake, _ := newTestRunner(t)
+		tk, repo := worktreeTask(t, r, "feat/a")
+		herdrOwnsWorktree(fake, repo, tk.Worktree.Path)
+		squashMerge(t, repo, "feat/a")
+		if !withWorktree {
+			git(t, repo, "worktree", "remove", tk.Worktree.Path)
+		}
+		it := cleanable(t, r, repo)
+		checked := gitOut(ctx, repo, "rev-parse", "feat/a")
+		if it.Verdict != Merged {
+			t.Fatalf("verdict = %s %s", it.Verdict, it.Detail)
+		}
+		// A commit after the check that adds nothing main lacks still is no
+		// commit the check saw.
+		if withWorktree {
+			git(t, tk.Worktree.Path, "commit", "-q", "--allow-empty", "-m", "chore: later")
+		} else {
+			later := gitOut(ctx, repo, "commit-tree", "feat/a^{tree}", "-p", "feat/a", "-m", "chore: later")
+			git(t, repo, "update-ref", "refs/heads/feat/a", later)
+		}
+		if _, err := r.Cleanup(ctx, []CleanupItem{it}); err == nil {
+			t.Errorf("worktree %v: Cleanup removed a branch that moved after the check", withWorktree)
+		}
+		if !BranchExists(ctx, repo, "feat/a") {
+			t.Errorf("worktree %v: branch deleted", withWorktree)
+		}
+		if got, err := r.Store.Get(tk.ID); err != nil || got.Worktree.MergedTip != checked {
+			t.Errorf("worktree %v: recorded %q, want the checked %s", withWorktree, got.Worktree.MergedTip, checked)
+		}
+	}
+}
