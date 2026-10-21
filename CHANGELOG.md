@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.5](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.4...v0.15.5) (2026-10-21)
+
+
+### Bug Fixes
+
+* **project:** respawn failed chain nodes while siblings run and serialize Claude trust ([#98](https://github.com/khuebt/herdr-runner-kit/issues/98)) ([98ec9a2](https://github.com/khuebt/herdr-runner-kit/commit/98ec9a26d6d2f2d1b751ed1e96846dcad635a6dc))
+
 ## [0.15.4](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.3...v0.15.4) (2026-10-21)
 
 
