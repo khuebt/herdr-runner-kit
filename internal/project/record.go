@@ -324,7 +324,7 @@ func Load(s *state.Store, name string) (Record, error) {
 			rec.clipped++
 		}
 	}
-	if rec.clipped > 0 || healMoved(rec.Milestones) > 0 {
+	if healed := healMoved(rec.Milestones); rec.clipped > 0 || healed > 0 {
 		rec.Pending++
 	}
 	return rec, nil

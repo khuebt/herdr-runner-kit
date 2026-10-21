@@ -300,12 +300,17 @@ func TestDoneTakesTheClosingMilestonesFeaturesFromItsUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	run(t, p.Path, "branch", "-D", "release/M0")
-	releaseMilestone(t, p.Path, "M0", movedUpdate)
+	// M0 delivered F1, moved F2 and F3 to M1 and dropped F4; its update
+	// gives no planned date, so the recorded one stays.
+	update := strings.Replace(movedUpdate, "    planned: 2026-11-01\n", "", 1)
+	update = strings.Replace(update, "      - {id: F4, title: Export a list}\n", "", 1)
+	releaseMilestone(t, p.Path, "M0", update)
 	if _, err := finish(s, p, tasks, ""); err != nil {
 		t.Fatal(err)
 	}
 	rec := load(t, s)
-	if !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) || !sameFeatures(rec.Milestones[1].Features, m0Features[1:]) {
+	if !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) || !sameFeatures(rec.Milestones[1].Features, m0Features[1:3]) ||
+		dateOrEmpty(rec.Milestones[0].Planned) != "2026-11-01" {
 		t.Fatalf("after done M0: %+v", rec.Milestones)
 	}
 	finishM1(t, s, p, tasks)
@@ -318,17 +323,16 @@ func TestDoneHealsADoneMilestoneThatKeptMovedFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The state an older kit left: M0 done with every feature, M1 holding
-	// the moved ones too.
-	old, err := Update(s, "demo-app", func(r *Record) error {
-		r.Milestones[0].Features = m0Features
-		r.Milestones[1].Features = m0Features[1:]
-		return nil
-	})
-	if err != nil {
+	// the moved ones too, and a decision written before notes were bounded.
+	old := load(t, s)
+	old.Milestones[0].Features = m0Features
+	old.Milestones[1].Features = m0Features[1:]
+	old.Decisions = append(old.Decisions, Decision{At: finishedAt, Text: strings.Repeat("x", maxNote+10)})
+	if err := write(s, old); err != nil {
 		t.Fatal(err)
 	}
 	rec := load(t, s)
-	if !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) || rec.Pending != old.Pending+1 {
+	if !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) || rec.clipped != 1 || rec.Pending != old.Pending+1 {
 		t.Fatalf("healed = %+v pending %d", rec.Milestones[0], rec.Pending)
 	}
 	finishM1(t, s, p, tasks)
