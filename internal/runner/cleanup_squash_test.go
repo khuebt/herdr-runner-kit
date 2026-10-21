@@ -464,7 +464,8 @@ func TestCleanupKeepsABranchThatMovedPastTheCheckedCommit(t *testing.T) {
 		if withWorktree {
 			git(t, tk.Worktree.Path, "commit", "-q", "--allow-empty", "-m", "chore: later")
 		} else {
-			later := gitOut(ctx, repo, "commit-tree", "feat/a^{tree}", "-p", "feat/a", "-m", "chore: later")
+			// gitOut sets no identity, which CI lacks.
+			later := gitOut(ctx, repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit-tree", "feat/a^{tree}", "-p", "feat/a", "-m", "chore: later")
 			git(t, repo, "update-ref", "refs/heads/feat/a", later)
 		}
 		if _, err := r.Cleanup(ctx, []CleanupItem{it}); err == nil {
