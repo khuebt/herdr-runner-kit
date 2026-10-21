@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -667,5 +668,34 @@ func TestReleaseBranchAvoidsNameClashes(t *testing.T) {
 	in.BranchTaken = taken
 	if _, err := PlanChain(in); err == nil || !strings.Contains(err.Error(), "branch integrate exists, so git cannot create integrate/M1-") {
 		t.Fatalf("integrate under a branch named integrate: %v", err)
+	}
+}
+
+func TestDoneKeepsATipCleanupRecordedBefore(t *testing.T) {
+	s, p, tasks := closingProject(t, "")
+	// cleanup recorded a commit the release branch does not hold, such as
+	// the HEAD of another branch in the close runner's worktree.
+	run(t, p.Path, "checkout", "-q", "-b", "side")
+	writeFile(t, p.Path, "side.txt", "side\n")
+	run(t, p.Path, "add", "side.txt")
+	run(t, p.Path, "commit", "-q", "-m", "chore: side")
+	side := run(t, p.Path, "rev-parse", "HEAD")
+	run(t, p.Path, "checkout", "-q", "main")
+	tasks[1].Worktree.MergedTip = side
+	if err := s.Create(tasks[1]); err != nil {
+		t.Fatal(err)
+	}
+	run(t, p.Path, "merge", "-q", "--squash", "release/M0")
+	run(t, p.Path, "commit", "-q", "-m", "M0 (#1)")
+	if _, err := finish(s, p, tasks, run(t, p.Path, "rev-parse", "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	tip := run(t, p.Path, "rev-parse", "release/M0")
+	got, err := s.Get(tasks[1].ID)
+	if err != nil || got.Worktree.MergedTip != tip || !slices.Equal(got.Worktree.OlderMergedTips, []string{side}) {
+		t.Fatalf("merged tips = %+v, %v", got.Worktree, err)
+	}
+	if ref := run(t, p.Path, "rev-parse", task.MergedTipRef(tasks[1].ID)+"-"+side); ref != side {
+		t.Errorf("older tip ref = %s, want %s", ref, side)
 	}
 }
