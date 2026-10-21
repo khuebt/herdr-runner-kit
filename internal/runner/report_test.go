@@ -727,3 +727,32 @@ func TestSpawnAfterParentFinishedStarts(t *testing.T) {
 		}
 	}
 }
+
+// A stop that lands while the launcher works, before or after the pane is
+// recorded, gets no prompt typed and leaves no runner open.
+func TestStopDuringLaunchTypesNoPrompt(t *testing.T) {
+	for _, during := range []string{"tab create", "agent start"} {
+		t.Run(during, func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			tk := spawnStarting(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+			h := fake.handlers[during]
+			fake.on(during, func(args []string) (string, error) {
+				if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+					t.Error(err)
+				}
+				return h(args)
+			})
+			if err := r.Launch(context.Background(), tk.ID); err == nil {
+				t.Error("the launch of a stopped task succeeded")
+			}
+			got, _ := r.Store.Get(tk.ID)
+			if got.Status != task.Stopped || got.Herdr.PaneID == "" || !got.Herdr.Closed {
+				t.Errorf("task = %s, herdr %+v", got.Status, got.Herdr)
+			}
+			if fake.count("agent", "prompt") != 0 || fake.count("tab", "close") != 1 {
+				t.Errorf("prompts %d, tab closes %d", fake.count("agent", "prompt"), fake.count("tab", "close"))
+			}
+			checkStore(t, r)
+		})
+	}
+}

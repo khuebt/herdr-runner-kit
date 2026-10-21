@@ -42,6 +42,23 @@ const (
 // errHandled means the launch ended in a state that is already recorded.
 var errHandled = errors.New("handled")
 
+// errEnded means the task was stopped, or failed, while its launcher worked.
+var errEnded = errors.New("the task ended during its launch")
+
+// launchUpdate is Store.Update for the launcher's own writes. A task that
+// ended meanwhile still records what fn sets, so the close finds a tab
+// this launch opened, and the launch stops with errEnded.
+func (r *Runner) launchUpdate(id string, fn func(*task.Task)) (*task.Task, error) {
+	t, err := r.Store.Update(id, func(t *task.Task) error {
+		fn(t)
+		return nil
+	})
+	if err == nil && t.Status.Terminal() {
+		return t, errEnded
+	}
+	return t, err
+}
+
 // Launch opens the runner's herdr location, starts the agent and sends the
 // first prompt. Every outcome is recorded as task state and an event, so a
 // failure is news, never silence. It runs in the detached launcher, or
@@ -58,7 +75,16 @@ func (r *Runner) Launch(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := r.launch(ctx, t); err != nil && !errors.Is(err, errHandled) {
+	err = r.launch(ctx, t)
+	if errors.Is(err, errEnded) {
+		// Stopped while it launched: close what this launch opened, which
+		// the stop could not see yet.
+		if cur, gerr := r.Store.Get(id); gerr == nil {
+			_ = r.closeRunner(ctx, cur, false, closeCheck{})
+		}
+		return err
+	}
+	if err != nil && !errors.Is(err, errHandled) {
 		if !takesOverPane(t) {
 			r.removeUnstarted(ctx, id)
 		}
@@ -96,12 +122,11 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		if loc, err = r.openLocation(ctx, t); err != nil {
 			return fmt.Errorf("open runner location: %w", err)
 		}
-		if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
+		if t, err = r.launchUpdate(t.ID, func(t *task.Task) {
 			t.Herdr = task.Herdr{WorkspaceID: loc.WorkspaceID, TabID: loc.TabID, PaneID: loc.PaneID, AgentName: name}
 			if t.Worktree != nil && loc.Path != "" {
 				t.Worktree.Path = loc.Path
 			}
-			return nil
 		}); err != nil {
 			return err
 		}
@@ -109,12 +134,11 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 		// plan phase is checked against what it changed since, and a review
 		// diffs from it.
 		if head := roundHead(t); head != "" {
-			if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
+			if t, err = r.launchUpdate(t.ID, func(t *task.Task) {
 				t.RoundHead = head
 				if t.PhaseStart == "" {
 					t.PhaseStart = head
 				}
-				return nil
 			}); err != nil {
 				return err
 			}
@@ -174,6 +198,11 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	r.waitLateDialog(ctx, adapter, loc.PaneID)
 	if err := r.settleDialogs(ctx, t, adapter, loc.PaneID, err == nil && a.Status == "blocked"); err != nil {
 		return err
+	}
+	if cur, err := r.Store.Get(t.ID); err != nil {
+		return err
+	} else if cur.Status.Terminal() {
+		return errEnded
 	}
 	if err := r.typePrompt(ctx, t, loc.PaneID, text); err != nil {
 		return fmt.Errorf("send first prompt: %w", err)
@@ -259,7 +288,7 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 		name, err = r.retakeName(ctx, t, name, adapter.HerdrKind(), pane, args)
 	}
 	if name != t.Herdr.AgentName {
-		if _, uerr := r.Store.Update(t.ID, func(t *task.Task) error { t.Herdr.AgentName = name; return nil }); uerr != nil {
+		if _, uerr := r.launchUpdate(t.ID, func(t *task.Task) { t.Herdr.AgentName = name }); uerr != nil {
 			return spec, nil, "", uerr
 		}
 	}
@@ -391,13 +420,12 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 	}
 	// Record the worktree at once, so cleanup finds it even when a later
 	// launch step fails.
-	if _, err := r.Store.Update(t.ID, func(t *task.Task) error {
+	if _, err := r.launchUpdate(t.ID, func(t *task.Task) {
 		t.Herdr.WorkspaceID, t.Herdr.TabID, t.Herdr.PaneID = loc.WorkspaceID, loc.TabID, loc.PaneID
 		if loc.Path != "" {
 			t.Worktree.Path = loc.Path
 		}
 		t.Worktree.BranchCreated = new(true)
-		return nil
 	}); err != nil {
 		return loc, err
 	}
