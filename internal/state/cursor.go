@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // ErrAlreadyWaiting is returned when another wait holds the cursor.
@@ -215,15 +216,52 @@ func (s *Store) mainProjectsPath(owner string) string {
 	return filepath.Join(s.dir, "main-projects-"+CursorName(owner))
 }
 
+// MainProject is a project attached to a main session, and when.
+type MainProject struct {
+	Name  string
+	Since time.Time
+}
+
 // MainProjects returns the names of the projects hrk main --project attached
-// to the main session of owner, one per line in the file.
+// to the main session of owner, in the order given.
 func (s *Store) MainProjects(owner string) []string {
+	var names []string
+	for _, p := range s.MainProjectsSince(owner) {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
+// MainProjectsSince returns the projects attached to the main session of
+// owner with when each was attached. The file holds one per line, the name
+// and then the time after a tab; a line without a time reads as attached
+// from the start.
+func (s *Store) MainProjectsSince(owner string) []MainProject {
 	data, _ := os.ReadFile(s.mainProjectsPath(owner))
-	return strings.Fields(string(data))
+	var out []MainProject
+	for line := range strings.SplitSeq(string(data), "\n") {
+		name, at, _ := strings.Cut(line, "\t")
+		if name = strings.TrimSpace(name); name != "" {
+			p := MainProject{Name: name}
+			p.Since, _ = time.Parse(time.RFC3339Nano, strings.TrimSpace(at))
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // SetMainProjects replaces the projects attached to the main session of
-// owner.
+// owner. A project already attached keeps its time; the others are
+// attached now.
 func (s *Store) SetMainProjects(owner string, names []string) error {
-	return writeFileAtomic(s.mainProjectsPath(owner), []byte(strings.Join(names, "\n")+"\n"))
+	old := s.MainProjectsSince(owner)
+	var b strings.Builder
+	for _, name := range names {
+		at := s.now().UTC()
+		if i := slices.IndexFunc(old, func(p MainProject) bool { return p.Name == name }); i >= 0 {
+			at = old[i].Since
+		}
+		b.WriteString(name + "\t" + at.Format(time.RFC3339Nano) + "\n")
+	}
+	return writeFileAtomic(s.mainProjectsPath(owner), []byte(b.String()))
 }

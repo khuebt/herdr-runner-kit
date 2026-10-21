@@ -199,7 +199,11 @@ func TestAutoarmWakesForProjectNews(t *testing.T) {
 	// the project's news: with no task of its own the hook leaves at once,
 	// and with one running it waits and is not woken.
 	newTask("w1:p1")
-	if code := autoarm(context.Background(), r, "/main", &stderr); code != 0 || stderr.Len() != 0 {
+	// Cancelled after a while, so a hook that waits after all fails instead
+	// of hanging; a deadline would read as wait's timeout and re-arm.
+	quick, cancelQuick := context.WithCancel(context.Background())
+	defer time.AfterFunc(2*time.Second, cancelQuick).Stop()
+	if code := autoarm(quick, r, "/main", &stderr); code != 0 || stderr.Len() != 0 || quick.Err() != nil {
 		t.Fatalf("unattached folder: code %d, %q", code, stderr.String())
 	}
 	mainTask := &task.Task{Kind: "fix", Agent: "claude", Prompt: "x", Title: "fix login", Owner: "/main", Gate: task.GateAuto, Status: task.Running}

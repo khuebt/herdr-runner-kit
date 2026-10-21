@@ -500,6 +500,30 @@ func TestWaitSeesTheProjectHoldingItsFolder(t *testing.T) {
 	}
 }
 
+func TestWaitSkipsNewsFromBeforeTheAttach(t *testing.T) {
+	r, _ := newTestRunner(t)
+	addTask(t, r, task.Running, owner) // keeps the wait from going idle
+	proj := addTask(t, r, task.Running, task.ProjectOwner("demo-app"))
+	later := addTask(t, r, task.Running, task.ProjectOwner("demo-app"))
+	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+		t.Fatal(err)
+	}
+	// The project reports while no wait of this session runs, and is
+	// attached after: that news went to the project's own session.
+	report(t, r, proj.ID, "before the attach")
+	time.Sleep(10 * time.Millisecond)
+	if err := r.Store.SetMainProjects(owner, []string{"demo-app"}); err != nil {
+		t.Fatal(err)
+	}
+	ch := start(r, Options{Owner: owner, Window: time.Millisecond})
+	waitBlocked()
+	report(t, r, later.ID, "after the attach")
+	got := get(t, ch)
+	if got.err != nil || len(got.res.Lines) != 1 || !strings.HasPrefix(got.res.Lines[0], later.ID+" done") {
+		t.Fatalf("lines = %q, err = %v", got.res.Lines, got.err)
+	}
+}
+
 func TestWaitSeesAProjectStartedAfterIt(t *testing.T) {
 	r, _ := newTestRunner(t)
 	addTask(t, r, task.Running, owner) // keeps the wait from going idle

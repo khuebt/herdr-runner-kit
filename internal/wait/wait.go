@@ -79,6 +79,9 @@ type Options struct {
 	// FlushOnTimeout delivers waiting quiet news when the timeout passes,
 	// instead of leaving it for the next wait.
 	FlushOnTimeout bool
+	// since holds when each project hrk main --project attached was
+	// attached; its news from before then belongs to other sessions.
+	since map[string]time.Time
 }
 
 func (o Options) cursor() string {
@@ -348,7 +351,7 @@ func readNews(s *state.Store, cursor int64, o Options) ([]state.Event, int64, er
 	}
 	var news []state.Event
 	for _, ev := range events {
-		if IsNews(ev.Type) && mine(ev.Owner, ev.Task, o) {
+		if IsNews(ev.Type) && mine(ev.Owner, ev.Task, o) && !beforeAttach(ev, o) {
 			news = append(news, ev)
 		}
 	}
@@ -363,23 +366,45 @@ func mine(owner, id string, o Options) bool {
 		slices.ContainsFunc(o.Projects, func(name string) bool { return task.ProjectOwner(name) == owner })
 }
 
+// beforeAttach reports whether ev is news of a project attached to the main
+// session only after ev was written.
+// ponytail: compares event times with the attach time, both from this
+// machine's clock; an event log offset per project if the clock ever steps.
+func beforeAttach(ev state.Event, o Options) bool {
+	for name, at := range o.since {
+		if task.ProjectOwner(name) == ev.Owner {
+			return ev.TS.Before(at)
+		}
+	}
+	return false
+}
+
 // AttachedProjects names the projects whose news reaches the main session
 // of owner besides its own: the registered project whose repository holds
 // owner, and those hrk main --project attached to it. A registry that
 // cannot be read leaves only the attached ones.
 func AttachedProjects(s *state.Store, owner string) []string {
-	names := s.MainProjects(owner)
-	if p, ok, err := s.ProjectFor(owner); err == nil && ok && !slices.Contains(names, p.Name) {
-		names = append(names, p.Name)
-	}
-	return names
+	return Options{Owner: owner}.attach(s).Projects
 }
 
-// attach adds the owner's AttachedProjects to Projects.
+// attach adds the owner's attached projects to Projects. Those only hrk
+// main --project attached are watched from when they were attached.
 func (o Options) attach(s *state.Store) Options {
-	if o.Owner != "" {
-		o.Projects = append(slices.Clip(o.Projects), AttachedProjects(s, o.Owner)...)
+	if o.Owner == "" {
+		return o
 	}
+	names := slices.Clone(o.Projects)
+	if p, ok, err := s.ProjectFor(o.Owner); err == nil && ok && !slices.Contains(names, p.Name) {
+		names = append(names, p.Name)
+	}
+	o.since = map[string]time.Time{}
+	for _, p := range s.MainProjectsSince(o.Owner) {
+		if !slices.Contains(names, p.Name) {
+			names = append(names, p.Name)
+			o.since[p.Name] = p.Since
+		}
+	}
+	o.Projects = names
 	return o
 }
 
