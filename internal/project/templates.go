@@ -350,6 +350,15 @@ func Preamble(h task.Harness, rec Record, root, stage string) (string, error) {
 	if m, tmpl, ok := milestoneStage(stage); ok {
 		name, d.Milestone, d.MilestoneDir, d.PlanPath = tmpl, m, MilestoneDir(m), MilestonePlanPath(m)
 	}
+	if name == GatePack {
+		// The pack runner writes the version after the committed ones, as
+		// its prompt says.
+		n, err := CommittedPackVersion(context.Background(), root, rec)
+		if err != nil {
+			return "", err
+		}
+		d.PackVersion = n + 1
+	}
 	if s, err := LoadStage(name); err == nil {
 		if d.Outputs, err = s.RenderOutputs(d.StageData); err != nil {
 			return "", err

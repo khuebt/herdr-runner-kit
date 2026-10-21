@@ -379,24 +379,31 @@ func TestTemplatePackConverters(t *testing.T) {
 }
 
 func TestTemplateLaterPackUpdatesTheRoadmapProposal(t *testing.T) {
+	dir := newRepo(t)
 	s, err := LoadStage("pack")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []int{1, 2} {
-		d := stageData(NewRecord("demo-app"), "")
-		d.PackVersion = n
-		got, err := s.Render(task.Claude, d)
+	rec := NewRecord("demo-app")
+	proposal := "Write and commit only these paths: " + ApprovalFolder(rec) + "/, " + DiscoveryDir + "/roadmap-proposal.md."
+	for n := 1; n <= 2; n++ {
+		if n == 2 {
+			commitPack(t, dir, 1, "")
+		}
+		got, err := Preamble(task.Claude, rec, dir, "pack")
 		if err != nil {
 			t.Fatal(err)
 		}
-		outputs, err := s.RenderOutputs(d)
+		d := stageData(rec, "")
+		d.PackVersion = n
+		body, err := s.Render(task.Claude, d)
 		if err != nil {
 			t.Fatal(err)
 		}
 		later := n > 1
-		if strings.Contains(got, "bring the yaml block of") != later || slices.Contains(outputs, d.Discovery+"/roadmap-proposal.md") != later || len(outputs) != map[bool]int{false: 1, true: 2}[later] {
-			t.Errorf("pack v%d: outputs %v, prompt:\n%s", n, outputs, got)
+		if strings.Contains(got, proposal) != later || strings.Contains(body, "bring the yaml block of") != later ||
+			strings.Contains(body, "do not write the next version here") == later {
+			t.Errorf("pack v%d: preamble:\n%s\nprompt:\n%s", n, got, body)
 		}
 	}
 }

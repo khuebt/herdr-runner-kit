@@ -612,7 +612,8 @@ func missing(ctx context.Context, root, rel string) (bool, error) {
 // what the kit recorded about each one and the scope of the done and the
 // running milestones, except closing, the milestone whose done imports the
 // block, which takes its title, features and any date from it. Done
-// milestones the block leaves out stay first, as recorded. It adds or updates dependencies by name, ignoring
+// milestones come first, in their recorded order, those the block leaves
+// out as recorded. It adds or updates dependencies by name, ignoring
 // case. An update sets only the fields the block gives, so an entry added
 // by hand keeps its owner and secret location. It returns how many of each
 // the block held.
@@ -624,8 +625,7 @@ func applyRoadmap(rec *Record, b Block, closing string) (milestones, dependencie
 	for _, m := range rec.Milestones {
 		old[m.ID] = m
 	}
-	next := omittedDone(*rec, b)
-	for _, bm := range b.Milestones {
+	take := func(bm BlockMilestone) Milestone {
 		m := old[bm.ID]
 		if bare || bm.ID == closing || (m.Status != MilestoneDone && m.Status != MilestoneInProgress) {
 			m.ID, m.Title, m.Features = bm.ID, bm.Title, bm.Features
@@ -639,7 +639,22 @@ func applyRoadmap(rec *Record, b Block, closing string) (milestones, dependencie
 				m.Status = MilestonePlanned
 			}
 		}
+		return m
+	}
+	var next []Milestone
+	for _, m := range rec.Milestones {
+		if m.Status != MilestoneDone {
+			continue
+		}
+		if i := slices.IndexFunc(b.Milestones, func(bm BlockMilestone) bool { return bm.ID == m.ID }); i >= 0 {
+			m = take(b.Milestones[i])
+		}
 		next = append(next, m)
+	}
+	for _, bm := range b.Milestones {
+		if old[bm.ID].Status != MilestoneDone {
+			next = append(next, take(bm))
+		}
 	}
 	rec.Milestones = next
 	for _, bd := range b.Dependencies {

@@ -339,8 +339,8 @@ func (b Block) check(rec Record) error {
 // done milestone of rec the block lists is unchanged, and that the running
 // one is still in it. A done milestone the block leaves out is kept as
 // recorded; its feature ids stay taken and may be depended on. The bare
-// scaffold milestone, started before there was a roadmap, must be in the
-// block but may change.
+// scaffold milestone, started before there was a roadmap, may change until
+// a roadmap is imported; once done it may also be left out, and stays bare.
 func (b Block) checkMilestones(rec Record) error {
 	ids := map[string][]string{}
 	features := map[string][]string{}
