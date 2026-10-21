@@ -27,4 +27,6 @@ The project stays on 0.x until there is an explicit decision that the commands a
 3. Merging the release PR tags `vX.Y.Z` and creates the GitHub Release. GoReleaser then attaches Linux and macOS binaries for amd64 and arm64, plus `checksums.txt`.
 4. Release candidates (`vX.Y.Z-rc.N`) are tagged by hand. They are built by the release-candidate workflow and marked as prereleases. release-please writes notes only for stable releases, so the workflow sets a candidate's notes from `scripts/rc-notes.sh`: the commit subjects since the last stable tag, without release commits.
 
+release-please opens its PR with the `RELEASE_PLEASE_TOKEN` secret so that CI and the `conventional-title` check start on that PR. Create a fine-grained personal access token for this repository only, with Contents read/write and Pull requests read/write, and store it with `gh secret set RELEASE_PLEASE_TOKEN`. Without the secret, releases still work with `GITHUB_TOKEN`, but the release PR needs a manual approval of its workflows before CI and the title check run.
+
 `CHANGELOG.md` is generated, so never edit it by hand. To change what a release says, fix the commit message in the PR title before merging.
