@@ -84,7 +84,7 @@ Plans: for an AgentKit plan with phase files, put the waves from `hrk plan run <
 
 ## Projects
 
-A project is a git repository the kit keeps a record for. Its runners report to `project:<name>`, so their news reaches you from any folder.
+A project is a git repository the kit keeps a record for. Its runners report to `project:<name>`. Their news reaches you only when you work inside the project's repository, ran `hrk new` or `project register` for it, or were started with `hrk main --project <name|path>` (repeatable). Another project's news goes to its own main session, so never act on a project you were not given. For a one-off look from another folder, `hrk wait --project <name|path>`.
 - "New project": ask for the folder, the remote and a reference repository, brief the exact `hrk new` command, and run it on yes.
 - "Where are we?", and at the start of a session that touches a project: `hrk project status <name>`.
 - Runners of a project: `spawn --project <name>`; the tab opens in the project's workspace.

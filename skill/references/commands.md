@@ -60,7 +60,7 @@ Each of your calls re-reads your whole context, about 200k tokens in a long sess
 | `project milestone close <M>` | A new close runner on `release/<M>-r<k>` after a reopen or a failed close. |
 | `project graduate [--export DIR] [--yes]` | Remove the discovery folder in one commit and tag the commit before it locally. Without `--yes` it only checks. |
 
-A project's runners report to the owner `project:<name>`, and `wait` and `list` include every registered project, so a project's news reaches you from any folder.
+A project's runners report to the owner `project:<name>`, and its news reaches a main session working inside the project's repository, the one that ran `hrk new` or `project register` for it, and one started with `hrk main --project <name|path>`. `hrk main --project` keeps the attached names for the folder, so the auto re-arm hook, `wait` and a later `hrk main` keep watching them; `--project` again replaces them. `wait --project <name|path>` (repeatable) adds a project for that wait only. A name that is not registered, or a path in no project, is refused with the list of registered projects. `list` still includes every registered project.
 
 ### New project
 

@@ -18,7 +18,7 @@ import (
 
 func newWaitCommand() *cobra.Command {
 	var o wait.Options
-	var ids []string
+	var ids, projects []string
 	cmd := &cobra.Command{
 		Use:   "wait",
 		Short: "Block until a task has news, then print one line per event",
@@ -47,7 +47,10 @@ func newWaitCommand() *cobra.Command {
 				return err
 			}
 			if o.Owner == "" {
-				o.Owner, o.Projects = currentOwner(cmd), true
+				o.Owner = currentOwner(cmd)
+			}
+			if o.Projects, err = resolveProjects(r.Store, projects); err != nil {
+				return err
 			}
 			o.FlushOnTimeout = true // the timeout wakes the main session anyway
 			_ = wait.MarkActive(r.Store, o)
@@ -76,7 +79,8 @@ func newWaitCommand() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringSliceVar(&ids, "task", nil, "only these tasks")
-	f.StringVar(&o.Owner, "owner", "", "main session to wait for, and only it (default: git top-level of the current folder, plus the tasks of every project)")
+	f.StringVar(&o.Owner, "owner", "", "main session to wait for (default: git top-level of the current folder); its tasks come with those of the project whose repository holds it and of the projects attached to it")
+	f.StringArrayVar(&projects, "project", nil, "also wait for this project, by name or by a path inside its repository (repeatable)")
 	f.StringVar(&o.Cursor, "cursor", "", "cursor name (default: derived from the owner, or from the --task ids)")
 	f.BoolVar(&o.AllNews, "all-news", false, "wake for every news line, quiet ones too")
 	f.DurationVar(&o.Timeout, "timeout", wait.DefaultTimeout, "safety timeout; wait prints `timeout` and exits 0")

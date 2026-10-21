@@ -210,3 +210,20 @@ func (s *Store) IsMainSession(id string) bool {
 func MainSessionListed(dir, id string) bool {
 	return id != "" && slices.ContainsFunc(readMainSessions(filepath.Join(dir, mainSessionsFile)), func(m MainSession) bool { return m.ID == id })
 }
+
+func (s *Store) mainProjectsPath(owner string) string {
+	return filepath.Join(s.dir, "main-projects-"+CursorName(owner))
+}
+
+// MainProjects returns the names of the projects hrk main --project attached
+// to the main session of owner, one per line in the file.
+func (s *Store) MainProjects(owner string) []string {
+	data, _ := os.ReadFile(s.mainProjectsPath(owner))
+	return strings.Fields(string(data))
+}
+
+// SetMainProjects replaces the projects attached to the main session of
+// owner.
+func (s *Store) SetMainProjects(owner string, names []string) error {
+	return writeFileAtomic(s.mainProjectsPath(owner), []byte(strings.Join(names, "\n")+"\n"))
+}

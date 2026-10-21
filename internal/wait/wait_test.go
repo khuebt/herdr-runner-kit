@@ -450,7 +450,7 @@ func TestWaitSeesProjectNews(t *testing.T) {
 	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
 		t.Fatal(err)
 	}
-	ch := start(r, Options{Owner: owner, Projects: true, Window: time.Millisecond})
+	ch := start(r, Options{Owner: owner, Projects: []string{"demo-app"}, Window: time.Millisecond})
 	waitBlocked()
 	report(t, r, other.ID, "not watched")
 	report(t, r, proj.ID, "spec written")
@@ -470,20 +470,54 @@ func TestWaitSeesProjectNews(t *testing.T) {
 	}
 }
 
+func TestWaitSeesTheProjectHoldingItsFolder(t *testing.T) {
+	r, _ := newTestRunner(t)
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"demo-app", "other-app"} {
+		if _, err := r.Store.ReserveProject(name, filepath.Join(repo, name)); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Store.CommitProject(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	here := filepath.Join(repo, "demo-app")
+	other := addTask(t, r, task.Running, task.ProjectOwner("other-app"))
+	proj := addTask(t, r, task.Running, task.ProjectOwner("demo-app"))
+	if err := r.Store.InitCursor(state.CursorName(here)); err != nil {
+		t.Fatal(err)
+	}
+	ch := start(r, Options{Owner: here, Window: time.Millisecond})
+	waitBlocked()
+	report(t, r, other.ID, "not watched")
+	report(t, r, proj.ID, "spec written")
+	got := get(t, ch)
+	if got.err != nil || len(got.res.Lines) != 1 || !strings.HasPrefix(got.res.Lines[0], proj.ID+" done") {
+		t.Fatalf("lines = %q, err = %v", got.res.Lines, got.err)
+	}
+}
+
 func TestWaitSeesAProjectStartedAfterIt(t *testing.T) {
 	r, _ := newTestRunner(t)
 	addTask(t, r, task.Running, owner) // keeps the wait from going idle
 	if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
 		t.Fatal(err)
 	}
-	ch := start(r, Options{Owner: owner, Projects: true, Window: time.Millisecond})
+	ch := start(r, Options{Owner: owner, Window: time.Millisecond})
 	waitBlocked()
-	// new registers the project and a runner starts for it while the wait
-	// runs; a progress event moves the cursor before the news.
+	// new registers the project, attaches it to the main session and a
+	// runner starts for it while the wait runs; a progress event moves the
+	// cursor before the news.
 	if _, err := r.Store.ReserveProject("demo-app", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Store.CommitProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.SetMainProjects(owner, []string{"demo-app"}); err != nil {
 		t.Fatal(err)
 	}
 	proj := addTask(t, r, task.Running, task.ProjectOwner("demo-app"))

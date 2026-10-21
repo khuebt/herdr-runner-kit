@@ -28,8 +28,9 @@ func newProjectCommand() *cobra.Command {
 		Use:   "project",
 		Short: "Register and manage the projects the kit drives",
 		Long: "A project is a git repository the kit keeps a record for. Its runners " +
-			"report to the owner project:<name>, so their news reaches the main session " +
-			"from any folder.",
+			"report to the owner project:<name>. Their news reaches a main session working " +
+			"inside the project's repository, the one that ran hrk new or project register " +
+			"for it, and one started with hrk main --project <name|path>.",
 		Args: cobra.NoArgs,
 	}
 	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand(),
@@ -86,7 +87,7 @@ func newNewCommand() *cobra.Command {
 				return err
 			}
 			printCreated(cmd, c)
-			return nil
+			return attachToMain(cmd, store, c.Name)
 		},
 	}
 	f := cmd.Flags()
@@ -205,6 +206,59 @@ func resolveProject(s *state.Store, name, cwd string) (state.Project, error) {
 	return state.Project{}, fmt.Errorf("%w: name one of %s", errNoProjectResolved, strings.Join(names, ", "))
 }
 
+// attachToMain attaches the project name to the main session of the current
+// folder, so the news of a project it started or registered reaches it.
+func attachToMain(cmd *cobra.Command, s *state.Store, name string) error {
+	owner := currentOwner(cmd)
+	names := s.MainProjects(owner)
+	if slices.Contains(names, name) {
+		return nil
+	}
+	return s.SetMainProjects(owner, append(names, name))
+}
+
+// resolveProjects returns the names of the projects the --project values
+// pick, each once: a value is a registered project's name, or a path inside
+// its repository. An unknown value is refused with the registered projects.
+func resolveProjects(s *state.Store, values []string) ([]string, error) {
+	var names []string
+	for _, v := range values {
+		p, err := s.ProjectByName(v)
+		if errors.Is(err, state.ErrUnknownProject) {
+			var ok bool
+			if p, ok, err = s.ProjectFor(v); err == nil && !ok {
+				return nil, unknownProject(s, v)
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(names, p.Name) {
+			names = append(names, p.Name)
+		}
+	}
+	return names, nil
+}
+
+// unknownProject refuses v and lists the registered projects.
+func unknownProject(s *state.Store, v string) error {
+	list, err := s.Projects()
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("unknown project %q: no project is registered; start one with hrk new, or add one with hrk project register", v)
+	}
+	var b strings.Builder
+	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tPATH")
+	for _, p := range list {
+		fmt.Fprintf(w, "%s\t%s\n", p.Name, p.Path)
+	}
+	_ = w.Flush()
+	return fmt.Errorf("unknown project %q: name a registered project, or a path inside its repository:\n%s", v, strings.TrimRight(b.String(), "\n"))
+}
+
 // projectReport builds the status of p from the kit's record and tasks. A
 // missing record is part of the report, not an error. Once the running
 // milestone's plan runner is done, it reads the committed plan for the
@@ -299,6 +353,9 @@ func newProjectRegisterCommand() *cobra.Command {
 			}
 			p, rec, err := project.Register(cmd.Context(), store, args[0], name, reference)
 			if err != nil {
+				return err
+			}
+			if err := attachToMain(cmd, store, p.Name); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "registered %s at %s (%s, %s track); its runners report to %s\n",
