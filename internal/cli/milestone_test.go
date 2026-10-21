@@ -432,6 +432,56 @@ func laneChain(t *testing.T, u1 task.Status) (*runner.Runner, state.Project, map
 	return r, p, byStage
 }
 
+func TestChainRespawnsAFailedNodeWhileSiblingsRun(t *testing.T) {
+	for _, u1 := range []task.Status{task.Starting, task.Running} {
+		t.Run(string(u1), func(t *testing.T) {
+			r, p, n := laneChain(t, u1)
+			before := len(projectTasks(t, r, "M1/"))
+			var out bytes.Buffer
+			if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+				t.Fatalf("chain while U1 is %s and F7 runs: %v", u1, err)
+			}
+			again := projectTasks(t, r, "M1/")[before:]
+			if len(again) != 1 || again[0].Stage != "M1/F8" {
+				t.Fatalf("respawned %v", again)
+			}
+			f8 := again[0]
+			if f8.Worktree.Branch != n["M1/F8"].Worktree.Branch || f8.Worktree.Base != n["M1/C2"].Worktree.Branch ||
+				!slices.Equal(f8.After, []string{n["M1/C2"].ID}) || f8.Status != task.Starting {
+				t.Errorf("F8 again = %s after %v, %+v", f8.Status, f8.After, f8.Worktree)
+			}
+			for _, c := range []struct {
+				stage, base string
+				status      task.Status
+				after       []string
+			}{
+				{"M1/U1", "", u1, []string{n["M1/F33"].ID}},
+				{"M1/F7", "", task.Running, []string{n["M1/F33"].ID}},
+				{"M1/F9", "", task.Queued, []string{f8.ID}},
+				{"M1/F10", "", task.Queued, []string{n["M1/F9"].ID}},
+				{"M1/F11", "", task.Queued, []string{n["M1/F9"].ID}},
+				{"M1/I2", "main", task.Queued, []string{n["M1/F10"].ID, n["M1/F11"].ID, n["M1/U1"].ID, n["M1/F7"].ID}},
+				{"M1/close", n["M1/I2"].Worktree.Branch, task.Queued, []string{n["M1/I2"].ID}},
+			} {
+				tk, err := r.Store.Get(n[c.stage].ID)
+				if err != nil || tk.Status != c.status || !slices.Equal(tk.After, c.after) || tk.Worktree.Base != c.base {
+					t.Errorf("%s = %s after %v from %q (%v), want %s after %v from %q", c.stage, tk.Status, tk.After, tk.Worktree.Base, err, c.status, c.after, c.base)
+				}
+			}
+			for _, want := range []string{
+				"kept M1/U1: " + n["M1/U1"].ID + " is " + string(u1),
+				"kept M1/F7: " + n["M1/F7"].ID + " is running",
+				"kept M1/F9: " + n["M1/F9"].ID + " is queued, now after " + f8.ID,
+				"kept M1/close: " + n["M1/close"].ID + " is queued",
+			} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
 func TestChainStartsAQueuedNodeNoParentWillStart(t *testing.T) {
 	r, p, n := laneChain(t, task.Running)
 	var out bytes.Buffer
