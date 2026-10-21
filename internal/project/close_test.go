@@ -264,8 +264,8 @@ const movedUpdate = `milestones:
 
 var m0Features = []Feature{{ID: "F1", Title: "Sign in"}, {ID: "F2", Title: "Add a list"}, {ID: "F3", Title: "Share a list"}, {ID: "F4", Title: "Export a list"}}
 
-// finishM1 starts M1 by hand, releases it with movedUpdate and runs done.
-func finishM1(t *testing.T, s *state.Store, p state.Project, tasks []*task.Task) {
+// finishM1 starts M1 by hand, releases it with update and runs done.
+func finishM1(t *testing.T, s *state.Store, p state.Project, tasks []*task.Task, update string) {
 	t.Helper()
 	if _, err := Update(s, "demo-app", func(r *Record) error {
 		r.Milestones[1].Status = MilestoneInProgress
@@ -280,12 +280,12 @@ func finishM1(t *testing.T, s *state.Store, p state.Project, tasks []*task.Task)
 	})
 	run(t, p.Path, "add", "-A")
 	run(t, p.Path, "commit", "-q", "--allow-empty", "-m", "docs(project): M1 started")
-	releaseMilestone(t, p.Path, "M1", movedUpdate)
+	releaseMilestone(t, p.Path, "M1", update)
 	if _, err := FinishMilestone(context.Background(), s, p, "M1", tasks, FinishOptions{Now: finishedAt}); err != nil {
 		t.Fatal(err)
 	}
 	rec := load(t, s)
-	if rec.Milestones[1].Status != MilestoneDone || !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) {
+	if rec.Milestones[0].ID != "M0" || rec.Milestones[1].Status != MilestoneDone || !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) {
 		t.Errorf("after done M1: %+v", rec.Milestones)
 	}
 }
@@ -313,7 +313,8 @@ func TestDoneTakesTheClosingMilestonesFeaturesFromItsUpdate(t *testing.T) {
 		dateOrEmpty(rec.Milestones[0].Planned) != "2026-11-01" {
 		t.Fatalf("after done M0: %+v", rec.Milestones)
 	}
-	finishM1(t, s, p, tasks)
+	// M1's update leaves out the done M0, which stays as recorded.
+	finishM1(t, s, p, tasks, "milestones:\n"+movedUpdate[strings.Index(movedUpdate, "  - id: M1"):])
 }
 
 func TestDoneHealsADoneMilestoneThatKeptMovedFeatures(t *testing.T) {
@@ -335,7 +336,7 @@ func TestDoneHealsADoneMilestoneThatKeptMovedFeatures(t *testing.T) {
 	if !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) || rec.clipped != 1 || rec.Pending != old.Pending+1 {
 		t.Fatalf("healed = %+v pending %d", rec.Milestones[0], rec.Pending)
 	}
-	finishM1(t, s, p, tasks)
+	finishM1(t, s, p, tasks, movedUpdate)
 }
 
 // withOrigin adds a bare origin holding main and the release branch, and

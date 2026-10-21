@@ -378,6 +378,29 @@ func TestTemplatePackConverters(t *testing.T) {
 	}
 }
 
+func TestTemplateLaterPackUpdatesTheRoadmapProposal(t *testing.T) {
+	s, err := LoadStage("pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{1, 2} {
+		d := stageData(NewRecord("demo-app"), "")
+		d.PackVersion = n
+		got, err := s.Render(task.Claude, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		outputs, err := s.RenderOutputs(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		later := n > 1
+		if strings.Contains(got, "bring the yaml block of") != later || slices.Contains(outputs, d.Discovery+"/roadmap-proposal.md") != later || len(outputs) != map[bool]int{false: 1, true: 2}[later] {
+			t.Errorf("pack v%d: outputs %v, prompt:\n%s", n, outputs, got)
+		}
+	}
+}
+
 func TestTemplateUnknownStage(t *testing.T) {
 	for _, name := range []string{"deploy", "../preamble", ""} {
 		if _, err := LoadStage(name); err == nil {

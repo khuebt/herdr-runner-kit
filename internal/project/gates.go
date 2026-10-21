@@ -611,7 +611,8 @@ func missing(ctx context.Context, root, rel string) (bool, error) {
 // applyRoadmap replaces the record's milestones with the block's, keeping
 // what the kit recorded about each one and the scope of the done and the
 // running milestones, except closing, the milestone whose done imports the
-// block, which takes its title, features and any date from it; and it adds or updates dependencies by name, ignoring
+// block, which takes its title, features and any date from it. Done
+// milestones the block leaves out stay first, as recorded. It adds or updates dependencies by name, ignoring
 // case. An update sets only the fields the block gives, so an entry added
 // by hand keeps its owner and secret location. It returns how many of each
 // the block held.
@@ -623,7 +624,7 @@ func applyRoadmap(rec *Record, b Block, closing string) (milestones, dependencie
 	for _, m := range rec.Milestones {
 		old[m.ID] = m
 	}
-	next := make([]Milestone, 0, len(b.Milestones))
+	next := omittedDone(*rec, b)
 	for _, bm := range b.Milestones {
 		m := old[bm.ID]
 		if bare || bm.ID == closing || (m.Status != MilestoneDone && m.Status != MilestoneInProgress) {

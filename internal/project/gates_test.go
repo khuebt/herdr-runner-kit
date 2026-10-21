@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -353,6 +354,32 @@ func TestPackGateBlocksMilestonesUntilApproved(t *testing.T) {
 	}
 	if err := RequireGate(ctx, dir, rec, GatePack); err != nil {
 		t.Errorf("milestones after the pack: %v", err)
+	}
+}
+
+func TestLaterPackMayOmitDoneMilestones(t *testing.T) {
+	s, dir := approvedProject(t)
+	if _, err := Update(s, "demo-app", func(r *Record) error {
+		r.Milestones[0].Status = MilestoneDone
+		r.Milestones[1].Status = MilestoneDone
+		r.Reapproval = Reapproval{Needed: true, Reason: "CR-1"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := load(t, s).Milestones
+	changed := strings.Replace(proposal, "      - {id: F1, title: Add a list}\n", "      - {id: F1, title: Add a todo list}\n", 1)
+	commitPack(t, dir, 2, changed)
+	if _, err := decide(s, GatePack, "approve"); err == nil || !strings.Contains(err.Error(), "M1 is done and cannot be changed") {
+		t.Fatalf("a changed done milestone: %v", err)
+	}
+	commitPack(t, dir, 3, "# Roadmap proposal\n\n```yaml\nmilestones:\n  - id: M2\n    title: Share\n    features:\n      - {id: F3, title: Share by link, dependsOn: [F2]}\n```\n")
+	if _, err := decide(s, GatePack, "approve"); err != nil {
+		t.Fatal(err)
+	}
+	rec := load(t, s)
+	if len(rec.Milestones) != 3 || !reflect.DeepEqual(rec.Milestones[:2], done) || rec.Milestones[2].ID != "M2" {
+		t.Errorf("milestones = %+v", rec.Milestones)
 	}
 }
 
