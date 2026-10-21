@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.1...v0.15.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* let a milestone's done take its delivered features from its roadmap update ([#88](https://github.com/khuebt/herdr-runner-kit/issues/88)) ([ff21cfc](https://github.com/khuebt/herdr-runner-kit/commit/ff21cfc31182134fd69617c889683acf527ab1af))
+
 ## [0.15.1](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.0...v0.15.1) (2026-10-20)
 
 
