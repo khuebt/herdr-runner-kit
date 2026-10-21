@@ -1508,9 +1508,10 @@ func newMilestoneChainCommand() *cobra.Command {
 			"the default branch, a feature with a parent from its parent's branch, and the close runner " +
 			"from the final integrate node's branch. Integrate nodes work on integrate/<M>-<id>, the " +
 			"close runner on release/<M>. Backlog items the plan takes are marked planned. Run it " +
-			"again after a runner failed: done nodes are kept, a failed node whose runner created its " +
-			"branch continues on <branch>-r<k> from that branch, and any other existing branch is " +
-			"refused before anything is spawned.",
+			"again after a runner failed, even while others still run: done and unfinished nodes are " +
+			"kept, failed and stopped nodes run again, and a queued node waits for its parent's new " +
+			"runner. A failed node whose runner created its branch continues on <branch>-r<k> from " +
+			"that branch, and any other existing branch is refused before anything is spawned.",
 		Example: `  hrk project milestone chain M1`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1583,11 +1584,39 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		fmt.Fprintf(out, "backlog: %d item(s) planned into %s; recorded with the next commit point\n", moved, id)
 	}
 	ids := map[string]string{}
-	spawned := 0
+	parents := func(st project.ChainStep) []string {
+		var after []string
+		for _, parent := range st.Node.DependsOn {
+			after = append(after, ids[parent])
+		}
+		return after
+	}
+	spawned, live := 0, 0
 	for _, st := range steps {
 		if st.Done != nil {
 			ids[st.Node.ID] = st.Done.ID
 			fmt.Fprintf(out, "kept %s: %s is done\n", st.Stage, st.Done.ID)
+			continue
+		}
+		if st.Live != nil {
+			ids[st.Node.ID] = st.Live.ID
+			live++
+			// A node waiting for a parent that runs again waits for its
+			// new runner instead.
+			if after := parents(st); st.Live.Status == task.Queued && !slices.Equal(st.Live.After, after) {
+				if _, err := r.Store.Update(st.Live.ID, func(t *task.Task) error {
+					if t.Status != task.Queued {
+						return fmt.Errorf("%s is %s, not queued", t.ID, t.Status)
+					}
+					t.After = after
+					return nil
+				}); err != nil {
+					return fmt.Errorf("relink %s: %w; the %d runner(s) above were spawned", st.Stage, err, spawned)
+				}
+				fmt.Fprintf(out, "kept %s: %s is queued, now after %s\n", st.Stage, st.Live.ID, strings.Join(after, ", "))
+				continue
+			}
+			fmt.Fprintf(out, "kept %s: %s is %s\n", st.Stage, st.Live.ID, st.Live.Status)
 			continue
 		}
 		if st.Added {
@@ -1603,10 +1632,7 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		project.NodeData(&data, st)
 		so := stageRun{
 			Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
-			TaskStage: st.Stage, Warn: o.Warn,
-		}
-		for _, parent := range st.Node.DependsOn {
-			so.After = append(so.After, ids[parent])
+			TaskStage: st.Stage, Warn: o.Warn, After: parents(st),
 		}
 		if r.Config.Kinds[stage.Kind].Worktree {
 			so.Branch, so.Base = st.Branch, st.Base
@@ -1615,7 +1641,7 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		t, err := spawnStage(ctx, r, so, p, stage, harnesses[stage.Name], data, title)
 		if err != nil {
 			if spawned > 0 {
-				return fmt.Errorf("spawn %s: %w; the %d runner(s) above were spawned: once they finish, run the chain again", st.Stage, err, spawned)
+				return fmt.Errorf("spawn %s: %w; the %d runner(s) above were spawned: run the chain again for the rest", st.Stage, err, spawned)
 			}
 			return fmt.Errorf("spawn %s: %w", st.Stage, err)
 		}
@@ -1623,7 +1649,11 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		spawned++
 		fmt.Fprintln(out, spawnLine(t))
 	}
-	if spawned == 0 {
+	switch {
+	case spawned == 0 && live > 0:
+		_, err := fmt.Fprintf(out, "no node of %s failed; nothing to run again\n", id)
+		return err
+	case spawned == 0:
 		_, err := fmt.Fprintf(out, "every node of %s is done\n", id)
 		return err
 	}

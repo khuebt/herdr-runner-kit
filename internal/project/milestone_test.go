@@ -462,10 +462,19 @@ func TestChainRunAgain(t *testing.T) {
 		!strings.Contains(err.Error(), "node I1: branch integrate/M1-I1 already exists and no earlier runner") {
 		t.Fatalf("foreign branch: %v", err)
 	}
-	// Nothing is laid out while a node runner is unfinished.
+	// An unfinished node is kept while a failed one is laid out again.
 	f3.Status = task.Queued
-	if _, err := PlanChain(chainInput(nodes, tasks)); err == nil || !strings.Contains(err.Error(), "t4 of M1/F3 is queued") {
-		t.Fatalf("active node: %v", err)
+	steps, err = PlanChain(chainInput(nodes, tasks, "feat/M1-F1-list", "feat/M1-F2-share"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[1].Live != nil || steps[1].Branch != "feat/M1-F2-share-r1" || steps[2].Live != f3 || steps[2].Branch != "" {
+		t.Errorf("failed F2 next to queued F3 = %+v, %+v", steps[1], steps[2])
+	}
+	// An unfinished task that is no kept node's latest is refused.
+	gone := &task.Task{ID: "t6", Project: "demo-app", Stage: "M1/F9", Status: task.Running}
+	if _, err := PlanChain(chainInput(nodes, append(tasks, gone))); err == nil || !strings.Contains(err.Error(), "t6 of M1/F9 is running") {
+		t.Fatalf("unfinished task outside the plan: %v", err)
 	}
 }
 

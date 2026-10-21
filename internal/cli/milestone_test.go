@@ -244,9 +244,13 @@ func TestMilestoneChain(t *testing.T) {
 		t.Errorf("backlog = %+v", b)
 	}
 
-	// While a node runs, the chain is refused.
-	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err == nil || !strings.Contains(err.Error(), "before chaining again") {
+	// While every node is unfinished, running the chain again keeps them all.
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
 		t.Fatalf("chain while nodes run: %v", err)
+	}
+	if n := len(projectTasks(t, r, "M1/")); n != 6 || !strings.Contains(out.String(), "no node of M1 failed; nothing to run again") {
+		t.Fatalf("chain while nodes run spawned %d tasks:\n%s", n-6, out.String())
 	}
 
 	// F1 is done; F2 failed after it created its branch; F3 and the
@@ -293,6 +297,42 @@ func TestMilestoneChain(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "kept M1/F1: "+f1.ID+" is done") {
 		t.Errorf("run again output:\n%s", out.String())
+	}
+
+	// F3 failed to launch while F2 runs: F3 runs again next to F2, and the
+	// queued integrate node waits for the new F3 instead of the failed one.
+	f2r, f3r, inr, clr := again[0], again[1], again[2], again[3]
+	setTask(t, r, f2r.ID, task.Running, true)
+	setTask(t, r, f3r.ID, task.Failed, false)
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatalf("chain with a failed node next to a running one: %v", err)
+	}
+	third := projectTasks(t, r, "M1/")[before+len(again):]
+	if len(third) != 1 || third[0].Stage != "M1/F3" || third[0].Worktree.Branch != "feat/M1-F3-settings" || third[0].Worktree.Base != "main" {
+		t.Fatalf("respawned %+v", third)
+	}
+	for _, c := range []struct {
+		id     string
+		status task.Status
+		after  []string
+	}{
+		{f2r.ID, task.Running, []string{f1.ID}},
+		{inr.ID, task.Queued, []string{f2r.ID, third[0].ID}},
+		{clr.ID, task.Queued, []string{inr.ID}},
+	} {
+		if tk, err := r.Store.Get(c.id); err != nil || tk.Status != c.status || !slices.Equal(tk.After, c.after) {
+			t.Errorf("%s = %v after %v (%v), want %s after %v", c.id, tk.Status, tk.After, err, c.status, c.after)
+		}
+	}
+	for _, want := range []string{
+		"kept M1/F2: " + f2r.ID + " is running",
+		"kept M1/integrate: " + inr.ID + " is queued, now after " + f2r.ID + ", " + third[0].ID,
+		"kept M1/close: " + clr.ID + " is queued",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("respawn output lacks %q:\n%s", want, out.String())
+		}
 	}
 }
 
