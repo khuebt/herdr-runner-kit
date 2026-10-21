@@ -463,12 +463,23 @@ func TestGateApprovalIsBoundToContent(t *testing.T) {
 	if blob := run(t, dir, "rev-parse", "HEAD:"+SpecPath); rec.Gates.Spec.Content != blob {
 		t.Fatalf("spec content = %q, want blob %s", rec.Gates.Spec.Content, blob)
 	}
+	if d := GateDrift(ctx, dir, rec); len(d) != 0 {
+		t.Errorf("drift of an unchanged spec = %q", d)
+	}
 	// The same version with other content reopens the gate.
 	writeFile(t, dir, SpecPath, specText(1, "standard")+"\nAlso export to PDF.\n")
 	run(t, dir, "commit", "-q", "-am", "docs(discovery): spec")
 	g, err := ReadGate(ctx, dir, rec, GateSpec)
 	if err != nil || !g.Changed || g.Status() != GateChanged || g.Passed() {
 		t.Fatalf("changed spec: %+v %v", g, err)
+	}
+	drift := GateDrift(ctx, dir, rec)
+	want := "git -C " + dir + " diff " + rec.Gates.Spec.Content + " HEAD:" + SpecPath
+	if len(drift) != 1 || !strings.HasPrefix(drift[0], "spec v1 changed since its approval") || !strings.HasSuffix(drift[0], want) {
+		t.Errorf("drift of a changed spec = %q", drift)
+	}
+	if out := (Report{Record: &rec, Drift: drift}).Text(); !strings.Contains(out, "warning: spec v1 changed since its approval") {
+		t.Errorf("status hides the change:\n%s", out)
 	}
 	if err := RequireGate(ctx, dir, rec, GateSpec); err == nil || !strings.Contains(err.Error(), "spec v1 changed since its approval") {
 		t.Errorf("changed spec passed: %v", err)

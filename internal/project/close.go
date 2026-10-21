@@ -254,8 +254,8 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 			d.Fetch = err.Error()
 		}
 	}
-	var notes string
-	if d.Merged, notes, err = findMerge(ctx, p.Path, id, d.Branch, d.DefaultBranch, o.MergedCommit, m.Released); err != nil {
+	var notes, tip string
+	if d.Merged, notes, tip, err = findMerge(ctx, p.Path, id, d.Branch, d.DefaultBranch, o.MergedCommit, m.Released); err != nil {
 		return Finished{}, err
 	}
 	if err := checkMainCheckout(ctx, s, p, d.DefaultBranch, "done"); err != nil {
@@ -309,6 +309,19 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 	d.Commit, err = commitRendered(ctx, s, p, fmt.Sprintf("docs(project): %s done", id), RenderedPaths)
 	if err != nil {
 		return Finished{}, undoDone(ctx, s, p, id, before, decision, err)
+	}
+	if tip != "" && releaseHeld(ctx, p.Path, tip, d.Merged, d.DefaultBranch) {
+		// cleanup counts the branches stacked under the release as merged,
+		// even once the release branch is gone. Without the record they are
+		// only listed unmerged, so a failure is not worth failing done.
+		_, _ = git(ctx, p.Path, "update-ref", task.MergedTipRef(closer.ID), tip)
+		_, _ = s.Update(closer.ID, func(t *task.Task) error {
+			if t.Worktree == nil {
+				return errors.New("no worktree")
+			}
+			t.Worktree.MergedTip = tip
+			return nil
+		})
 	}
 	if d.Commit == "" {
 		if d.Commit, err = git(ctx, p.Path, "rev-parse", "HEAD"); err != nil {
@@ -377,18 +390,19 @@ func restoreRendered(ctx context.Context, root string) error {
 var commitID = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
 
 // findMerge returns the commit that shows the release of milestone id on
-// the local default branch, and the blob id of the release notes it holds:
-// the tip of its release branch, or merged, a commit given for a squash or
-// rebase merge, or, when the branch is gone, the newest commit of the
-// default branch that changed the release notes. The notes must be the release branch's, when its tip is
+// the local default branch: the tip of its release branch, or merged, a
+// commit given for a squash or rebase merge, or, when the branch is gone,
+// the newest commit of the default branch that changed the release notes.
+// It also returns the blob id of the release notes that commit holds, and
+// the tip of the release branch when it is still found, which may hold
+// work the merge lacks. The notes must be the release branch's, when its tip is
 // still found locally or on origin, and none of the earlier releases of
 // the milestone, which released lists, so a release merged before a
 // reopen never passes for a new one. A release found only on origin's
 // default branch asks for a pull.
-func findMerge(ctx context.Context, root, id, branch, def, merged string, released []string) (commit, notes string, err error) {
+func findMerge(ctx context.Context, root, id, branch, def, merged string, released []string) (commit, notes, tip string, err error) {
 	path := ReleaseNotesPath(id)
 	// The notes at the tip of the release branch, locally and on origin.
-	var tip string
 	var tipNotes []string
 	for _, ref := range []string{"refs/heads/" + branch, "refs/remotes/origin/" + branch} {
 		c, err := git(ctx, root, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
@@ -403,28 +417,28 @@ func findMerge(ctx context.Context, root, id, branch, def, merged string, releas
 		}
 	}
 	if tip != "" && len(tipNotes) == 0 {
-		return "", "", fmt.Errorf("%s holds no %s; prepare a new release with hrk project milestone close %s", branch, path, id)
+		return "", "", "", fmt.Errorf("%s holds no %s; prepare a new release with hrk project milestone close %s", branch, path, id)
 	}
 	source := branch
 	if merged != "" {
 		if !commitID.MatchString(merged) {
-			return "", "", fmt.Errorf("--merged-commit %q is not a commit id", merged)
+			return "", "", "", fmt.Errorf("--merged-commit %q is not a commit id", merged)
 		}
 		c, err := git(ctx, root, "rev-parse", "--verify", "--quiet", merged+"^{commit}")
 		if err != nil {
-			return "", "", fmt.Errorf("--merged-commit %s is not a commit of %s; pull first", merged, root)
+			return "", "", "", fmt.Errorf("--merged-commit %s is not a commit of %s; pull first", merged, root)
 		}
 		if notes, err = git(ctx, root, "rev-parse", "--verify", "--quiet", c+":"+path); err != nil {
-			return "", "", fmt.Errorf("commit %s holds no %s, so it is not the merge of %s", merged, path, branch)
+			return "", "", "", fmt.Errorf("commit %s holds no %s, so it is not the merge of %s", merged, path, branch)
 		}
 		if len(tipNotes) > 0 && !slices.Contains(tipNotes, notes) {
-			return "", "", fmt.Errorf("commit %s holds other release notes than %s, so it is not the merge of %s", merged, branch, branch)
+			return "", "", "", fmt.Errorf("commit %s holds other release notes than %s, so it is not the merge of %s", merged, branch, branch)
 		}
 		commit, source = c, "commit "+merged
 	} else if tip != "" {
 		commit = tip
 		if notes, err = git(ctx, root, "rev-parse", "--verify", "--quiet", tip+":"+path); err != nil {
-			return "", "", fmt.Errorf("%s holds no %s; prepare a new release with hrk project milestone close %s", branch, path, id)
+			return "", "", "", fmt.Errorf("%s holds no %s; prepare a new release with hrk project milestone close %s", branch, path, id)
 		}
 	} else {
 		// The release branch was cleaned up: the newest commit of the
@@ -444,25 +458,44 @@ func findMerge(ctx context.Context, root, id, branch, def, merged string, releas
 			}
 		}
 		if commit == "" {
-			return "", "", fmt.Errorf("branch %s is gone from %s and origin, and %s holds no %s; pass the commit on %s that holds it with --merged-commit <sha>",
+			return "", "", "", fmt.Errorf("branch %s is gone from %s and origin, and %s holds no %s; pass the commit on %s that holds it with --merged-commit <sha>",
 				branch, root, def, path, def)
 		}
 	}
 	if slices.Contains(released, notes) {
-		return "", "", fmt.Errorf("the release notes in %s are those of a release of %s merged before it was reopened, not a new release; prepare one with hrk project milestone close %s, merge it, then run done again",
+		return "", "", "", fmt.Errorf("the release notes in %s are those of a release of %s merged before it was reopened, not a new release; prepare one with hrk project milestone close %s, merge it, then run done again",
 			source, id, id)
 	}
 	if ancestor(ctx, root, commit, "refs/heads/"+def) {
-		return commit, notes, nil
+		return commit, notes, tip, nil
 	}
 	if ancestor(ctx, root, commit, "refs/remotes/origin/"+def) {
-		return "", "", fmt.Errorf("%s is merged into origin/%s but not into your local %s: pull %s, then run done again", branch, def, def, def)
+		return "", "", "", fmt.Errorf("%s is merged into origin/%s but not into your local %s: pull %s, then run done again", branch, def, def, def)
 	}
 	if merged != "" {
-		return "", "", fmt.Errorf("commit %s is not on %s: merge %s through your pull request, then pull", merged, def, branch)
+		return "", "", "", fmt.Errorf("commit %s is not on %s: merge %s through your pull request, then pull", merged, def, branch)
 	}
-	return "", "", fmt.Errorf("%s is not merged into %s: merge %s through your pull request, then pull; after a squash or rebase merge, pass the merged commit with --merged-commit <sha>",
+	return "", "", "", fmt.Errorf("%s is not merged into %s: merge %s through your pull request, then pull; after a squash or rebase merge, pass the merged commit with --merged-commit <sha>",
 		branch, def, branch)
+}
+
+// releaseHeld reports whether all of the release branch's work at tip is
+// in merged, the commit done found on the default branch def: tip is on
+// def, or merging it into merged changes nothing, as after a squash merge.
+// A commit made on the branch after the merge fails both. A repository with
+// a custom merge driver, which may drop one side's changes, has ancestry
+// only.
+func releaseHeld(ctx context.Context, root, tip, merged, def string) bool {
+	if ancestor(ctx, root, tip, "refs/heads/"+def) {
+		return true
+	}
+	if out, _ := git(ctx, root, "config", "--get-regexp", `^merge\..*\.driver$`); out != "" {
+		return false
+	}
+	tree, err := git(ctx, root, "merge-tree", "--write-tree", merged, tip)
+	tree, _, _ = strings.Cut(tree, "\n")
+	mergedTree, err2 := git(ctx, root, "rev-parse", merged+"^{tree}")
+	return err == nil && err2 == nil && tree == mergedTree
 }
 
 // ancestor reports whether commit is reachable from ref.

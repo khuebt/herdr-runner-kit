@@ -58,7 +58,9 @@ type Report struct {
 	// milestone was reopened.
 	Close      *task.Task
 	CloseStale bool
-	Now        time.Time
+	// Drift lists the approved gates whose content changed since approval.
+	Drift []string
+	Now   time.Time
 }
 
 // Status builds the report of a registered project from its record (nil
@@ -163,6 +165,9 @@ func (r Report) Text() string {
 	}
 	fmt.Fprintf(&b, "stage: %s\n", r.Stage)
 	fmt.Fprintf(&b, "gates: spec %s · pack %s\n", gateLine(rec.Gates.Spec), gateLine(rec.Gates.Pack))
+	for _, d := range r.Drift {
+		b.WriteString("warning: " + d + "\n")
+	}
 	if rec.Reapproval.Needed {
 		fmt.Fprintf(&b, "re-approval needed before the next milestone: %s\n", orDash(oneLine(rec.Reapproval.Reason)))
 	}

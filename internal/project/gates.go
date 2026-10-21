@@ -274,6 +274,24 @@ func (g GateState) Passed() bool {
 	return g.Name == GatePack && g.Outcome.Waived && g.Track == "lite"
 }
 
+// GateDrift lists, one line per gate, the approved gates whose committed
+// content changed since their approval under the same version, each with the
+// git command that shows the difference. A gate that cannot be read is left
+// out: status must still render.
+func GateDrift(ctx context.Context, root string, rec Record) []string {
+	var lines []string
+	for _, name := range []string{GateSpec, GatePack} {
+		g, err := ReadGate(ctx, root, rec, name)
+		if err != nil || !g.Changed || g.Outcome.Status != GateApproved {
+			continue
+		}
+		rel := artifactPath(rec, name, versionNumber(g.Outcome.Version))
+		lines = append(lines, fmt.Sprintf("%s %s changed since its approval; see what changed: git -C %s diff %s HEAD:%s",
+			name, g.Outcome.Version, root, g.Outcome.Content, rel))
+	}
+	return lines
+}
+
 // RequireGate refuses work behind gate name until it has passed.
 func RequireGate(ctx context.Context, root string, rec Record, name string) error {
 	g, err := ReadGate(ctx, root, rec, name)
