@@ -192,6 +192,9 @@ func TestDoneCommitsRecordsThenTags(t *testing.T) {
 
 func TestDoneAfterASquashMerge(t *testing.T) {
 	s, p, tasks := closingProject(t, "")
+	if err := s.Create(tasks[1]); err != nil {
+		t.Fatal(err)
+	}
 	run(t, p.Path, "merge", "-q", "--squash", "release/M0")
 	run(t, p.Path, "commit", "-q", "-m", "M0 (#1)")
 	if _, err := finish(s, p, tasks, ""); err == nil || !strings.Contains(err.Error(), "--merged-commit") {
@@ -211,6 +214,10 @@ func TestDoneAfterASquashMerge(t *testing.T) {
 	}
 	if !tagExists(t, p.Path, "v0.0.0") {
 		t.Error("no tag")
+	}
+	// cleanup counts the branches stacked under the release as merged.
+	if got, err := s.Get(tasks[1].ID); err != nil || got.Worktree.MergedTip != run(t, p.Path, "rev-parse", "release/M0") {
+		t.Errorf("merged tip = %+v, %v", got.Worktree, err)
 	}
 }
 

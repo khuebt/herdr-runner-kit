@@ -171,3 +171,136 @@ func TestMergedIgnoresTheTreeTestWithACustomMergeDriver(t *testing.T) {
 		t.Error("a branch with work base lacks is merged under a custom merge driver")
 	}
 }
+
+// stackedTask adds a finished task on a new branch, in a worktree started
+// from from, with one commit that rewrites a.txt, so a squash merge of a
+// branch stacked on it leaves its own commits in conflict with base.
+func stackedTask(t *testing.T, r *Runner, repo, branch, from string) *task.Task {
+	t.Helper()
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, repo, "worktree", "add", "-q", "-b", branch, wt, from)
+	if err := os.WriteFile(filepath.Join(wt, "a.txt"), []byte(branch+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, wt, "add", "a.txt")
+	git(t, wt, "commit", "-q", "-m", "feat: "+branch)
+	created := true
+	return finishedTask(t, r, repo, &task.Worktree{Path: wt, Branch: branch, BranchCreated: &created})
+}
+
+// stackedRelease makes a chain of stacked branches, feat/a, feat/b and
+// integrate/M1 under release/M1, and squash-merges the release.
+func stackedRelease(t *testing.T, r *Runner) (repo string, stacked []*task.Task, release *task.Task) {
+	t.Helper()
+	first, repo := worktreeTask(t, r, "feat/a")
+	stacked = []*task.Task{first}
+	for _, b := range []string{"feat/b", "integrate/M1"} {
+		stacked = append(stacked, stackedTask(t, r, repo, b, stacked[len(stacked)-1].Worktree.Branch))
+	}
+	release = stackedTask(t, r, repo, "release/M1", "integrate/M1")
+	squashMerge(t, repo, "release/M1")
+	return repo, stacked, release
+}
+
+func TestCleanupCountsBranchesStackedUnderACleanedSquashedRelease(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	repo, stacked, release := stackedRelease(t, r)
+	for _, tk := range stacked {
+		if ok, _ := merged(ctx, repo, tk.Worktree.Branch, "origin/main"); ok {
+			t.Fatalf("%s is merged by itself; the case needs a conflict", tk.Worktree.Branch)
+		}
+	}
+	// The release is cleaned first, alone, as on M1.
+	git(t, repo, "worktree", "remove", release.Worktree.Path)
+	items, err := r.Cleanable(ctx, Owners{Owner: repo}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rel []CleanupItem
+	for _, it := range items {
+		if it.Task.ID == release.ID {
+			rel = append(rel, it)
+		}
+	}
+	if len(rel) != 1 || rel[0].Verdict != Merged {
+		t.Fatalf("release = %+v", rel)
+	}
+	if cleaned, err := r.Cleanup(ctx, rel); err != nil || len(cleaned) != 1 {
+		t.Fatalf("Cleanup = %v, %v", cleaned, err)
+	}
+	if BranchExists(ctx, repo, "release/M1") {
+		t.Fatal("release branch left")
+	}
+
+	items, err = r.Cleanable(ctx, Owners{Owner: repo}, false)
+	if err != nil || len(items) != len(stacked) {
+		t.Fatalf("Cleanable = %+v, %v", items, err)
+	}
+	for _, it := range items {
+		if it.Verdict != Merged || it.Detail != "merged into origin/main (squash or rebase of a branch stacked on it)" {
+			t.Errorf("%s: %s %s", it.Task.Worktree.Branch, it.Verdict, it.Detail)
+		}
+	}
+	if cleaned, err := r.Cleanup(ctx, items); err != nil || len(cleaned) != len(stacked) {
+		t.Fatalf("Cleanup = %v, %v", cleaned, err)
+	}
+	for _, tk := range stacked {
+		if BranchExists(ctx, repo, tk.Worktree.Branch) {
+			t.Errorf("branch %s left", tk.Worktree.Branch)
+		}
+	}
+}
+
+func TestCleanupCountsBranchesStackedUnderALiveSquashedRelease(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo, stacked, _ := stackedRelease(t, r)
+	items, err := r.Cleanable(context.Background(), Owners{Owner: repo}, false)
+	if err != nil || len(items) != len(stacked)+1 {
+		t.Fatalf("Cleanable = %+v, %v", items, err)
+	}
+	for _, it := range items {
+		if it.Verdict != Merged {
+			t.Errorf("%s: %s %s", it.Task.Worktree.Branch, it.Verdict, it.Detail)
+		}
+	}
+}
+
+func TestCleanupKeepsAStackedBranchWithWorkNoReleaseHolds(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	repo, stacked, release := stackedRelease(t, r)
+	if _, err := r.Store.Update(release.ID, func(t *task.Task) error {
+		t.Worktree.MergedTip = gitOut(ctx, repo, "rev-parse", "release/M1")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A commit on feat/b after the release was cut.
+	wt := stacked[1].Worktree.Path
+	writeFile(t, filepath.Join(wt, "late.txt"))
+	git(t, wt, "add", "late.txt")
+	git(t, wt, "commit", "-q", "-m", "feat: late")
+	// A tip of another owner is no reference for this one.
+	other := stackedTask(t, r, repo, "feat/other", "feat/b")
+	if _, err := r.Store.Update(other.ID, func(t *task.Task) error {
+		t.Owner = "/elsewhere"
+		t.Worktree.MergedTip = gitOut(ctx, repo, "rev-parse", "feat/other")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := r.Cleanable(ctx, Owners{Owner: repo}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		want := Merged
+		if it.Task.ID == stacked[1].ID {
+			want = Unmerged
+		}
+		if it.Verdict != want {
+			t.Errorf("%s: %s %s", it.Task.Worktree.Branch, it.Verdict, it.Detail)
+		}
+	}
+}
