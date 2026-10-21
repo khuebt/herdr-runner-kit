@@ -518,7 +518,7 @@ func TestRoadmapImportKeepsManualDependenciesAndTheRunningMilestone(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyRoadmap(&rec, b)
+	applyRoadmap(&rec, b, "")
 	if m := rec.Milestones[0]; m.Title != "Scaffold" || len(m.Features) != 1 || m.Status != MilestoneInProgress {
 		t.Errorf("running milestone = %+v", m)
 	}

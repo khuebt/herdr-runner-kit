@@ -18,7 +18,7 @@ Plan of {{.Milestone}} for project {{.Project}}, from the approved {{.Spec}}, ha
 {{- end}}
    - backlog items that fit this milestone, and the debt that slows it, are triaged within a small refactor budget (about a tenth of the milestone); name the backlog items you take;
    - every open question is answered with your recommended option. Pass the most important as --decision "<question> -> <answer>" (up to 7); the user reads them before chaining.
-3. End {{.PlanPath}} with the only fenced block tagged yaml in it. It holds `nodes` (id such as F1, type feature or integrate, title, dependsOn, and branch only when the repository's convention needs one), `openQuestions` (q, answer) and `backlog` (id of a backlog item, to: a node id), and no other keys. A feature depends on at most one node: when it needs two, add an integrate node over them and depend on that. Do not name a node plan or scaffold.
+3. End {{.PlanPath}} with the only fenced block tagged yaml in it. It holds `nodes` (id such as F1, type feature or integrate, title, dependsOn, and branch only when the repository's convention needs one), `openQuestions` (q, answer) and `backlog` (id of a backlog item, to: a node id), and no other keys. dependsOn names nodes of this block, or features of done milestones, which are merged already and so are not waited for. A feature depends on at most one node: when it needs two, add an integrate node over them and depend on that. Do not name a node plan or scaffold.
 
 Commit only {{.PlanPath}} ("docs(milestone): {{.Milestone}} plan") and report done with it as --output. A revision request arrives in this session: revise, commit and report again.
 {{- if .Features}}

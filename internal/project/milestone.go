@@ -255,7 +255,7 @@ func adoptRoadmap(rec *Record, roadmap []byte, id string, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", RoadmapProposalPath, err)
 	}
-	n, deps := applyRoadmap(rec, b)
+	n, deps := applyRoadmap(rec, b, "")
 	rec.Decisions = append(rec.Decisions, Decision{At: stamp(now), Text: fmt.Sprintf(
 		"roadmap imported from %s at the start of %s, the pack gate being waived: %d milestone(s), %d dependenc(ies)",
 		RoadmapProposalPath, id, n, deps)})
