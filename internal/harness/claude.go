@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
@@ -614,16 +615,73 @@ const (
 // or, when it set none, the reason (TrustSkipNoConfig or
 // TrustSkipAlreadyTrusted).
 func PrepareClaudeTrust(configPath, origin, runnerPath string) (set []string, skipped string, err error) {
-	info, err := os.Stat(configPath)
-	if errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(configPath); errors.Is(err, fs.ErrNotExist) {
 		return nil, TrustSkipNoConfig, nil
 	}
+	// Claude rewrites this file without the lock, so confirm the flags
+	// landed and merge them in again when they did not.
+	for range claudeTrustAttempts {
+		var landed bool
+		if set, landed, err = lockedClaudeTrust(configPath, origin, runnerPath, set); err != nil {
+			return nil, "", err
+		}
+		if len(set) == 0 {
+			return nil, TrustSkipAlreadyTrusted, nil
+		}
+		if landed {
+			return set, "", nil
+		}
+	}
+	return nil, "", fmt.Errorf("trust flags for %s were overwritten in %s %d times", runnerPath, configPath, claudeTrustAttempts)
+}
+
+// claudeTrustAttempts bounds how often PrepareClaudeTrust merges the flags
+// in again after Claude rewrote the file over them.
+const claudeTrustAttempts = 3
+
+// claudeTrustWritten runs between the write of the flags and their check;
+// tests rewrite the file there the way Claude may.
+var claudeTrustWritten = func(_, _ string) {}
+
+// lockedClaudeTrust merges the flags runnerPath lacks into configPath and
+// checks that they and set, the flags earlier attempts set, are there. It
+// holds the lock for the whole attempt, so runners that start together
+// take turns. It returns set with the flags it added.
+func lockedClaudeTrust(configPath, origin, runnerPath string, set []string) ([]string, bool, error) {
+	unlock, err := lockConfig(configPath)
 	if err != nil {
-		return nil, "", err
+		return nil, false, err
+	}
+	defer unlock()
+	added, err := mergeClaudeTrust(configPath, origin, runnerPath)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, flag := range added {
+		if !slices.Contains(set, flag) {
+			set = append(set, flag)
+		}
+	}
+	if len(set) == 0 {
+		return nil, true, nil
+	}
+	if len(added) > 0 {
+		claudeTrustWritten(configPath, runnerPath)
+	}
+	ok, err := ClaudeTrustPresent(configPath, runnerPath, set)
+	return set, ok, err
+}
+
+// mergeClaudeTrust writes the trust flags runnerPath lacks into configPath
+// and returns them.
+func mergeClaudeTrust(configPath, origin, runnerPath string) ([]string, error) {
+	info, err := os.Stat(configPath)
+	if err != nil {
+		return nil, err
 	}
 	root, err := readJSONObject(configPath)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	projects, _ := root["projects"].(map[string]any)
 	src, _ := projects[filepath.Clean(origin)].(map[string]any)
@@ -631,37 +689,53 @@ func PrepareClaudeTrust(configPath, origin, runnerPath string) (set []string, sk
 	if dst == nil {
 		dst = map[string]any{}
 	}
+	var added []string
 	if dst[ClaudeTrustFlag] != true {
 		dst[ClaudeTrustFlag] = true
-		set = append(set, ClaudeTrustFlag)
+		added = append(added, ClaudeTrustFlag)
 	}
 	for _, flag := range claudeImportFlags {
 		if src[flag] == true && dst[flag] != true {
 			dst[flag] = true
-			set = append(set, flag)
+			added = append(added, flag)
 		}
 	}
-	if len(set) == 0 {
-		return nil, TrustSkipAlreadyTrusted, nil
+	if len(added) == 0 {
+		return nil, nil
 	}
 	projects[filepath.Clean(runnerPath)] = dst
 
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if err := fsutil.WriteFileAtomic(configPath, append(data, '\n'), info.Mode().Perm()); err != nil {
-		return nil, "", fmt.Errorf("write %s: %w", configPath, err)
+		return nil, fmt.Errorf("write %s: %w", configPath, err)
 	}
-	// Claude rewrites this file itself, so confirm the flags landed.
-	ok, err := ClaudeTrustPresent(configPath, runnerPath, set)
+	return added, nil
+}
+
+// lockConfig takes an exclusive flock on the folder of the config file at
+// path and returns the function that releases it. Writes replace the file
+// itself, so a lock on it would let a runner that opened the new file in
+// while the holder still works; the folder stays, and no lock file is left
+// next to the user's config.
+func lockConfig(path string) (func(), error) {
+	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	if !ok {
-		return nil, "", fmt.Errorf("trust flags for %s were overwritten in %s", runnerPath, configPath)
+	for {
+		err = syscall.Flock(int(dir.Fd()), syscall.LOCK_EX)
+		if err != syscall.EINTR {
+			break
+		}
 	}
-	return set, "", nil
+	if err != nil {
+		_ = dir.Close()
+		return nil, fmt.Errorf("lock %s: %w", filepath.Dir(path), err)
+	}
+	return func() { _ = dir.Close() }, nil // closing the folder drops the flock
 }
 
 // ClaudeTrusted returns the first of paths that configPath marks trusted,

@@ -359,6 +359,9 @@ type ChainStep struct {
 	// Done is the node's task when it already finished; it is not spawned
 	// again and its id still feeds its children's --after.
 	Done *task.Task
+	// Live is the node's task while it is unfinished: queued, held, or
+	// running. It is left alone and its id feeds its children's --after.
+	Live *task.Task
 	// Added is set on the final integrate node the kit added.
 	Added bool
 	// Branch is the worktree branch of a node to spawn.
@@ -392,18 +395,33 @@ type ChainInput struct {
 // one parent, an integrate node any number, and a final integrate node over
 // every leaf is added when the plan does not end in one. Nodes come in
 // topological order, in plan order where it leaves a choice, and the close
-// runner follows the final integrate node. A node whose
-// latest task is done is kept; while any node task is unfinished nothing
-// is laid out. A node to run again whose earlier task created its branch
-// gets that branch with a -r<k> suffix, based on the old one; any other
-// existing branch is refused, so nothing is spawned.
+// runner follows the final integrate node. A node whose latest task is done
+// or unfinished is kept, so only failed or stopped nodes and nodes never
+// spawned run again. A node to run again whose earlier task created its
+// branch gets that branch with a -r<k> suffix, based on the old one; any
+// other existing branch is refused, so nothing is spawned. An unfinished
+// task of the milestone that is not a kept node's latest is refused too.
 func PlanChain(in ChainInput) ([]ChainStep, error) {
+	steps, err := planChain(in)
+	if err != nil {
+		return nil, err
+	}
+	kept := map[string]bool{}
+	for _, st := range steps {
+		if st.Live != nil {
+			kept[st.Live.ID] = true
+		}
+	}
 	prefix := in.Milestone + "/"
 	for _, t := range in.Tasks {
-		if t.Project == in.Project && strings.HasPrefix(t.Stage, prefix) && t.Stage != FirstStage(in.Milestone) && !t.Status.Terminal() {
+		if t.Project == in.Project && strings.HasPrefix(t.Stage, prefix) && t.Stage != FirstStage(in.Milestone) && !t.Status.Terminal() && !kept[t.ID] {
 			return nil, fmt.Errorf("%s of %s is %s; wait until it finishes, or stop it, before chaining again", t.ID, t.Stage, t.Status)
 		}
 	}
+	return steps, nil
+}
+
+func planChain(in ChainInput) ([]ChainStep, error) {
 	nodes, err := chainNodes(in.Plan.Nodes)
 	if err != nil {
 		return nil, err
@@ -413,8 +431,7 @@ func PlanChain(in ChainInput) ([]ChainStep, error) {
 	for _, n := range nodes {
 		st := ChainStep{Node: n.BlockNode, Stage: NodeStage(in.Milestone, n.ID), Added: n.added}
 		own := stageTasks(in.Tasks, in.Project, st.Stage)
-		if len(own) > 0 && own[len(own)-1].Status == task.Done {
-			st.Done = own[len(own)-1]
+		if keepStep(&st, own) {
 			steps = append(steps, st)
 			continue
 		}
@@ -449,11 +466,11 @@ func PlanChain(in ChainInput) ([]ChainStep, error) {
 		steps = append(steps, st)
 	}
 	final := steps[len(steps)-1]
-	own := stageTasks(in.Tasks, in.Project, CloseStage(in.Milestone))
-	if len(own) > 0 && own[len(own)-1].Status == task.Done {
-		return append(steps, ChainStep{Node: closeNode(in.Milestone, final.Node.ID), Stage: CloseStage(in.Milestone), Done: own[len(own)-1]}), nil
+	cl := ChainStep{Node: closeNode(in.Milestone, final.Node.ID), Stage: CloseStage(in.Milestone)}
+	if keepStep(&cl, stageTasks(in.Tasks, in.Project, cl.Stage)) {
+		return append(steps, cl), nil
 	}
-	cl, err := CloseStep(in.Project, in.Milestone, final.Node.ID, stepBranch(final), in.Merged, in.Tasks, in.BranchTaken)
+	cl, err = CloseStep(in.Project, in.Milestone, final.Node.ID, stepBranch(final), in.Merged, in.Tasks, in.BranchTaken)
 	if err != nil {
 		return nil, err
 	}
@@ -477,11 +494,31 @@ func stageTasks(tasks []*task.Task, name, stage string) []*task.Task {
 	return own
 }
 
+// keepStep sets st.Done or st.Live from the latest of own, the stage's
+// tasks oldest first, and reports whether st is kept rather than spawned.
+func keepStep(st *ChainStep, own []*task.Task) bool {
+	if len(own) == 0 {
+		return false
+	}
+	switch latest := own[len(own)-1]; {
+	case latest.Status == task.Done:
+		st.Done = latest
+	case !latest.Status.Terminal():
+		st.Live = latest
+	default:
+		return false
+	}
+	return true
+}
+
 // stepBranch is the branch a chain step works on: the branch of its done
-// task, or the one it is spawned on.
+// or unfinished task, or the one it is spawned on.
 func stepBranch(st ChainStep) string {
-	if st.Done != nil {
+	switch {
+	case st.Done != nil:
 		return taskBranch(st.Done)
+	case st.Live != nil:
+		return taskBranch(st.Live)
 	}
 	return st.Branch
 }

@@ -3,6 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -10,10 +11,12 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -719,6 +722,94 @@ func TestPrepareClaudeTrust(t *testing.T) {
 	}
 	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing config was created: %v", err)
+	}
+}
+
+// Runners that start together each prepare trust in the same config file;
+// none may lose another's entry.
+func TestPrepareClaudeTrustConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	writeFile(t, path, `{"projects": {}}`)
+	const n = 16
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := PrepareClaudeTrust(path, "/repo", fmt.Sprintf("/wt/t%d", i))
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	for i := range n {
+		if ok, err := ClaudeTrustPresent(path, fmt.Sprintf("/wt/t%d", i), []string{ClaudeTrustFlag}); err != nil || !ok {
+			t.Errorf("/wt/t%d lost its trust: %v, %v", i, ok, err)
+		}
+	}
+}
+
+// dropClaudeEntry rewrites path without runnerPath's entry, replacing the
+// file the way Claude's own writes may.
+func dropClaudeEntry(t *testing.T, path, runnerPath string) {
+	root, err := readJSONObject(path)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	delete(root["projects"].(map[string]any), runnerPath)
+	data, _ := json.Marshal(root)
+	if err := fsutil.WriteFileAtomic(path, data, 0o600); err != nil {
+		t.Error(err)
+	}
+}
+
+// When Claude rewrites the file over a runner's flags between the write and
+// the check, the runner merges them in again, and runners that start
+// together still keep each other's entries.
+func TestPrepareClaudeTrustRetries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	writeFile(t, path, `{"projects": {}}`)
+	var mu sync.Mutex
+	dropped := map[string]bool{}
+	claudeTrustWritten = func(configPath, runnerPath string) {
+		mu.Lock()
+		first := !dropped[runnerPath]
+		dropped[runnerPath] = true
+		mu.Unlock()
+		if first {
+			dropClaudeEntry(t, configPath, runnerPath)
+		}
+	}
+	t.Cleanup(func() { claudeTrustWritten = func(string, string) {} })
+	const n = 16
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := PrepareClaudeTrust(path, "/repo", fmt.Sprintf("/wt/t%d", i)); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	for i := range n {
+		if ok, err := ClaudeTrustPresent(path, fmt.Sprintf("/wt/t%d", i), []string{ClaudeTrustFlag}); err != nil || !ok {
+			t.Errorf("/wt/t%d lost its trust: %v, %v", i, ok, err)
+		}
+	}
+
+	// A file rewritten over the flags every time is an error.
+	claudeTrustWritten = func(configPath, runnerPath string) { dropClaudeEntry(t, configPath, runnerPath) }
+	if _, _, err := PrepareClaudeTrust(path, "/repo", "/wt/lost"); err == nil || !strings.Contains(err.Error(), "were overwritten in "+path+" 3 times") {
+		t.Errorf("always overwritten: %v", err)
 	}
 }
 

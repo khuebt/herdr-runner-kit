@@ -244,9 +244,13 @@ func TestMilestoneChain(t *testing.T) {
 		t.Errorf("backlog = %+v", b)
 	}
 
-	// While a node runs, the chain is refused.
-	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err == nil || !strings.Contains(err.Error(), "before chaining again") {
+	// While every node is unfinished, running the chain again keeps them all.
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
 		t.Fatalf("chain while nodes run: %v", err)
+	}
+	if n := len(projectTasks(t, r, "M1/")); n != 6 || !strings.Contains(out.String(), "no node of M1 failed; nothing to run again") {
+		t.Fatalf("chain while nodes run spawned %d tasks:\n%s", n-6, out.String())
 	}
 
 	// F1 is done; F2 failed after it created its branch; F3 and the
@@ -293,6 +297,247 @@ func TestMilestoneChain(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "kept M1/F1: "+f1.ID+" is done") {
 		t.Errorf("run again output:\n%s", out.String())
+	}
+
+	// F3 failed to launch while F2 runs: F3 runs again next to F2, and the
+	// queued integrate node waits for the new F3 instead of the failed one.
+	f2r, f3r, inr, clr := again[0], again[1], again[2], again[3]
+	setTask(t, r, f2r.ID, task.Running, true)
+	setTask(t, r, f3r.ID, task.Failed, false)
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatalf("chain with a failed node next to a running one: %v", err)
+	}
+	third := projectTasks(t, r, "M1/")[before+len(again):]
+	if len(third) != 1 || third[0].Stage != "M1/F3" || third[0].Worktree.Branch != "feat/M1-F3-settings" || third[0].Worktree.Base != "main" {
+		t.Fatalf("respawned %+v", third)
+	}
+	for _, c := range []struct {
+		id     string
+		status task.Status
+		after  []string
+	}{
+		{f2r.ID, task.Running, []string{f1.ID}},
+		{inr.ID, task.Queued, []string{f2r.ID, third[0].ID}},
+		{clr.ID, task.Queued, []string{inr.ID}},
+	} {
+		if tk, err := r.Store.Get(c.id); err != nil || tk.Status != c.status || !slices.Equal(tk.After, c.after) {
+			t.Errorf("%s = %v after %v (%v), want %s after %v", c.id, tk.Status, tk.After, err, c.status, c.after)
+		}
+	}
+	for _, want := range []string{
+		"kept M1/F2: " + f2r.ID + " is running",
+		"kept M1/integrate: " + inr.ID + " is queued, now after " + f2r.ID + ", " + third[0].ID,
+		"kept M1/close: " + clr.ID + " is queued",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("respawn output lacks %q:\n%s", want, out.String())
+		}
+	}
+
+	// The integrate node created its branch, then failed while the close
+	// runner stayed queued: the integrate node runs again on -r1, and the
+	// close runner starts from that branch instead of the old one.
+	gitIn(t, p.Path, "branch", "integrate/M1-integrate")
+	setTask(t, r, inr.ID, task.Failed, true)
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatalf("chain with a failed integrate node: %v", err)
+	}
+	all := projectTasks(t, r, "M1/")
+	in2 := all[len(all)-1]
+	if in2.Stage != "M1/integrate" || in2.Worktree.Branch != "integrate/M1-integrate-r1" || in2.Worktree.Base != "integrate/M1-integrate" {
+		t.Fatalf("integrate again = %+v %+v", in2, in2.Worktree)
+	}
+	if tk, err := r.Store.Get(clr.ID); err != nil || tk.Status != task.Queued || !slices.Equal(tk.After, []string{in2.ID}) || tk.Worktree.Base != "integrate/M1-integrate-r1" {
+		t.Errorf("close = %+v after %v (%v)", tk.Worktree, tk.After, err)
+	}
+	if want := "kept M1/close: " + clr.ID + " is queued, now after " + in2.ID + ", from integrate/M1-integrate-r1"; !strings.Contains(out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, out.String())
+	}
+
+	// A chain run that stopped before the relink leaves the close runner
+	// waiting for the failed runner after the new one finished: the next
+	// chain points it at the done runner and starts it, since no finish
+	// will.
+	var started []string
+	r.StartAfter = func(id string) error { started = append(started, id); return nil }
+	if _, err := r.Store.Update(clr.ID, func(tk *task.Task) error { tk.After = []string{inr.ID}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	setTask(t, r, in2.ID, task.Done, true)
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	if tk, err := r.Store.Get(clr.ID); err != nil || !slices.Equal(tk.After, []string{in2.ID}) || !slices.Equal(started, []string{in2.ID}) ||
+		!strings.Contains(out.String(), "its parents are done, so it starts") {
+		t.Errorf("close after a done parent = %v, started %v (%v):\n%s", tk.After, started, err, out.String())
+	}
+}
+
+// lanePlan is a milestone plan with a backend lane (F8, F9, then F10 and
+// F11) beside a UI lane (F33, then U1 and F7), both after C2. F9 waits for
+// F8 unless f9Root.
+func lanePlan(f9Root bool) map[string]string {
+	f9 := "  - {id: F9, type: feature, title: Sync jobs, dependsOn: [F8]}\n"
+	if f9Root {
+		f9 = "  - {id: F9, type: feature, title: Sync jobs}\n"
+	}
+	return map[string]string{project.MilestonePlanPath("M1"): "# M1 plan\n\n```yaml\nnodes:\n" +
+		"  - {id: C2, type: feature, title: Core}\n" +
+		"  - {id: F33, type: feature, title: Shell, dependsOn: [C2]}\n" +
+		"  - {id: F8, type: feature, title: Sync core, dependsOn: [C2]}\n" +
+		"  - {id: U1, type: feature, title: Board, dependsOn: [F33]}\n" +
+		"  - {id: F7, type: feature, title: Import, dependsOn: [F33]}\n" +
+		f9 +
+		"  - {id: F10, type: feature, title: Retry, dependsOn: [F9]}\n" +
+		"  - {id: F11, type: feature, title: Metrics, dependsOn: [F9]}\n" +
+		"  - {id: I2, type: integrate, title: Integrate, dependsOn: [F10, F11, U1, F7]}\n```\n"}
+}
+
+// laneChain chains lanePlan, then finishes C2 and F33, fails F8 before it
+// created its branch, and sets U1 to u1 and F7 to running, while every node
+// after them stays queued. It returns the node tasks by stage.
+func laneChain(t *testing.T, u1 task.Status) (*runner.Runner, state.Project, map[string]*task.Task) {
+	t.Helper()
+	r, p := approvedRunner(t)
+	if _, err := project.Update(r.Store, "demo-app", func(rec *project.Record) error {
+		rec.Milestones[0].Status = project.MilestoneDone
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := startMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	setTask(t, r, projectTasks(t, r, "M1/plan")[0].ID, task.Done, false)
+	commitFiles(t, p.Path, lanePlan(false))
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	byStage := map[string]*task.Task{}
+	for _, tk := range projectTasks(t, r, "M1/")[1:] {
+		byStage[tk.Stage] = tk
+	}
+	if len(byStage) != 10 {
+		t.Fatalf("chain spawned %v", byStage)
+	}
+	for stage, status := range map[string]task.Status{"M1/C2": task.Done, "M1/F33": task.Done, "M1/U1": u1, "M1/F7": task.Running} {
+		gitIn(t, p.Path, "branch", byStage[stage].Worktree.Branch)
+		setTask(t, r, byStage[stage].ID, status, true)
+	}
+	setTask(t, r, byStage["M1/F8"].ID, task.Failed, false)
+	return r, p, byStage
+}
+
+func TestChainRespawnsAFailedNodeWhileSiblingsRun(t *testing.T) {
+	for _, u1 := range []task.Status{task.Starting, task.Running} {
+		t.Run(string(u1), func(t *testing.T) {
+			r, p, n := laneChain(t, u1)
+			before := len(projectTasks(t, r, "M1/"))
+			var out bytes.Buffer
+			if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+				t.Fatalf("chain while U1 is %s and F7 runs: %v", u1, err)
+			}
+			again := projectTasks(t, r, "M1/")[before:]
+			if len(again) != 1 || again[0].Stage != "M1/F8" {
+				t.Fatalf("respawned %v", again)
+			}
+			f8 := again[0]
+			if f8.Worktree.Branch != n["M1/F8"].Worktree.Branch || f8.Worktree.Base != n["M1/C2"].Worktree.Branch ||
+				!slices.Equal(f8.After, []string{n["M1/C2"].ID}) || f8.Status != task.Starting {
+				t.Errorf("F8 again = %s after %v, %+v", f8.Status, f8.After, f8.Worktree)
+			}
+			for _, c := range []struct {
+				stage, base string
+				status      task.Status
+				after       []string
+			}{
+				{"M1/U1", "", u1, []string{n["M1/F33"].ID}},
+				{"M1/F7", "", task.Running, []string{n["M1/F33"].ID}},
+				{"M1/F9", "", task.Queued, []string{f8.ID}},
+				{"M1/F10", "", task.Queued, []string{n["M1/F9"].ID}},
+				{"M1/F11", "", task.Queued, []string{n["M1/F9"].ID}},
+				{"M1/I2", "main", task.Queued, []string{n["M1/F10"].ID, n["M1/F11"].ID, n["M1/U1"].ID, n["M1/F7"].ID}},
+				{"M1/close", n["M1/I2"].Worktree.Branch, task.Queued, []string{n["M1/I2"].ID}},
+			} {
+				tk, err := r.Store.Get(n[c.stage].ID)
+				if err != nil || tk.Status != c.status || !slices.Equal(tk.After, c.after) || tk.Worktree.Base != c.base {
+					t.Errorf("%s = %s after %v from %q (%v), want %s after %v from %q", c.stage, tk.Status, tk.After, tk.Worktree.Base, err, c.status, c.after, c.base)
+				}
+			}
+			for _, want := range []string{
+				"kept M1/U1: " + n["M1/U1"].ID + " is " + string(u1),
+				"kept M1/F7: " + n["M1/F7"].ID + " is running",
+				"kept M1/F9: " + n["M1/F9"].ID + " is queued, now after " + f8.ID,
+				"kept M1/close: " + n["M1/close"].ID + " is queued",
+			} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
+func TestChainStartsAQueuedNodeNoParentWillStart(t *testing.T) {
+	r, p, n := laneChain(t, task.Running)
+	var out bytes.Buffer
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	all := projectTasks(t, r, "M1/")
+	f8, f9 := all[len(all)-1], n["M1/F9"]
+
+	// A chain run stopped before it relinked F9, and the new F8 finishes
+	// while the next run respawns U1, after that run read the tasks: F9 is
+	// relinked to a parent that is done already, so the chain starts it.
+	if _, err := r.Store.Update(f9.ID, func(tk *task.Task) error { tk.After = []string{n["M1/F8"].ID}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, p.Path, "branch", "-D", n["M1/U1"].Worktree.Branch)
+	setTask(t, r, n["M1/U1"].ID, task.Failed, false)
+	r.StartLauncher = func(string) (int, error) {
+		setTask(t, r, f8.ID, task.Done, true)
+		return 4242, nil
+	}
+	var started []string
+	r.StartAfter = func(id string) error { started = append(started, id); return nil }
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	want := "kept M1/F9: " + f9.ID + " is queued, now after " + f8.ID + "; its parents are done, so it starts"
+	if !slices.Equal(started, []string{f8.ID}) || !strings.Contains(out.String(), want) {
+		t.Errorf("started %v, output lacks %q:\n%s", started, want, out.String())
+	}
+
+	// F9 still waits, since that start did not reach it: the next chain,
+	// with nothing to relink, starts it again.
+	r.StartLauncher = func(string) (int, error) { return 4242, nil }
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	want = "kept M1/F9: " + f9.ID + " is queued; its parents are done, so it starts"
+	if !slices.Equal(started, []string{f8.ID, f8.ID}) || !strings.Contains(out.String(), want) {
+		t.Errorf("started %v, output lacks %q:\n%s", started, want, out.String())
+	}
+
+	// The plan no longer has F9 wait for F8: F9 is relinked to no task and
+	// starts from the default branch on its own.
+	commitFiles(t, p.Path, lanePlan(true))
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatalf("chain after F9 lost its parent: %v", err)
+	}
+	if tk, err := r.Store.Get(f9.ID); err != nil || tk.Status != task.Starting || len(tk.After) != 0 || tk.Worktree.Base != "main" {
+		t.Errorf("F9 = %s after %v from %q (%v)", tk.Status, tk.After, tk.Worktree.Base, err)
+	}
+	if want := "kept M1/F9: " + f9.ID + " is queued, now after no task, from main; it waits for no task, so it starts"; !strings.Contains(out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, out.String())
 	}
 }
 
