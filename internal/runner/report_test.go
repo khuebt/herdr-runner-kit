@@ -554,3 +554,38 @@ func TestReportInALockedTabIsNoTabAnswer(t *testing.T) {
 		t.Errorf("events = %v, want %v", got, want)
 	}
 }
+
+func TestSettleDecidesAWaitingTaskOnce(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	dir := plainDir(t)
+	var launched []string
+	r.StartLauncher = func(id string) (int, error) { launched = append(launched, id); return 7, nil }
+	p := running(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+	q := running(t, r, SpawnOptions{Prompt: "b", Cwd: dir})
+	child := spawnQueued(t, r, p.ID)
+	doomed := spawnQueued(t, r, q.ID)
+	grandchild := spawnQueued(t, r, doomed)
+	launched = nil
+	// The parent is done, and its follow-up never ran.
+	finishTask(t, r, p.ID, task.Done, "did a")
+	for range 2 {
+		if err := r.Settle(context.Background(), child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := r.Store.Get(child); got.Status != task.Starting || got.LauncherPID != 7 || !strings.Contains(got.Inputs, "did a") {
+		t.Errorf("child = %s pid %d inputs %q", got.Status, got.LauncherPID, got.Inputs)
+	}
+	if !slices.Equal(launched, []string{child}) {
+		t.Errorf("launched = %v, want the child once", launched)
+	}
+	finishTask(t, r, q.ID, task.Stopped, "")
+	if err := r.Settle(context.Background(), doomed); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{doomed: "parent " + q.ID + " stopped", grandchild: "parent " + doomed + " failed"} {
+		if got, _ := r.Store.Get(id); got.Status != task.Failed || got.Error != want {
+			t.Errorf("%s = %s (%s), want failed (%s)", id, got.Status, got.Error, want)
+		}
+	}
+}

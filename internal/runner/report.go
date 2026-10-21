@@ -350,9 +350,8 @@ func (r *Runner) After(ctx context.Context, id string) error {
 	return nil
 }
 
-// startDependents moves every queued task whose parents are now all done
-// to held (human gate, or a plan phase whose check failed) or starts it in
-// this process.
+// startDependents settles every task that waits for parent, which just
+// finished done, and launches in this process the ones it starts.
 func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 	tasks, err := r.Store.List()
 	if err != nil {
@@ -361,81 +360,44 @@ func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 	var wg sync.WaitGroup
 	var errs []error
 	for _, q := range tasks {
-		if q.Status != task.Queued || !slices.Contains(q.After, parent.ID) {
+		if !waiting(q) || !slices.Contains(q.After, parent.ID) {
 			continue
 		}
-		pending, err := r.pendingParents(q.After)
-		if err != nil {
-			r.failDependent(q.ID, err.Error())
-			continue
-		}
-		if len(pending) > 0 {
-			continue
-		}
-		if q.FixupOf == parent.ID && parent.Review != nil && parent.Review.Verdict == task.ReviewPass {
-			r.skipFixup(q, parent)
-			continue
-		}
-		inputs, base, err := r.parentInputs(q.After)
+		started, err := r.settle(ctx, q.ID)
 		if err != nil {
 			errs = append(errs, err)
-			continue
 		}
-		withInputs := func(t *task.Task) {
-			t.Inputs = inputs
-			if t.Worktree != nil && t.Worktree.Base == "" {
-				t.Worktree.Base = base
-			}
-		}
-		if reason := r.phaseHoldReason(ctx, q); q.Gate == task.GateHuman || reason != "" {
-			hold := func(t *task.Task) {
-				withInputs(t)
-				if reason != "" {
-					t.HoldReason = reason
-				}
-			}
-			if t, changed, err := r.Store.Transition(q.ID, task.Held, []task.Status{task.Queued}, hold); err != nil {
-				errs = append(errs, err)
-			} else if changed {
-				r.emit(t, "held", task.HeldSummary(t), "")
-			}
-			continue
-		}
-		// The status change is the lock: when two parents finish at once,
-		// only one follow-up moves the child to starting and launches it.
-		t, changed, err := r.beginLaunch(q.ID, withInputs)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if !changed {
+		if !started {
 			continue
 		}
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
 			_ = r.Launch(ctx, id) // every outcome is recorded on the task
-		}(t.ID)
+		}(q.ID)
 	}
 	wg.Wait()
 	return errors.Join(errs...)
 }
 
-// failDependents fails every waiting task that depends on parent, and their
-// dependents in turn.
+// failDependents settles every task that waits for parent, which just
+// failed or was stopped, so they fail, and their waiting tasks in turn.
 func (r *Runner) failDependents(parent *task.Task) error {
 	tasks, err := r.Store.List()
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, q := range tasks {
-		if slices.Contains(q.After, parent.ID) {
-			r.failDependent(q.ID, fmt.Sprintf("parent %s %s", parent.ID, parent.Status))
+		if waiting(q) && slices.Contains(q.After, parent.ID) {
+			errs = append(errs, r.Settle(context.Background(), q.ID))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
+// failDependent fails a waiting task for reason, and settles what waits on
+// it.
 func (r *Runner) failDependent(id, reason string) {
 	t, changed, err := r.Store.Transition(id, task.Failed, []task.Status{task.Queued, task.Held}, func(t *task.Task) {
 		t.Error = reason
@@ -445,6 +407,97 @@ func (r *Runner) failDependent(id, reason string) {
 	}
 	r.emit(t, "failed", reason, "")
 	_ = r.failDependents(t)
+}
+
+// Settle decides the waiting task id from its parents in the store. A
+// parent that failed, was stopped or does not exist fails it, and the tasks
+// that wait on it in turn. Once every parent is done, it starts the task
+// through a detached launcher, holds it for release (the human gate, or a
+// plan phase whose check holds), or closes a fixup the review found nothing
+// for. Otherwise it changes nothing. Each move is a guarded transition from
+// queued, or held for a failure, so any number of callers may settle the
+// same task: a parent's follow-up, the spawn that created it and the wait
+// backstop's sweep.
+func (r *Runner) Settle(ctx context.Context, id string) error {
+	started, err := r.settle(ctx, id)
+	if err != nil || !started {
+		return err
+	}
+	_, err = r.startLauncher(id)
+	return err
+}
+
+// settle is Settle without the launch: it reports whether it moved the task
+// to starting, for the caller to launch.
+func (r *Runner) settle(ctx context.Context, id string) (bool, error) {
+	t, err := r.Store.Get(id)
+	if err != nil || !waiting(t) {
+		return false, err
+	}
+	pending := false
+	parents := make([]*task.Task, 0, len(t.After))
+	for _, pid := range t.After {
+		p, err := r.Store.Get(pid)
+		switch {
+		case errors.Is(err, state.ErrNotFound):
+			r.failDependent(t.ID, "parent "+pid+" does not exist")
+			return false, nil
+		case err != nil:
+			return false, err
+		case p.Status == task.Failed || p.Status == task.Stopped:
+			r.failDependent(t.ID, fmt.Sprintf("parent %s %s", p.ID, p.Status))
+			return false, nil
+		case p.Status != task.Done:
+			pending = true
+		}
+		parents = append(parents, p)
+	}
+	if pending || t.Status != task.Queued {
+		return false, nil
+	}
+	for _, p := range parents {
+		if p.ID != t.FixupOf || p.Review == nil {
+			continue
+		}
+		if p.Review.Verdict == "" {
+			// Its own follow-up may still be reading the verdict.
+			r.finishReview(ctx, p)
+			if p, err = r.Store.Get(p.ID); err != nil {
+				return false, err
+			}
+		}
+		if p.Review.Verdict == task.ReviewPass {
+			r.skipFixup(t, p)
+			return false, nil
+		}
+	}
+	inputs, base, err := r.parentInputs(t.After)
+	if err != nil {
+		return false, err
+	}
+	withInputs := func(t *task.Task) {
+		t.Inputs = inputs
+		if t.Worktree != nil && t.Worktree.Base == "" {
+			t.Worktree.Base = base
+		}
+	}
+	if reason := r.phaseHoldReason(ctx, t); t.Gate == task.GateHuman || reason != "" {
+		hold := func(t *task.Task) {
+			withInputs(t)
+			if reason != "" {
+				t.HoldReason = reason
+			}
+		}
+		t, changed, err := r.Store.Transition(t.ID, task.Held, []task.Status{task.Queued}, hold)
+		if err == nil && changed {
+			r.emit(t, "held", task.HeldSummary(t), "")
+		}
+		return false, err
+	}
+	// The status change is the lock: when two callers settle the task at
+	// once, only one moves it to starting and launches it.
+	_, changed, err := r.beginLaunch(t.ID, withInputs)
+	return changed, err
 }
 
 // parentInputs describes the results of done parents for the child's first

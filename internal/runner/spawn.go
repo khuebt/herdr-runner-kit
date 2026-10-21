@@ -232,6 +232,12 @@ func (r *Runner) StartLaunch(id string) (*task.Task, error) {
 	if !changed {
 		return t, fmt.Errorf("%s is %s, not ready to launch", id, t.Status)
 	}
+	return r.startLauncher(id)
+}
+
+// startLauncher hands a task that just moved to starting to a detached
+// launcher.
+func (r *Runner) startLauncher(id string) (*task.Task, error) {
 	pid, err := r.StartLauncher(id)
 	if err != nil {
 		r.fail(id, "start launcher: "+err.Error())
