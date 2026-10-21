@@ -232,6 +232,9 @@ func TestCleanupCountsBranchesStackedUnderACleanedSquashedRelease(t *testing.T) 
 	if BranchExists(ctx, repo, "release/M1") {
 		t.Fatal("release branch left")
 	}
+	// The recorded tip outlives git's pruning of unreachable commits.
+	git(t, repo, "reflog", "expire", "--expire=now", "--all")
+	git(t, repo, "gc", "-q", "--prune=now")
 
 	items, err = r.Cleanable(ctx, Owners{Owner: repo}, false)
 	if err != nil || len(items) != len(stacked) {

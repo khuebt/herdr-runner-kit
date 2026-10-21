@@ -216,7 +216,33 @@ func TestDoneAfterASquashMerge(t *testing.T) {
 		t.Error("no tag")
 	}
 	// cleanup counts the branches stacked under the release as merged.
-	if got, err := s.Get(tasks[1].ID); err != nil || got.Worktree.MergedTip != run(t, p.Path, "rev-parse", "release/M0") {
+	tip := run(t, p.Path, "rev-parse", "release/M0")
+	if got, err := s.Get(tasks[1].ID); err != nil || got.Worktree.MergedTip != tip {
+		t.Errorf("merged tip = %+v, %v", got.Worktree, err)
+	}
+	if ref := run(t, p.Path, "rev-parse", task.MergedTipRef(tasks[1].ID)); ref != tip {
+		t.Errorf("merged tip ref = %s, want %s", ref, tip)
+	}
+}
+
+func TestDoneRecordsNoTipWithWorkTheSquashLacks(t *testing.T) {
+	s, p, tasks := closingProject(t, "")
+	if err := s.Create(tasks[1]); err != nil {
+		t.Fatal(err)
+	}
+	run(t, p.Path, "merge", "-q", "--squash", "release/M0")
+	run(t, p.Path, "commit", "-q", "-m", "M0 (#1)")
+	squash := run(t, p.Path, "rev-parse", "HEAD")
+	// A fix committed on the release branch after its pull request merged.
+	run(t, p.Path, "checkout", "-q", "release/M0")
+	writeFile(t, p.Path, "late.txt", "late\n")
+	run(t, p.Path, "add", "late.txt")
+	run(t, p.Path, "commit", "-q", "-m", "fix: late")
+	run(t, p.Path, "checkout", "-q", "main")
+	if _, err := finish(s, p, tasks, squash); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get(tasks[1].ID); err != nil || got.Worktree.MergedTip != "" {
 		t.Errorf("merged tip = %+v, %v", got.Worktree, err)
 	}
 }

@@ -82,6 +82,12 @@ type Worktree struct {
 	MergedTip string `json:"mergedTip,omitempty"`
 }
 
+// MergedTipRef is the ref that keeps task id's MergedTip from being pruned
+// once no branch holds it.
+func MergedTipRef(id string) string {
+	return "refs/hrk/merged/" + id
+}
+
 // OwnsBranch reports whether the task created its branch, so cleanup may
 // delete it. A task from an older version owns it when a worktree path was
 // recorded, since the launcher created the branch with the worktree.

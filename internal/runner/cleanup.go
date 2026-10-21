@@ -320,6 +320,10 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 			return err
 		}
 	}
+	if tip != "" {
+		// Keeps the commit from being pruned once the branch is gone.
+		gitOut(ctx, t.RepoRoot, "update-ref", task.MergedTipRef(t.ID), tip)
+	}
 	t, err := r.Store.Update(t.ID, func(t *task.Task) error {
 		t.Worktree.Removed = true
 		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone
