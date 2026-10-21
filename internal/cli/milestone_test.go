@@ -334,6 +334,46 @@ func TestMilestoneChain(t *testing.T) {
 			t.Errorf("respawn output lacks %q:\n%s", want, out.String())
 		}
 	}
+
+	// The integrate node created its branch, then failed while the close
+	// runner stayed queued: the integrate node runs again on -r1, and the
+	// close runner starts from that branch instead of the old one.
+	gitIn(t, p.Path, "branch", "integrate/M1-integrate")
+	setTask(t, r, inr.ID, task.Failed, true)
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatalf("chain with a failed integrate node: %v", err)
+	}
+	all := projectTasks(t, r, "M1/")
+	in2 := all[len(all)-1]
+	if in2.Stage != "M1/integrate" || in2.Worktree.Branch != "integrate/M1-integrate-r1" || in2.Worktree.Base != "integrate/M1-integrate" {
+		t.Fatalf("integrate again = %+v %+v", in2, in2.Worktree)
+	}
+	if tk, err := r.Store.Get(clr.ID); err != nil || tk.Status != task.Queued || !slices.Equal(tk.After, []string{in2.ID}) || tk.Worktree.Base != "integrate/M1-integrate-r1" {
+		t.Errorf("close = %+v after %v (%v)", tk.Worktree, tk.After, err)
+	}
+	if want := "kept M1/close: " + clr.ID + " is queued, now after " + in2.ID + ", from integrate/M1-integrate-r1"; !strings.Contains(out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, out.String())
+	}
+
+	// A chain run that stopped before the relink leaves the close runner
+	// waiting for the failed runner after the new one finished: the next
+	// chain points it at the done runner and starts it, since no finish
+	// will.
+	var started []string
+	r.StartAfter = func(id string) error { started = append(started, id); return nil }
+	if _, err := r.Store.Update(clr.ID, func(tk *task.Task) error { tk.After = []string{inr.ID}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	setTask(t, r, in2.ID, task.Done, true)
+	out.Reset()
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+		t.Fatal(err)
+	}
+	if tk, err := r.Store.Get(clr.ID); err != nil || !slices.Equal(tk.After, []string{in2.ID}) || !slices.Equal(started, []string{in2.ID}) ||
+		!strings.Contains(out.String(), "its parents are done, so it starts") {
+		t.Errorf("close after a done parent = %v, started %v (%v):\n%s", tk.After, started, err, out.String())
+	}
 }
 
 // commitOnBranch commits files on a new branch made from base, and goes

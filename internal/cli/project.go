@@ -1583,40 +1583,22 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	if moved > 0 {
 		fmt.Fprintf(out, "backlog: %d item(s) planned into %s; recorded with the next commit point\n", moved, id)
 	}
-	ids := map[string]string{}
-	parents := func(st project.ChainStep) []string {
-		var after []string
-		for _, parent := range st.Node.DependsOn {
-			after = append(after, ids[parent])
-		}
-		return after
-	}
+	byNode := map[string]*task.Task{}
 	spawned, live := 0, 0
 	for _, st := range steps {
 		if st.Done != nil {
-			ids[st.Node.ID] = st.Done.ID
+			byNode[st.Node.ID] = st.Done
 			fmt.Fprintf(out, "kept %s: %s is done\n", st.Stage, st.Done.ID)
 			continue
 		}
 		if st.Live != nil {
-			ids[st.Node.ID] = st.Live.ID
+			byNode[st.Node.ID] = st.Live
 			live++
-			// A node waiting for a parent that runs again waits for its
-			// new runner instead.
-			if after := parents(st); st.Live.Status == task.Queued && !slices.Equal(st.Live.After, after) {
-				if _, err := r.Store.Update(st.Live.ID, func(t *task.Task) error {
-					if t.Status != task.Queued {
-						return fmt.Errorf("%s is %s, not queued", t.ID, t.Status)
-					}
-					t.After = after
-					return nil
-				}); err != nil {
-					return fmt.Errorf("relink %s: %w; the %d runner(s) above were spawned", st.Stage, err, spawned)
-				}
-				fmt.Fprintf(out, "kept %s: %s is queued, now after %s\n", st.Stage, st.Live.ID, strings.Join(after, ", "))
-				continue
+			line, err := relinkQueued(r, st, byNode)
+			if err != nil {
+				return fmt.Errorf("relink %s: %w; the %d runner(s) above were spawned", st.Stage, err, spawned)
 			}
-			fmt.Fprintf(out, "kept %s: %s is %s\n", st.Stage, st.Live.ID, st.Live.Status)
+			fmt.Fprintln(out, line)
 			continue
 		}
 		if st.Added {
@@ -1632,7 +1614,10 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		project.NodeData(&data, st)
 		so := stageRun{
 			Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
-			TaskStage: st.Stage, Warn: o.Warn, After: parents(st),
+			TaskStage: st.Stage, Warn: o.Warn,
+		}
+		for _, parent := range st.Node.DependsOn {
+			so.After = append(so.After, byNode[parent].ID)
 		}
 		if r.Config.Kinds[stage.Kind].Worktree {
 			so.Branch, so.Base = st.Branch, st.Base
@@ -1645,7 +1630,7 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 			}
 			return fmt.Errorf("spawn %s: %w", st.Stage, err)
 		}
-		ids[st.Node.ID] = t.ID
+		byNode[st.Node.ID] = t
 		spawned++
 		fmt.Fprintln(out, spawnLine(t))
 	}
@@ -1659,6 +1644,58 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	}
 	parallelNote(r.Store, p.Name, o.Warn)
 	return nil
+}
+
+// relinkQueued points the queued task of step st, which may still wait for
+// an earlier runner of a parent that runs again, at the parents' runners in
+// byNode, and returns the line chain prints for st. When it waited for a
+// single parent and was to start from that runner's branch, it starts from
+// the new runner's branch. When the parents are all done already, no
+// parent's finish starts it any more, so their follow-up runs again now.
+func relinkQueued(r *runner.Runner, st project.ChainStep, byNode map[string]*task.Task) (string, error) {
+	q := st.Live
+	var after []string
+	done := true
+	for _, parent := range st.Node.DependsOn {
+		after = append(after, byNode[parent].ID)
+		done = done && byNode[parent].Status == task.Done
+	}
+	if q.Status != task.Queued || slices.Equal(q.After, after) {
+		return fmt.Sprintf("kept %s: %s is %s", st.Stage, q.ID, q.Status), nil
+	}
+	base := ""
+	if len(q.After) == 1 && len(after) == 1 && q.Worktree != nil && q.Worktree.Base != "" {
+		old, err := r.Store.Get(q.After[0])
+		if err != nil {
+			return "", err
+		}
+		if p := byNode[st.Node.DependsOn[0]]; old.Worktree != nil && old.Worktree.Branch == q.Worktree.Base && p.Worktree != nil {
+			base = p.Worktree.Branch
+		}
+	}
+	if _, err := r.Store.Update(q.ID, func(t *task.Task) error {
+		if t.Status != task.Queued {
+			return fmt.Errorf("%s is %s, not queued", t.ID, t.Status)
+		}
+		t.After = after
+		if base != "" {
+			t.Worktree.Base = base
+		}
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	line := fmt.Sprintf("kept %s: %s is queued, now after %s", st.Stage, q.ID, strings.Join(after, ", "))
+	if base != "" {
+		line += ", from " + base
+	}
+	if done {
+		if err := r.StartAfter(after[len(after)-1]); err != nil {
+			return "", err
+		}
+		line += "; its parents are done, so it starts"
+	}
+	return line, nil
 }
 
 func newMilestoneDoneCommand() *cobra.Command {
