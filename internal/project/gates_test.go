@@ -383,6 +383,40 @@ func TestLaterPackMayOmitDoneMilestones(t *testing.T) {
 	}
 }
 
+// A later pack that leaves out done milestones may keep the dependencies
+// tied to them, as a pack runner carries the dependencies section over.
+func TestLaterPackMayKeepDependenciesOfOmittedDoneMilestones(t *testing.T) {
+	s, dir := approvedProject(t)
+	if _, err := Update(s, "demo-app", func(r *Record) error {
+		r.Milestones[0].Status = MilestoneDone
+		r.Milestones[1].Status = MilestoneDone
+		r.Reapproval = Reapproval{Needed: true, Reason: "CR-1"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	block := func(milestone string) string {
+		return "# Roadmap proposal\n\n```yaml\nmilestones:\n  - id: M2\n    title: Share\n    features:\n      - {id: F3, title: Share by link, dependsOn: [F2]}\n" +
+			"dependencies:\n  - {name: Repo access, owner: user, milestone: M0}\n  - {name: Payments sandbox, owner: vendor, milestone: M1, secretLocation: team vault}\n" +
+			"  - {name: Mail API, owner: vendor, milestone: " + milestone + "}\n```\n"
+	}
+	commitPack(t, dir, 2, block("M9"))
+	if _, err := decide(s, GatePack, "approve"); err == nil || !strings.Contains(err.Error(), `dependencies[2].milestone "M9" is not a milestone`) {
+		t.Fatalf("a dependency on an unknown milestone: %v", err)
+	}
+	commitPack(t, dir, 3, block("M2"))
+	if _, err := decide(s, GatePack, "approve"); err != nil {
+		t.Fatalf("dependencies on omitted done milestones: %v", err)
+	}
+	got := map[string]string{}
+	for _, d := range load(t, s).Dependencies {
+		got[d.Name] = d.Milestone
+	}
+	if want := map[string]string{"Repo access": "M0", "Payments sandbox": "M1", "Mail API": "M2"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("dependencies = %v", got)
+	}
+}
+
 func TestGateRefusesWhileARunnerWorksInTheCheckout(t *testing.T) {
 	dir := newRepo(t)
 	s := registered(t, dir)

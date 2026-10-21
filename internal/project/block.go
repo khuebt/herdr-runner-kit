@@ -272,6 +272,9 @@ func (b Block) check(rec Record) error {
 	for _, m := range b.Milestones {
 		milestones = append(milestones, m.ID)
 	}
+	for _, m := range omittedDone(rec, b) {
+		milestones = append(milestones, m.ID)
+	}
 	names := map[string]bool{}
 	for i, d := range b.Dependencies {
 		field := fmt.Sprintf("dependencies[%d]", i)
@@ -286,7 +289,7 @@ func (b Block) check(rec Record) error {
 			return fmt.Errorf("%s.owner %q: want one of %s", field, d.Owner, strings.Join(DependencyOwners, ", "))
 		}
 		if d.Milestone != "" && !slices.Contains(milestones, d.Milestone) {
-			return fmt.Errorf("%s.milestone %q is not a milestone of this block", field, d.Milestone)
+			return fmt.Errorf("%s.milestone %q is not a milestone of this block or a done one", field, d.Milestone)
 		}
 		if err := checkNoSecrets(map[string]string{
 			field + ".name": d.Name, field + ".workaround": d.Workaround, field + ".secretLocation": d.SecretLocation,
@@ -338,7 +341,8 @@ func (b Block) check(rec Record) error {
 // checkMilestones checks ids, dates and feature dependencies, that every
 // done milestone of rec the block lists is unchanged, and that the running
 // one is still in it. A done milestone the block leaves out is kept as
-// recorded; its feature ids stay taken and may be depended on. The bare
+// recorded; its feature ids stay taken and may be depended on, and a
+// dependency of the block may name it. The bare
 // scaffold milestone, started before there was a roadmap, may change until
 // a roadmap is imported; once done it may also be left out, and stays bare.
 func (b Block) checkMilestones(rec Record) error {
