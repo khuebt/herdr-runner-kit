@@ -57,13 +57,16 @@ func IsNews(typ string) bool { return slices.Contains(newsTypes, typ) }
 // Options select what a wait watches.
 type Options struct {
 	Owner string
-	// Projects also watches the tasks of every project, whose runners
-	// report to the main session from any folder. It goes by the owner of
-	// each task, not by the registry, so a project registered after the
-	// wait started is watched too. It is ignored when Owner is empty.
-	Projects bool
-	Tasks    []string // empty means every task of the owners
-	Cursor   string   // cursor name; default derived from Tasks, else from Owner
+	// Projects also watches the tasks of these projects, by name, along
+	// with the owner's AttachedProjects. Both go by the owner of each task
+	// and are read again at every look, so a project attached or registered
+	// after the wait started is watched too. They are ignored when Owner is
+	// empty.
+	Projects []string
+	// Tasks are watched whoever owns them; empty means every task of the
+	// owners.
+	Tasks  []string
+	Cursor string // cursor name; default derived from Tasks, else from Owner
 	// Holder names this wait in the cursor lock, so a refused wait can say
 	// who holds it; default "wait".
 	Holder  string
@@ -76,6 +79,9 @@ type Options struct {
 	// FlushOnTimeout delivers waiting quiet news when the timeout passes,
 	// instead of leaving it for the next wait.
 	FlushOnTimeout bool
+	// since holds when each project hrk main --project attached was
+	// attached; its news from before then belongs to other sessions.
+	since map[string]time.Time
 }
 
 func (o Options) cursor() string {
@@ -338,13 +344,14 @@ func next(ctx context.Context, w *fsnotify.Watcher, scan, timeout <-chan time.Ti
 }
 
 func readNews(s *state.Store, cursor int64, o Options) ([]state.Event, int64, error) {
+	o = o.attach(s)
 	events, next, err := s.ReadEventsSince(cursor)
 	if err != nil {
 		return nil, cursor, err
 	}
 	var news []state.Event
 	for _, ev := range events {
-		if IsNews(ev.Type) && mine(ev.Owner, ev.Task, o) {
+		if IsNews(ev.Type) && mine(ev.Owner, ev.Task, o) && !beforeAttach(ev, o) {
 			news = append(news, ev)
 		}
 	}
@@ -352,10 +359,53 @@ func readNews(s *state.Store, cursor int64, o Options) ([]state.Event, int64, er
 }
 
 func mine(owner, id string, o Options) bool {
-	if o.Owner != "" && owner != o.Owner && (!o.Projects || !task.IsProjectOwner(owner)) {
-		return false
+	if len(o.Tasks) > 0 {
+		return slices.Contains(o.Tasks, id)
 	}
-	return len(o.Tasks) == 0 || slices.Contains(o.Tasks, id)
+	return o.Owner == "" || owner == o.Owner ||
+		slices.ContainsFunc(o.Projects, func(name string) bool { return task.ProjectOwner(name) == owner })
+}
+
+// beforeAttach reports whether ev is news of a project attached to the main
+// session only after ev was written.
+// ponytail: compares event times with the attach time, both from this
+// machine's clock; an event log offset per project if the clock ever steps.
+func beforeAttach(ev state.Event, o Options) bool {
+	for name, at := range o.since {
+		if task.ProjectOwner(name) == ev.Owner {
+			return ev.TS.Before(at)
+		}
+	}
+	return false
+}
+
+// AttachedProjects names the projects whose news reaches the main session
+// of owner besides its own: the registered project whose repository holds
+// owner, and those hrk main --project attached to it. A registry that
+// cannot be read leaves only the attached ones.
+func AttachedProjects(s *state.Store, owner string) []string {
+	return Options{Owner: owner}.attach(s).Projects
+}
+
+// attach adds the owner's attached projects to Projects. Those only hrk
+// main --project attached are watched from when they were attached.
+func (o Options) attach(s *state.Store) Options {
+	if o.Owner == "" {
+		return o
+	}
+	names := slices.Clone(o.Projects)
+	if p, ok, err := s.ProjectFor(o.Owner); err == nil && ok && !slices.Contains(names, p.Name) {
+		names = append(names, p.Name)
+	}
+	o.since = map[string]time.Time{}
+	for _, p := range s.MainProjectsSince(o.Owner) {
+		if !slices.Contains(names, p.Name) {
+			names = append(names, p.Name)
+			o.since[p.Name] = p.Since
+		}
+	}
+	o.Projects = names
+	return o
 }
 
 // owners lists Owner and the owners of the watched tasks, each once. An
@@ -374,6 +424,7 @@ func (o Options) owners(tasks []*task.Task) []string {
 }
 
 func ownTasks(s *state.Store, o Options) ([]*task.Task, error) {
+	o = o.attach(s)
 	all, err := s.List()
 	if err != nil {
 		return nil, err

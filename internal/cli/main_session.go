@@ -35,7 +35,8 @@ const telegramChannel = "plugin:" + telegramPlugin
 const mainSettings = `{"enabledPlugins":{"` + telegramPlugin + `":true}}`
 
 func newMainCommand() *cobra.Command {
-	var run bool
+	var run, noProjects bool
+	var projects []string
 	cmd := &cobra.Command{
 		Use:   "main",
 		Short: "Print, or run, the command that starts the main session with Telegram",
@@ -43,9 +44,17 @@ func newMainCommand() *cobra.Command {
 			"Telegram channel and the main-agent skill in its system prompt. With --exec it " +
 			"runs it and passes the kit's bot token to the Telegram plugin. The plugin is " +
 			"enabled for this session only, so no other Claude session polls the bot. Run " +
-			"only one such session per bot: it answers tasks of every repository.",
+			"only one such session per bot: it answers tasks of every repository. The " +
+			"session gets the news of its folder's tasks, of the project whose repository " +
+			"holds the folder, and of each project --project attaches. The attached " +
+			"projects are kept for the folder, so its auto re-arm hook, hrk wait and a later " +
+			"hrk main keep them; --project again replaces them, and --no-projects clears " +
+			"them. main prints the attached projects whenever they change or there are any.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := attachProjects(cmd, projects, noProjects); err != nil {
+				return err
+			}
 			argv := []string{"claude", "--settings", mainSettings, "--channels", telegramChannel}
 			targets, err := claudeConfigs(nil)
 			if err != nil {
@@ -81,7 +90,38 @@ func newMainCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&run, "exec", false, "start the main session now, with the bot token from the kit's config")
+	cmd.Flags().StringArrayVar(&projects, "project", nil, "also get this project's news, by name or by a path inside its repository (repeatable); replaces the attached projects")
+	cmd.Flags().BoolVar(&noProjects, "no-projects", false, "clear the attached projects")
+	cmd.MarkFlagsMutuallyExclusive("project", "no-projects")
 	return cmd
+}
+
+// attachProjects replaces the projects attached to the current folder's main
+// session with projects, or clears them with none, and prints the attached
+// ones whenever they changed or there are any.
+func attachProjects(cmd *cobra.Command, projects []string, none bool) error {
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	owner := currentOwner(cmd)
+	names := s.MainProjects(owner)
+	if none || len(projects) > 0 {
+		if names, err = resolveProjects(s, projects); err != nil {
+			return err
+		}
+		if err := s.SetMainProjects(owner, names); err != nil {
+			return err
+		}
+	} else if len(names) == 0 {
+		return nil
+	}
+	list := "none"
+	if len(names) > 0 {
+		list = strings.Join(names, ", ")
+	}
+	_, err = fmt.Fprintf(cmd.ErrOrStderr(), "attached projects: %s (hrk main --project replaces them, --no-projects clears them)\n", list)
+	return err
 }
 
 // withEnv sets key in env, dropping earlier entries: exec does not dedupe,
@@ -255,20 +295,24 @@ func whileAlive(ctx context.Context, pid int) context.Context {
 	return ctx
 }
 
-// autoarm waits for the news of the owner and of every project, re-arming
-// across wait's own timeout. It returns install.NewsExit after printing news
-// for Claude, and 0 when there is nothing to report. Projects go by the owner
-// of each task, never by the registry, so a project started after the hook
-// armed is watched, and a registry that cannot be read changes nothing.
+// autoarm waits for the news of the owner and of its wait.AttachedProjects,
+// re-arming across wait's own timeout. It returns install.NewsExit after
+// printing news for Claude, and 0 when there is nothing to report. wait
+// reads the attached projects again as it watches, so a project attached
+// after the hook armed is watched, and a registry that cannot be read leaves
+// the attached ones.
 func autoarm(ctx context.Context, r *runner.Runner, owner string, stderr io.Writer) int {
-	watched := func(t *task.Task) bool { return t.Owner == owner || task.IsProjectOwner(t.Owner) }
+	attached := wait.AttachedProjects(r.Store, owner)
+	watched := func(t *task.Task) bool {
+		return t.Owner == owner || slices.ContainsFunc(attached, func(name string) bool { return task.ProjectOwner(name) == t.Owner })
+	}
 	// A folder that never spawned a task, with no project task either, has
 	// no news, so skip wait and its cursor file.
 	tasks, err := r.Store.List()
 	if err != nil || !slices.ContainsFunc(tasks, watched) {
 		return 0
 	}
-	opts := wait.Options{Owner: owner, Projects: true, Holder: autoarmHolder}
+	opts := wait.Options{Owner: owner, Holder: autoarmHolder}
 	// Before the lock, so a turn end whose hook finds another wait holding
 	// it still postpones the flush of quiet news.
 	_ = wait.MarkActive(r.Store, opts)

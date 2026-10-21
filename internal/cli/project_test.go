@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -83,7 +85,8 @@ func TestProjectGuard(t *testing.T) {
 }
 
 func TestProjectRegisterAndForget(t *testing.T) {
-	t.Setenv("HRK_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	stateDir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", stateDir)
 	t.Setenv("HRK_TASK", "")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -95,8 +98,18 @@ func TestProjectRegisterAndForget(t *testing.T) {
 		t.Fatalf("git init: %v %s", err, out)
 	}
 	out, err := runCLI("project", "register", dir, "--name", "demo-app")
-	if err != nil || out != "registered demo-app at "+dir+" (unknown, standard track); its runners report to project:demo-app\n" {
+	if err != nil || out != "registered demo-app at "+dir+" (unknown, standard track); its runners report to project:demo-app\n"+
+		"to get its news in this session, run hrk main --project demo-app\n" {
 		t.Fatalf("register: %q %v", out, err)
+	}
+	// Registering attaches nothing; the line above says how.
+	s, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, _ := os.Getwd()
+	if got := s.MainProjects(runner.CallerOwner(context.Background(), cwd)); len(got) != 0 {
+		t.Fatalf("attached = %q", got)
 	}
 	if _, err := runCLI("project", "register", dir, "--name", "again"); err == nil {
 		t.Fatal("registered the same folder twice")
@@ -146,6 +159,7 @@ func TestNewProjectFromStdin(t *testing.T) {
 		"remote: origin git@example.com:team/demo-app.git\n",
 		"workspace: not created: ",
 		"brief: original kept untracked at " + filepath.Join(path, project.BriefDir, project.IdeaFile) + "\n",
+		"to get its news in this session, run hrk main --project demo-app\n",
 		"next: hrk project status demo-app\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -169,23 +183,127 @@ func TestAutoarmWakesForProjectNews(t *testing.T) {
 	if err := r.Store.CommitProject("demo-app"); err != nil {
 		t.Fatal(err)
 	}
-	tk := &task.Task{
-		Kind: "fix", Agent: "claude", Prompt: "x", Title: "write spec", Owner: task.ProjectOwner("demo-app"),
-		Project: "demo-app", Gate: task.GateAuto, Status: task.Running,
+	newTask := func(pane string) *task.Task {
+		tk := &task.Task{
+			Kind: "fix", Agent: "claude", Prompt: "x", Title: "write spec", Owner: task.ProjectOwner("demo-app"),
+			Project: "demo-app", Gate: task.GateAuto, Status: task.Running,
+		}
+		tk.Herdr.PaneID = pane
+		if err := r.Store.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+		return tk
 	}
-	tk.Herdr.PaneID = "w1:p1"
-	if err := r.Store.Create(tk); err != nil {
+	var stderr strings.Builder
+	// A main session in another folder, with nothing attached, has none of
+	// the project's news: with no task of its own the hook leaves at once,
+	// and with one running it waits and is not woken.
+	newTask("w1:p1")
+	// Cancelled after a while, so a hook that waits after all fails instead
+	// of hanging; a deadline would read as wait's timeout and re-arm.
+	quick, cancelQuick := context.WithCancel(context.Background())
+	defer time.AfterFunc(2*time.Second, cancelQuick).Stop()
+	if code := autoarm(quick, r, "/main", &stderr); code != 0 || stderr.Len() != 0 || quick.Err() != nil {
+		t.Fatalf("unattached folder: code %d, %q", code, stderr.String())
+	}
+	mainTask := &task.Task{Kind: "fix", Agent: "claude", Prompt: "x", Title: "fix login", Owner: "/main", Gate: task.GateAuto, Status: task.Running}
+	mainTask.Herdr.PaneID = "w1:p0"
+	if err := r.Store.Create(mainTask); err != nil {
 		t.Fatal(err)
 	}
+	unattached := newTask("w1:p3")
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		_, _ = r.Report(tk.ID, runner.ReportOptions{Status: task.Done, Summary: "Spec written"})
+		_, _ = r.Report(unattached.ID, runner.ReportOptions{Status: task.Done, Summary: "Spec written"})
+		time.Sleep(300 * time.Millisecond)
+		cancel()
 	}()
-	var stderr strings.Builder
-	// The main session works in another folder that never spawned a task.
-	if code := autoarm(context.Background(), r, "/main", &stderr); code != install.NewsExit ||
-		!strings.Contains(stderr.String(), tk.ID+" done · write spec") {
-		t.Fatalf("code %d, %q", code, stderr.String())
+	if code := autoarm(ctx, r, "/main", &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("unattached folder with a running task: code %d, %q", code, stderr.String())
+	}
+	// One in the project's repository has it, and so does one the project
+	// is attached to.
+	if err := r.Store.SetMainProjects("/main", []string{"demo-app"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []string{filepath.Join(repo, "sub"), "/main"} {
+		tk := newTask("w1:p2")
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			_, _ = r.Report(tk.ID, runner.ReportOptions{Status: task.Done, Summary: "Spec written"})
+		}()
+		stderr.Reset()
+		if code := autoarm(context.Background(), r, owner, &stderr); code != install.NewsExit ||
+			!strings.Contains(stderr.String(), tk.ID+" done · write spec") {
+			t.Fatalf("%s: code %d, %q", owner, code, stderr.String())
+		}
+	}
+}
+
+func TestMainAttachesProjects(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", stateDir)
+	t.Setenv("HRK_TASK", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	kit, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(kit)
+	s, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"demo-app": repo, "other-app": filepath.Join(kit, "other")} {
+		if _, err := s.ReserveProject(name, path); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CommitProject(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := runCLI("main"); err != nil || strings.Contains(out, "attached projects") {
+		t.Fatalf("nothing attached: %q %v", out, err)
+	}
+	if out, err := runCLI("main", "--project", "other-app"); err != nil || !strings.Contains(out, "attached projects: other-app (") {
+		t.Fatalf("attach: %q %v", out, err)
+	}
+	// By path, replacing what an earlier hrk main attached; a later hrk main
+	// without --project keeps it.
+	if _, err := runCLI("main", "--project", filepath.Join(repo, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runCLI("main"); err != nil || !strings.Contains(out, "attached projects: demo-app (") {
+		t.Fatalf("resume: %q %v", out, err)
+	}
+	if got := s.MainProjects(kit); !slices.Equal(got, []string{"demo-app"}) {
+		t.Fatalf("attached = %q", got)
+	}
+	for _, v := range []string{"nope", t.TempDir()} {
+		_, err := runCLI("main", "--project", v)
+		if err == nil || !strings.Contains(err.Error(), "unknown project") ||
+			!strings.Contains(err.Error(), "demo-app") || !strings.Contains(err.Error(), repo) || !strings.Contains(err.Error(), "other-app") {
+			t.Fatalf("%s: %v", v, err)
+		}
+	}
+	if _, err := runCLI("wait", "--project", "nope", "--timeout", "1ms"); err == nil || !strings.Contains(err.Error(), repo) {
+		t.Fatalf("wait: %v", err)
+	}
+	if got := s.MainProjects(kit); !slices.Equal(got, []string{"demo-app"}) {
+		t.Fatalf("a refused --project changed the attached projects: %q", got)
+	}
+	if out, err := runCLI("main", "--no-projects"); err != nil || !strings.Contains(out, "attached projects: none (") || len(s.MainProjects(kit)) != 0 {
+		t.Fatalf("clear: %q %v %q", out, err, s.MainProjects(kit))
+	}
+	if _, err := runCLI("main", "--no-projects", "--project", "demo-app"); err == nil {
+		t.Fatal("--no-projects with --project was accepted")
 	}
 }
 
@@ -207,7 +325,8 @@ func TestAutoarmWakesForAProjectStartedAfterIt(t *testing.T) {
 		ch <- armed{code, stderr.String()}
 	}()
 	time.Sleep(100 * time.Millisecond)
-	// new registers a project while the hook waits; its runner reports.
+	// new registers a project and attaches it while the hook waits; its
+	// runner reports.
 	repo, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -216,6 +335,9 @@ func TestAutoarmWakesForAProjectStartedAfterIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := r.Store.CommitProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.SetMainProjects("/main", []string{"demo-app"}); err != nil {
 		t.Fatal(err)
 	}
 	tk := &task.Task{
@@ -242,6 +364,9 @@ func TestAutoarmWakesForAProjectStartedAfterIt(t *testing.T) {
 func TestBrokenRegistryKeepsOtherCommandsWorking(t *testing.T) {
 	r := testRunner(t)
 	if err := os.WriteFile(filepath.Join(r.Store.Dir(), "projects.json"), []byte(`{"schemaVersion": 99, "projects": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.SetMainProjects("/main", []string{"demo-app"}); err != nil {
 		t.Fatal(err)
 	}
 	tk := &task.Task{
