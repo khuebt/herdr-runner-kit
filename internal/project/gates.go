@@ -469,7 +469,7 @@ func Decide(ctx context.Context, s *state.Store, name string, o DecideOptions) (
 				if err != nil {
 					return fmt.Errorf("%s: %w", RoadmapProposalPath, err)
 				}
-				d.Milestones, d.Dependencies = applyRoadmap(rec, b)
+				d.Milestones, d.Dependencies = applyRoadmap(rec, b, "")
 			}
 			rec.Reapproval = Reapproval{}
 			gate.Waived = false
@@ -610,11 +610,12 @@ func missing(ctx context.Context, root, rel string) (bool, error) {
 
 // applyRoadmap replaces the record's milestones with the block's, keeping
 // what the kit recorded about each one and the scope of the done and the
-// running milestones, and adds or updates dependencies by name, ignoring
+// running milestones, except closing, the milestone whose done imports the
+// block, which takes its title, date and features from it; and it adds or updates dependencies by name, ignoring
 // case. An update sets only the fields the block gives, so an entry added
 // by hand keeps its owner and secret location. It returns how many of each
 // the block held.
-func applyRoadmap(rec *Record, b Block) (milestones, dependencies int) {
+func applyRoadmap(rec *Record, b Block, closing string) (milestones, dependencies int) {
 	// The bare scaffold milestone, started before there was a roadmap,
 	// takes its title, date and features from the first roadmap.
 	bare := !HasRoadmap(*rec)
@@ -625,7 +626,7 @@ func applyRoadmap(rec *Record, b Block) (milestones, dependencies int) {
 	next := make([]Milestone, 0, len(b.Milestones))
 	for _, bm := range b.Milestones {
 		m := old[bm.ID]
-		if bare || (m.Status != MilestoneDone && m.Status != MilestoneInProgress) {
+		if bare || bm.ID == closing || (m.Status != MilestoneDone && m.Status != MilestoneInProgress) {
 			m.ID, m.Title, m.Features = bm.ID, bm.Title, bm.Features
 			m.Planned = time.Time{}
 			if bm.Planned != "" {

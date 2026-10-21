@@ -12,7 +12,7 @@ Node {{.Node}} of {{.Milestone}} for project {{.Project}}, as planned in {{.Plan
 
 1. Run {{skill "ak:cook"}} "node {{.Node}} of {{.PlanPath}}: build only that section, with its tests" --auto --skip-journal. Do not commit yet.
 2. Run {{skill "ak:test"}} "node {{.Node}} of {{.Milestone}}" and fix what fails.
-3. Commit the node in one commit ("feat({{.Milestone}}): {{.Node}} <short title>"). Then run {{skill "ak:code-review"}} <the full hash of that commit>, fix every finding that holds, run the tests again and commit the fixes.
+3. Commit the node in one commit, with a Conventional Commits subject that follows the repository's commit rules and names no milestone or node id. Then run {{skill "ak:code-review"}} <the full hash of that commit>, fix every finding that holds, run the tests again and commit the fixes.
 4. Update the handbook file that owns what you changed, such as handbook/foundation/architecture.md for a new interface, and commit it.
 5. A dependency that is not ready, listed at the end of your rules, goes behind an adapter with a fake, so the node works and its tests pass; say so in the summary.
 

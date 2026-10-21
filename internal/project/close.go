@@ -283,7 +283,7 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 			if err != nil {
 				return fmt.Errorf("%s: %w", RoadmapUpdatePath(id), err)
 			}
-			d.Roadmap, _ = applyRoadmap(rec, b)
+			d.Roadmap, _ = applyRoadmap(rec, b, id)
 			decision.Text += "; roadmap updated from " + RoadmapUpdatePath(id)
 		}
 		j, err := findMilestone(*rec, id)
@@ -379,7 +379,8 @@ var commitID = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
 // findMerge returns the commit that shows the release of milestone id on
 // the local default branch, and the blob id of the release notes it holds:
 // the tip of its release branch, or merged, a commit given for a squash or
-// rebase merge. The notes must be the release branch's, when its tip is
+// rebase merge, or, when the branch is gone, the newest commit of the
+// default branch that changed the release notes. The notes must be the release branch's, when its tip is
 // still found locally or on origin, and none of the earlier releases of
 // the milestone, which released lists, so a release merged before a
 // reopen never passes for a new one. A release found only on origin's
@@ -420,13 +421,31 @@ func findMerge(ctx context.Context, root, id, branch, def, merged string, releas
 			return "", "", fmt.Errorf("commit %s holds other release notes than %s, so it is not the merge of %s", merged, branch, branch)
 		}
 		commit, source = c, "commit "+merged
-	} else {
-		if tip == "" {
-			return "", "", fmt.Errorf("branch %s is gone from %s and origin; pass the commit on %s that holds it with --merged-commit <sha>", branch, root, def)
-		}
+	} else if tip != "" {
 		commit = tip
 		if notes, err = git(ctx, root, "rev-parse", "--verify", "--quiet", tip+":"+path); err != nil {
 			return "", "", fmt.Errorf("%s holds no %s; prepare a new release with hrk project milestone close %s", branch, path, id)
+		}
+	} else {
+		// The release branch was cleaned up: the newest commit of the
+		// default branch, local then origin's, that changed the notes.
+		for _, ref := range []string{"refs/heads/" + def, "refs/remotes/origin/" + def} {
+			c, err := git(ctx, root, "log", "-1", "--format=%H", ref, "--", path)
+			if err != nil || c == "" {
+				continue
+			}
+			n, err := git(ctx, root, "rev-parse", "--verify", "--quiet", c+":"+path)
+			if err != nil {
+				continue
+			}
+			commit, notes, source = c, n, "commit "+c
+			if !slices.Contains(released, n) {
+				break
+			}
+		}
+		if commit == "" {
+			return "", "", fmt.Errorf("branch %s is gone from %s and origin, and %s holds no %s; pass the commit on %s that holds it with --merged-commit <sha>",
+				branch, root, def, path, def)
 		}
 	}
 	if slices.Contains(released, notes) {

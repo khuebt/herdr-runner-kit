@@ -170,3 +170,23 @@ func TestBlockKeepsTheRunningMilestone(t *testing.T) {
 		t.Errorf("a block naming the running milestone: %v", err)
 	}
 }
+
+func TestBlockPlanMayDependOnFeaturesOfDoneMilestones(t *testing.T) {
+	plan := markdown("nodes:\n  - {id: C1, type: feature, title: Catalog, dependsOn: [F1]}\n")
+	rec := NewRecord("demo-app")
+	rec.Milestones = []Milestone{
+		{ID: "M0", Title: "Scaffold", Status: MilestoneInProgress, Features: []Feature{{ID: "F1", Title: "Sign in"}}},
+		{ID: "M1", Title: "Lists", Status: MilestonePlanned},
+	}
+	if _, err := ParseBlock(plan, MilestonePlan, rec); err == nil || !strings.Contains(err.Error(), `C1.dependsOn names "F1", which is not in this block`) {
+		t.Fatalf("a feature of a milestone not done: %v", err)
+	}
+	rec.Milestones[0].Status = MilestoneDone
+	b, err := ParseBlock(plan, MilestonePlan, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Nodes[0].DependsOn) != 0 {
+		t.Errorf("C1 still waits on %v", b.Nodes[0].DependsOn)
+	}
+}

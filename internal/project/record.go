@@ -324,10 +324,35 @@ func Load(s *state.Store, name string) (Record, error) {
 			rec.clipped++
 		}
 	}
-	if rec.clipped > 0 {
+	if rec.clipped > 0 || healMoved(rec.Milestones) > 0 {
 		rec.Pending++
 	}
 	return rec, nil
+}
+
+// healMoved drops from each done milestone the features that a later
+// milestone not done lists too: a roadmap update moved them there, and
+// records written before done took the closing milestone's features from
+// its update kept them in both. It returns how many it dropped.
+func healMoved(ms []Milestone) int {
+	dropped := 0
+	for i := range ms {
+		if ms[i].Status != MilestoneDone {
+			continue
+		}
+		later := map[string]bool{}
+		for _, m := range ms[i+1:] {
+			if m.Status != MilestoneDone {
+				for _, f := range m.Features {
+					later[f.ID] = true
+				}
+			}
+		}
+		n := len(ms[i].Features)
+		ms[i].Features = slices.DeleteFunc(ms[i].Features, func(f Feature) bool { return later[f.ID] })
+		dropped += n - len(ms[i].Features)
+	}
+	return dropped
 }
 
 // Save writes the kit's record of a project, replacing any earlier one.

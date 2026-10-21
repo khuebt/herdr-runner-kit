@@ -214,6 +214,126 @@ func TestDoneAfterASquashMerge(t *testing.T) {
 	}
 }
 
+func TestDoneAfterTheReleaseBranchIsDeleted(t *testing.T) {
+	s, p, tasks := closingProject(t, "")
+	run(t, p.Path, "merge", "-q", "--squash", "release/M0")
+	run(t, p.Path, "commit", "-q", "-m", "M0 (#1)")
+	merged := run(t, p.Path, "rev-parse", "HEAD")
+	writeFile(t, p.Path, "later.txt", "later\n")
+	run(t, p.Path, "add", "later.txt")
+	run(t, p.Path, "commit", "-q", "-m", "later work")
+	run(t, p.Path, "branch", "-D", "release/M0")
+	d, err := finish(s, p, tasks, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Merged != merged || !tagExists(t, p.Path, "v0.0.0") {
+		t.Errorf("done = %+v, want merged %s", d, merged)
+	}
+}
+
+// releaseMilestone commits the release notes and roadmap update of
+// milestone id on release/<id> from main and merges it into main.
+func releaseMilestone(t *testing.T, dir, id, update string) {
+	t.Helper()
+	run(t, dir, "checkout", "-q", "-b", ReleaseBranch(id), "main")
+	writeFile(t, dir, ReleaseNotesPath(id), "# "+id+" release notes\n")
+	writeFile(t, dir, RoadmapUpdatePath(id), string(markdown(update)))
+	run(t, dir, "add", ReleaseNotesPath(id), RoadmapUpdatePath(id))
+	run(t, dir, "commit", "-q", "-m", "docs(release): "+id+" release notes")
+	run(t, dir, "checkout", "-q", "main")
+	run(t, dir, "merge", "-q", "--no-ff", "--no-edit", ReleaseBranch(id))
+}
+
+// movedUpdate is a roadmap update in which M0 delivered F1 only and F2 to
+// F4 moved to M1.
+const movedUpdate = `milestones:
+  - id: M0
+    title: Scaffold
+    planned: 2026-11-01
+    features:
+      - {id: F1, title: Sign in}
+  - id: M1
+    title: Lists
+    planned: 2026-11-15
+    features:
+      - {id: F2, title: Add a list}
+      - {id: F3, title: Share a list}
+      - {id: F4, title: Export a list}
+`
+
+var m0Features = []Feature{{ID: "F1", Title: "Sign in"}, {ID: "F2", Title: "Add a list"}, {ID: "F3", Title: "Share a list"}, {ID: "F4", Title: "Export a list"}}
+
+// finishM1 starts M1 by hand, releases it with movedUpdate and runs done.
+func finishM1(t *testing.T, s *state.Store, p state.Project, tasks []*task.Task) {
+	t.Helper()
+	if _, err := Update(s, "demo-app", func(r *Record) error {
+		r.Milestones[1].Status = MilestoneInProgress
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created := true
+	tasks = append(tasks, &task.Task{
+		ID: "t3", Project: "demo-app", Stage: "M1/close", Status: task.Done,
+		Worktree: &task.Worktree{Branch: "release/M1", BranchCreated: &created},
+	})
+	run(t, p.Path, "add", "-A")
+	run(t, p.Path, "commit", "-q", "--allow-empty", "-m", "docs(project): M1 started")
+	releaseMilestone(t, p.Path, "M1", movedUpdate)
+	if _, err := FinishMilestone(context.Background(), s, p, "M1", tasks, FinishOptions{Now: finishedAt}); err != nil {
+		t.Fatal(err)
+	}
+	rec := load(t, s)
+	if rec.Milestones[1].Status != MilestoneDone || !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) {
+		t.Errorf("after done M1: %+v", rec.Milestones)
+	}
+}
+
+func TestDoneTakesTheClosingMilestonesFeaturesFromItsUpdate(t *testing.T) {
+	s, p, tasks := closingProject(t, "")
+	if _, err := Update(s, "demo-app", func(r *Record) error {
+		r.Milestones[0].Features = m0Features
+		r.Milestones[1].Features = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run(t, p.Path, "branch", "-D", "release/M0")
+	releaseMilestone(t, p.Path, "M0", movedUpdate)
+	if _, err := finish(s, p, tasks, ""); err != nil {
+		t.Fatal(err)
+	}
+	rec := load(t, s)
+	if !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) || !sameFeatures(rec.Milestones[1].Features, m0Features[1:]) {
+		t.Fatalf("after done M0: %+v", rec.Milestones)
+	}
+	finishM1(t, s, p, tasks)
+}
+
+func TestDoneHealsADoneMilestoneThatKeptMovedFeatures(t *testing.T) {
+	s, p, tasks := closingProject(t, "")
+	run(t, p.Path, "merge", "-q", "--no-ff", "--no-edit", "release/M0")
+	if _, err := finish(s, p, tasks, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The state an older kit left: M0 done with every feature, M1 holding
+	// the moved ones too.
+	old, err := Update(s, "demo-app", func(r *Record) error {
+		r.Milestones[0].Features = m0Features
+		r.Milestones[1].Features = m0Features[1:]
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := load(t, s)
+	if !sameFeatures(rec.Milestones[0].Features, m0Features[:1]) || rec.Pending != old.Pending+1 {
+		t.Fatalf("healed = %+v pending %d", rec.Milestones[0], rec.Pending)
+	}
+	finishM1(t, s, p, tasks)
+}
+
 // withOrigin adds a bare origin holding main and the release branch, and
 // returns a second clone of it.
 func withOrigin(t *testing.T, dir string) (origin, other string) {
@@ -419,6 +539,9 @@ func TestDoneAfterReopenNeedsTheNewRelease(t *testing.T) {
 	oldMerge := run(t, p.Path, "rev-parse", "HEAD")
 	if _, err := finish(s, p, tasks, oldMerge); err == nil || !strings.Contains(err.Error(), "merged before it was reopened") {
 		t.Fatalf("the old merge, new branch gone: %v", err)
+	}
+	if _, err := finish(s, p, tasks, ""); err == nil || !strings.Contains(err.Error(), "merged before it was reopened") {
+		t.Fatalf("new branch gone, the old notes found on main: %v", err)
 	}
 
 	run(t, p.Path, "checkout", "-q", "-b", "release/M0-r1", "main")

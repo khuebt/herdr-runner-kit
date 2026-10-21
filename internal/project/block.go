@@ -158,9 +158,10 @@ func closes(line, fence string) bool {
 
 // ParseBlock reads the first yaml block of a markdown file for consumer c.
 // Decoding is strict, every text field is flattened to one short line,
-// sections c does not accept are refused, and the block is checked against
-// rec, whose done milestones it may not change and whose done and running
-// milestones it may not remove.
+// sections c does not accept are refused, nodes may depend on features of
+// done milestones, and the block is checked against rec, whose done
+// milestones it may not change and whose done and running milestones it
+// may not remove.
 // Errors name the field at fault.
 func ParseBlock(markdown []byte, c Consumer, rec Record) (Block, error) {
 	raw, err := FindBlock(markdown)
@@ -177,6 +178,7 @@ func ParseBlock(markdown []byte, c Consumer, rec Record) (Block, error) {
 		return Block{}, fmt.Errorf("%s: parse the yaml block: %w", c.Name, err)
 	}
 	b.flatten()
+	b.dropDoneDeps(rec)
 	present := map[string]bool{
 		SectionMilestones: len(b.Milestones) > 0, SectionDependencies: len(b.Dependencies) > 0,
 		SectionNodes: len(b.Nodes) > 0, SectionOpenQuestions: len(b.OpenQuestions) > 0, SectionBacklog: len(b.Backlog) > 0,
@@ -227,6 +229,26 @@ func (b *Block) flatten() {
 	}
 	for i := range b.Backlog {
 		flat(&b.Backlog[i].ID, &b.Backlog[i].To)
+	}
+}
+
+// dropDoneDeps drops from the nodes' dependencies the features of rec's
+// done milestones, which are merged already, so a node waits only for
+// nodes of its block. An id that names a node of the block stays.
+func (b *Block) dropDoneDeps(rec Record) {
+	done := map[string]bool{}
+	for _, m := range rec.Milestones {
+		if m.Status == MilestoneDone {
+			for _, f := range m.Features {
+				done[f.ID] = true
+			}
+		}
+	}
+	for _, n := range b.Nodes {
+		delete(done, n.ID)
+	}
+	for i := range b.Nodes {
+		b.Nodes[i].DependsOn = slices.DeleteFunc(b.Nodes[i].DependsOn, func(d string) bool { return done[d] })
 	}
 }
 
