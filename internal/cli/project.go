@@ -21,6 +21,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
+	"github.com/khuebt/herdr-runner-kit/internal/wait"
 )
 
 func newProjectCommand() *cobra.Command {
@@ -29,8 +30,7 @@ func newProjectCommand() *cobra.Command {
 		Short: "Register and manage the projects the kit drives",
 		Long: "A project is a git repository the kit keeps a record for. Its runners " +
 			"report to the owner project:<name>. Their news reaches a main session working " +
-			"inside the project's repository, the one that ran hrk new or project register " +
-			"for it, and one started with hrk main --project <name|path>.",
+			"inside the project's repository, and one started with hrk main --project <name|path>.",
 		Args: cobra.NoArgs,
 	}
 	cmd.AddCommand(newProjectStatusCommand(), newProjectRegisterCommand(), newProjectForgetCommand(),
@@ -87,7 +87,7 @@ func newNewCommand() *cobra.Command {
 				return err
 			}
 			printCreated(cmd, c)
-			return attachToMain(cmd, store, c.Name)
+			return hintAttach(cmd, store, c.Name)
 		},
 	}
 	f := cmd.Flags()
@@ -206,15 +206,14 @@ func resolveProject(s *state.Store, name, cwd string) (state.Project, error) {
 	return state.Project{}, fmt.Errorf("%w: name one of %s", errNoProjectResolved, strings.Join(names, ", "))
 }
 
-// attachToMain attaches the project name to the main session of the current
-// folder, so the news of a project it started or registered reaches it.
-func attachToMain(cmd *cobra.Command, s *state.Store, name string) error {
-	owner := currentOwner(cmd)
-	names := s.MainProjects(owner)
-	if slices.Contains(names, name) {
+// hintAttach tells how to get the news of project name in the main session
+// of the current folder, unless that session already gets it.
+func hintAttach(cmd *cobra.Command, s *state.Store, name string) error {
+	if slices.Contains(wait.AttachedProjects(s, currentOwner(cmd)), name) {
 		return nil
 	}
-	return s.SetMainProjects(owner, append(names, name))
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "to get its news in this session, run hrk main --project %s\n", name)
+	return err
 }
 
 // resolveProjects returns the names of the projects the --project values
@@ -355,11 +354,11 @@ func newProjectRegisterCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := attachToMain(cmd, store, p.Name); err != nil {
-				return err
-			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "registered %s at %s (%s, %s track); its runners report to %s\n",
 				p.Name, p.Path, rec.Type, rec.Track, task.ProjectOwner(p.Name))
+			if err == nil {
+				err = hintAttach(cmd, store, p.Name)
+			}
 			if err == nil && project.ReferenceWithoutPath(rec) {
 				_, err = fmt.Fprintf(cmd.OutOrStdout(), "note: the reference repository %s has no path on this machine; runners see its name only. to give one, run project forget, then register again with --reference PATH\n",
 					project.RedactURL(rec.ReferenceRepo))

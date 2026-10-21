@@ -98,16 +98,17 @@ func TestProjectRegisterAndForget(t *testing.T) {
 		t.Fatalf("git init: %v %s", err, out)
 	}
 	out, err := runCLI("project", "register", dir, "--name", "demo-app")
-	if err != nil || out != "registered demo-app at "+dir+" (unknown, standard track); its runners report to project:demo-app\n" {
+	if err != nil || out != "registered demo-app at "+dir+" (unknown, standard track); its runners report to project:demo-app\n"+
+		"to get its news in this session, run hrk main --project demo-app\n" {
 		t.Fatalf("register: %q %v", out, err)
 	}
-	// The main session that registered it gets its news.
+	// Registering attaches nothing; the line above says how.
 	s, err := state.Open(stateDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cwd, _ := os.Getwd()
-	if got := s.MainProjects(runner.CallerOwner(context.Background(), cwd)); !slices.Equal(got, []string{"demo-app"}) {
+	if got := s.MainProjects(runner.CallerOwner(context.Background(), cwd)); len(got) != 0 {
 		t.Fatalf("attached = %q", got)
 	}
 	if _, err := runCLI("project", "register", dir, "--name", "again"); err == nil {
@@ -158,6 +159,7 @@ func TestNewProjectFromStdin(t *testing.T) {
 		"remote: origin git@example.com:team/demo-app.git\n",
 		"workspace: not created: ",
 		"brief: original kept untracked at " + filepath.Join(path, project.BriefDir, project.IdeaFile) + "\n",
+		"to get its news in this session, run hrk main --project demo-app\n",
 		"next: hrk project status demo-app\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -192,12 +194,29 @@ func TestAutoarmWakesForProjectNews(t *testing.T) {
 		}
 		return tk
 	}
-	newTask("w1:p1")
 	var stderr strings.Builder
 	// A main session in another folder, with nothing attached, has none of
-	// the project's news.
+	// the project's news: with no task of its own the hook leaves at once,
+	// and with one running it waits and is not woken.
+	newTask("w1:p1")
 	if code := autoarm(context.Background(), r, "/main", &stderr); code != 0 || stderr.Len() != 0 {
 		t.Fatalf("unattached folder: code %d, %q", code, stderr.String())
+	}
+	mainTask := &task.Task{Kind: "fix", Agent: "claude", Prompt: "x", Title: "fix login", Owner: "/main", Gate: task.GateAuto, Status: task.Running}
+	mainTask.Herdr.PaneID = "w1:p0"
+	if err := r.Store.Create(mainTask); err != nil {
+		t.Fatal(err)
+	}
+	unattached := newTask("w1:p3")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = r.Report(unattached.ID, runner.ReportOptions{Status: task.Done, Summary: "Spec written"})
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+	if code := autoarm(ctx, r, "/main", &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("unattached folder with a running task: code %d, %q", code, stderr.String())
 	}
 	// One in the project's repository has it, and so does one the project
 	// is attached to.
@@ -246,16 +265,19 @@ func TestMainAttachesProjects(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := runCLI("main", "--project", "other-app"); err != nil {
-		t.Fatal(err)
+	if out, err := runCLI("main"); err != nil || strings.Contains(out, "attached projects") {
+		t.Fatalf("nothing attached: %q %v", out, err)
+	}
+	if out, err := runCLI("main", "--project", "other-app"); err != nil || !strings.Contains(out, "attached projects: other-app (") {
+		t.Fatalf("attach: %q %v", out, err)
 	}
 	// By path, replacing what an earlier hrk main attached; a later hrk main
 	// without --project keeps it.
 	if _, err := runCLI("main", "--project", filepath.Join(repo, "docs")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCLI("main"); err != nil {
-		t.Fatal(err)
+	if out, err := runCLI("main"); err != nil || !strings.Contains(out, "attached projects: demo-app (") {
+		t.Fatalf("resume: %q %v", out, err)
 	}
 	if got := s.MainProjects(kit); !slices.Equal(got, []string{"demo-app"}) {
 		t.Fatalf("attached = %q", got)
@@ -272,6 +294,12 @@ func TestMainAttachesProjects(t *testing.T) {
 	}
 	if got := s.MainProjects(kit); !slices.Equal(got, []string{"demo-app"}) {
 		t.Fatalf("a refused --project changed the attached projects: %q", got)
+	}
+	if out, err := runCLI("main", "--no-projects"); err != nil || !strings.Contains(out, "attached projects: none (") || len(s.MainProjects(kit)) != 0 {
+		t.Fatalf("clear: %q %v %q", out, err, s.MainProjects(kit))
+	}
+	if _, err := runCLI("main", "--no-projects", "--project", "demo-app"); err == nil {
+		t.Fatal("--no-projects with --project was accepted")
 	}
 }
 

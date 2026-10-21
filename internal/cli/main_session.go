@@ -35,7 +35,7 @@ const telegramChannel = "plugin:" + telegramPlugin
 const mainSettings = `{"enabledPlugins":{"` + telegramPlugin + `":true}}`
 
 func newMainCommand() *cobra.Command {
-	var run bool
+	var run, noProjects bool
 	var projects []string
 	cmd := &cobra.Command{
 		Use:   "main",
@@ -48,21 +48,12 @@ func newMainCommand() *cobra.Command {
 			"session gets the news of its folder's tasks, of the project whose repository " +
 			"holds the folder, and of each project --project attaches. The attached " +
 			"projects are kept for the folder, so its auto re-arm hook, hrk wait and a later " +
-			"hrk main keep them; --project again replaces them.",
+			"hrk main keep them; --project again replaces them, and --no-projects clears " +
+			"them. main prints the attached projects whenever they change or there are any.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if len(projects) > 0 {
-				s, err := openStore()
-				if err != nil {
-					return err
-				}
-				names, err := resolveProjects(s, projects)
-				if err != nil {
-					return err
-				}
-				if err := s.SetMainProjects(currentOwner(cmd), names); err != nil {
-					return err
-				}
+			if err := attachProjects(cmd, projects, noProjects); err != nil {
+				return err
 			}
 			argv := []string{"claude", "--settings", mainSettings, "--channels", telegramChannel}
 			targets, err := claudeConfigs(nil)
@@ -99,8 +90,38 @@ func newMainCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&run, "exec", false, "start the main session now, with the bot token from the kit's config")
-	cmd.Flags().StringArrayVar(&projects, "project", nil, "also get this project's news, by name or by a path inside its repository (repeatable)")
+	cmd.Flags().StringArrayVar(&projects, "project", nil, "also get this project's news, by name or by a path inside its repository (repeatable); replaces the attached projects")
+	cmd.Flags().BoolVar(&noProjects, "no-projects", false, "clear the attached projects")
+	cmd.MarkFlagsMutuallyExclusive("project", "no-projects")
 	return cmd
+}
+
+// attachProjects replaces the projects attached to the current folder's main
+// session with projects, or clears them with none, and prints the attached
+// ones whenever they changed or there are any.
+func attachProjects(cmd *cobra.Command, projects []string, none bool) error {
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	owner := currentOwner(cmd)
+	names := s.MainProjects(owner)
+	if none || len(projects) > 0 {
+		if names, err = resolveProjects(s, projects); err != nil {
+			return err
+		}
+		if err := s.SetMainProjects(owner, names); err != nil {
+			return err
+		}
+	} else if len(names) == 0 {
+		return nil
+	}
+	list := "none"
+	if len(names) > 0 {
+		list = strings.Join(names, ", ")
+	}
+	_, err = fmt.Fprintf(cmd.ErrOrStderr(), "attached projects: %s (hrk main --project replaces them, --no-projects clears them)\n", list)
+	return err
 }
 
 // withEnv sets key in env, dropping earlier entries: exec does not dedupe,
