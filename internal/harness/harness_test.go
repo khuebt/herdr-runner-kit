@@ -3,6 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
@@ -719,6 +721,36 @@ func TestPrepareClaudeTrust(t *testing.T) {
 	}
 	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing config was created: %v", err)
+	}
+}
+
+// Runners that start together each prepare trust in the same config file;
+// none may lose another's entry.
+func TestPrepareClaudeTrustConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	writeFile(t, path, `{"projects": {}}`)
+	const n = 16
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := PrepareClaudeTrust(path, "/repo", fmt.Sprintf("/wt/t%d", i))
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	for i := range n {
+		if ok, err := ClaudeTrustPresent(path, fmt.Sprintf("/wt/t%d", i), []string{ClaudeTrustFlag}); err != nil || !ok {
+			t.Errorf("/wt/t%d lost its trust: %v, %v", i, ok, err)
+		}
 	}
 }
 
