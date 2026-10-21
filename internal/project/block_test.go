@@ -1,6 +1,8 @@
 package project
 
 import (
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -128,11 +130,50 @@ func TestBlockKeepsDoneMilestones(t *testing.T) {
 	for _, y := range []string{
 		"milestones:\n  - {id: M0, title: Scaffold v2, planned: 2026-11-01}\n",
 		"milestones:\n  - {id: M0, title: Scaffold, planned: 2026-11-02}\n",
-		"milestones:\n  - {id: M1, title: Next}\n",
+		"milestones:\n  - {id: M0, title: Scaffold, planned: 2026-11-01, features: [{id: F9, title: Extra}]}\n",
 	} {
 		if _, err := ParseBlock(markdown(y), RoadmapUpdate, rec); err == nil || !strings.Contains(err.Error(), "M0 is done") {
 			t.Errorf("%q: err = %v", y, err)
 		}
+	}
+}
+
+func TestBlockMayOmitDoneMilestones(t *testing.T) {
+	rec := NewRecord("demo-app")
+	rec.Milestones = []Milestone{
+		{ID: "M0", Title: "Scaffold", Status: MilestoneDone, Features: []Feature{{ID: "F1", Title: "Sign in"}}},
+		{ID: "M1", Title: "Lists", Status: MilestoneDone, Features: []Feature{{ID: "F2", Title: "Add a list", DependsOn: []string{"F1"}}}},
+		{ID: "M2", Title: "Share", Status: MilestonePlanned, Features: []Feature{{ID: "F3", Title: "Share a list"}}},
+	}
+	b, err := ParseBlock(markdown("milestones:\n  - {id: M2, title: Share v2, features: [{id: F3, title: Share a list, dependsOn: [F2]}]}\n  - {id: M3, title: Export}\n"), RoadmapProposal, rec)
+	if err != nil {
+		t.Fatalf("a block without the done milestones: %v", err)
+	}
+	want := slices.Clone(rec.Milestones[:2])
+	applyRoadmap(&rec, b, "")
+	if len(rec.Milestones) != 4 || !reflect.DeepEqual(rec.Milestones[:2], want) || rec.Milestones[2].Title != "Share v2" || rec.Milestones[3].ID != "M3" {
+		t.Errorf("milestones = %+v", rec.Milestones)
+	}
+	if _, err := ParseBlock(markdown("milestones:\n  - {id: M3, title: Export, features: [{id: F2, title: Again}]}\n"), RoadmapProposal, rec); err == nil ||
+		!strings.Contains(err.Error(), `"F2" is used twice`) {
+		t.Errorf("a feature id of an omitted done milestone reused: %v", err)
+	}
+	// A block that lists one done milestone and leaves out another keeps
+	// them in their recorded order.
+	mixed := rec
+	mixed.Milestones = slices.Clone(rec.Milestones[:3])
+	b, err = ParseBlock(markdown("milestones:\n  - {id: M0, title: Scaffold, features: [{id: F1, title: Sign in}]}\n  - {id: M2, title: Share v3}\n"), RoadmapProposal, mixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyRoadmap(&mixed, b, "")
+	if ids := []string{mixed.Milestones[0].ID, mixed.Milestones[1].ID, mixed.Milestones[2].ID}; len(mixed.Milestones) != 3 || !slices.Equal(ids, []string{"M0", "M1", "M2"}) {
+		t.Errorf("mixed block: milestones = %+v", mixed.Milestones)
+	}
+	rec.Milestones[2].Status = MilestoneInProgress
+	if _, err := ParseBlock(markdown("milestones:\n  - {id: M3, title: Export}\n"), RoadmapUpdate, rec); err == nil ||
+		!strings.Contains(err.Error(), "M2 is in-progress and cannot be removed") {
+		t.Errorf("running milestone omitted: %v", err)
 	}
 }
 
@@ -156,6 +197,19 @@ func TestBlockFlattensTextAndChecksOwners(t *testing.T) {
 		if _, err := ParseBlock(markdown(c.yaml), RoadmapProposal, NewRecord("demo-app")); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%q: err = %v, want %q", c.yaml, err, c.want)
 		}
+	}
+}
+
+func TestBlockMayOmitTheBareScaffoldOnceDone(t *testing.T) {
+	rec := NewRecord("demo-app")
+	rec.Milestones = []Milestone{{ID: "M0", Title: "Scaffold", Status: MilestoneDone}}
+	b, err := ParseBlock(markdown("milestones:\n  - {id: M1, title: Lists}\n"), RoadmapProposal, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyRoadmap(&rec, b, "")
+	if len(rec.Milestones) != 2 || !reflect.DeepEqual(rec.Milestones[0], Milestone{ID: "M0", Title: "Scaffold", Status: MilestoneDone}) || rec.Milestones[1].ID != "M1" {
+		t.Errorf("milestones = %+v", rec.Milestones)
 	}
 }
 

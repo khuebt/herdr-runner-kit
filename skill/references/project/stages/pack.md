@@ -6,12 +6,17 @@ requires: [spec]
 keep: true
 outputs:
   - "{{.ApprovalDir}}/"
+  - "{{if and (not .Graduated) (gt .PackVersion 1)}}{{.Discovery}}/roadmap-proposal.md{{end}}"
 graduated: true
 ---
 {{- if .Graduated}}
 Approval pack v{{.PackVersion}} for project {{.Project}}: what the stakeholders read before they approve the changed scope and timeline. The project graduated: build the pack from the committed {{.Spec}}, handbook/product/roadmap.md, the change requests in {{.ChangesDir}}/ and handbook/product/risks.md, using those that exist; the latest pack in {{.ApprovalDir}}/ shows what was approved before.
 {{- else}}
 Approval pack v{{.PackVersion}} for project {{.Project}}: what the stakeholders read before they approve scope, design and timeline. Build it from the committed {{.Discovery}}/spec.md, {{.Discovery}}/ux/, {{.Discovery}}/design/, {{.Discovery}}/prototype/, {{.Discovery}}/roadmap-proposal.md and handbook/product/risks.md, using those that exist.
+{{- end}}
+{{- if and (not .Graduated) (gt .PackVersion 1)}}
+
+Before you build the pack, bring the yaml block of {{.Discovery}}/roadmap-proposal.md to the scope this pack presents; the kit imports that block when the pack is approved. Leave out done milestones (handbook/product/roadmap.md marks them), or copy them unchanged from there: the kit keeps them as recorded and refuses one that differs. Keep any milestone in progress in it, and give a new feature an id no milestone uses yet. Before you report done, parse the block with a YAML parser and fix what it refuses.
 {{- end}}
 
 1. Run {{skill "ak:frontend-design"}} "one self-contained stakeholder approval pack in {{.ApprovalDir}}/pack-v{{.PackVersion}}/pack.html: inline CSS, images inlined as base64, no scripts or fonts from the network, no external requests; print-friendly A4 pages" with these sections:
@@ -49,4 +54,4 @@ Approval pack v{{.PackVersion}} for project {{.Project}}: what the stakeholders 
 - Keep the pack on this machine: do not upload or host it anywhere. The user shares it.
 {{- end}}
 
-Commit only {{.ApprovalDir}}/pack-v{{.PackVersion}}/ ("docs(approval): pack v{{.PackVersion}}") and report done with pack.html and pack.pdf as --output. Never edit a pack folder that is already committed: when the user requests changes in this session, write the next version in a new pack-v<n> folder, commit it and report again.
+Commit only {{.ApprovalDir}}/pack-v{{.PackVersion}}/{{if and (not .Graduated) (gt .PackVersion 1)}} and {{.Discovery}}/roadmap-proposal.md{{end}} ("docs(approval): pack v{{.PackVersion}}") and report done with pack.html and pack.pdf as --output. Never edit a pack folder that is already committed: when the user requests changes in this session, write the next version in a new pack-v<n> folder, commit it and report again.{{if and (not .Graduated) (eq .PackVersion 1)}} When those changes alter the milestones or their features, do not write the next version here: report done saying what changes, so the next pack run writes it with the roadmap proposal brought to that scope.{{end}}

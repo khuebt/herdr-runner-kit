@@ -372,28 +372,23 @@ func TestProjectGateCommands(t *testing.T) {
 		t.Error("the approved stage's runner is still kept")
 	}
 
-	// A pack whose runner's tab is gone gets the command to revise.
+	// Changes to pack v1 go to a new pack run, which may also update the
+	// roadmap proposal, even while v1's runner is open.
 	pack, err := runStage(t.Context(), r, stageRun{Project: "demo-app", Stage: "pack", Cwd: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	finishStage(t, r, pack.ID)
-	if _, err := r.Store.Update(pack.ID, func(tk *task.Task) error {
-		tk.Herdr.Closed = true
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
 	commitFiles(t, dir, map[string]string{project.PackDir(1) + "/pack.html": "<html></html>\n"})
 	out, err = gateCmd(t, r, "changes", "pack", "Add the timeline.")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "feedback: no open pack runner; start a revision with the same feedback on stdin: hrk project run pack --project demo-app --stdin") {
+	if !strings.Contains(out, "feedback: pack v2 must also update "+project.RoadmapProposalPath+"; start it with the same feedback on stdin: hrk project run pack --project demo-app --stdin") {
 		t.Errorf("changes pack output:\n%s", out)
 	}
 	if len(fake.prompts()) != 1 {
-		t.Errorf("feedback typed into a closed runner: %q", fake.prompts())
+		t.Errorf("pack v1 feedback typed into its runner: %q", fake.prompts())
 	}
 	if n := strings.Count(gitIn(t, dir, "log", "--format=%s"), "docs(project):"); n != 3 {
 		t.Errorf("%d record commits for 3 outcomes", n)

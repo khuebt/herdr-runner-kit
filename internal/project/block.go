@@ -160,8 +160,8 @@ func closes(line, fence string) bool {
 // Decoding is strict, every text field is flattened to one short line,
 // sections c does not accept are refused, nodes may depend on features of
 // done milestones, and the block is checked against rec, whose done
-// milestones it may not change and whose done and running milestones it
-// may not remove.
+// milestones it may leave out but not change and whose running milestone
+// it may not remove.
 // Errors name the field at fault.
 func ParseBlock(markdown []byte, c Consumer, rec Record) (Block, error) {
 	raw, err := FindBlock(markdown)
@@ -272,6 +272,9 @@ func (b Block) check(rec Record) error {
 	for _, m := range b.Milestones {
 		milestones = append(milestones, m.ID)
 	}
+	for _, m := range omittedDone(rec, b) {
+		milestones = append(milestones, m.ID)
+	}
 	names := map[string]bool{}
 	for i, d := range b.Dependencies {
 		field := fmt.Sprintf("dependencies[%d]", i)
@@ -286,7 +289,7 @@ func (b Block) check(rec Record) error {
 			return fmt.Errorf("%s.owner %q: want one of %s", field, d.Owner, strings.Join(DependencyOwners, ", "))
 		}
 		if d.Milestone != "" && !slices.Contains(milestones, d.Milestone) {
-			return fmt.Errorf("%s.milestone %q is not a milestone of this block", field, d.Milestone)
+			return fmt.Errorf("%s.milestone %q is not a milestone of this block or a done one", field, d.Milestone)
 		}
 		if err := checkNoSecrets(map[string]string{
 			field + ".name": d.Name, field + ".workaround": d.Workaround, field + ".secretLocation": d.SecretLocation,
@@ -336,12 +339,20 @@ func (b Block) check(rec Record) error {
 }
 
 // checkMilestones checks ids, dates and feature dependencies, that every
-// done milestone of rec is in the block unchanged, and that the running
-// one is still in it. The bare scaffold milestone, started before there
-// was a roadmap, must be in the block but may change.
+// done milestone of rec the block lists is unchanged, and that the running
+// one is still in it. A done milestone the block leaves out is kept as
+// recorded; its feature ids stay taken and may be depended on, and a
+// dependency of the block may name it. The bare
+// scaffold milestone, started before there was a roadmap, may change until
+// a roadmap is imported; once done it may also be left out, and stays bare.
 func (b Block) checkMilestones(rec Record) error {
 	ids := map[string][]string{}
 	features := map[string][]string{}
+	for _, m := range omittedDone(rec, b) {
+		for _, f := range m.Features {
+			features[f.ID] = f.DependsOn
+		}
+	}
 	var order []string
 	for i, m := range b.Milestones {
 		field := fmt.Sprintf("milestones[%d]", i)
@@ -380,6 +391,9 @@ func (b Block) checkMilestones(rec Record) error {
 			continue
 		}
 		i := slices.IndexFunc(b.Milestones, func(m BlockMilestone) bool { return m.ID == kept.ID })
+		if i < 0 && kept.Status == MilestoneDone {
+			continue
+		}
 		if i < 0 {
 			return fmt.Errorf("milestones: %s is %s and cannot be removed", kept.ID, kept.Status)
 		}
@@ -389,6 +403,21 @@ func (b Block) checkMilestones(rec Record) error {
 		}
 	}
 	return nil
+}
+
+// omittedDone returns the done milestones of rec that b does not list,
+// in roadmap order. A block without milestones omits none.
+func omittedDone(rec Record, b Block) []Milestone {
+	if len(b.Milestones) == 0 {
+		return nil
+	}
+	var out []Milestone
+	for _, m := range rec.Milestones {
+		if m.Status == MilestoneDone && !slices.ContainsFunc(b.Milestones, func(bm BlockMilestone) bool { return bm.ID == m.ID }) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func checkID(field, id string, seen map[string][]string) error {

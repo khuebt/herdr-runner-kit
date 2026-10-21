@@ -876,7 +876,15 @@ func sendFeedback(cmd *cobra.Command, r *runner.Runner, p state.Project, t *task
 		revise = fmt.Sprintf("Write the revision as %s/, commit it and report again; leave committed pack folders unchanged.",
 			project.PackDir(versionOf(d.Version)+1))
 	}
-	if t != nil && t.Herdr.PaneID != "" && !t.Herdr.Closed && t.Status != task.Stopped {
+	// A revision of pack v1 brings the roadmap proposal to the pack's scope,
+	// which only a new pack run may commit, so v1's runner does not get it.
+	first := d.Gate == project.GatePack && versionOf(d.Version) == 1
+	if first {
+		if rec, err := project.Load(r.Store, p.Name); err == nil && rec.Graduated != nil {
+			first = false
+		}
+	}
+	if !first && t != nil && t.Herdr.PaneID != "" && !t.Herdr.Closed && t.Status != task.Stopped {
 		msg := fmt.Sprintf("The user requested changes to %s %s. Feedback:\n\n%s\n\n%s", d.Gate, d.Version, feedback, revise)
 		working, err := r.Send(cmd.Context(), t.ID, msg)
 		if err == nil {
@@ -888,6 +896,11 @@ func sendFeedback(cmd *cobra.Command, r *runner.Runner, p state.Project, t *task
 			return
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "note: could not send the feedback to %s: %v\n", t.ID, err)
+	}
+	if first {
+		fmt.Fprintf(out, "feedback: pack v2 must also update %s; start it with the same feedback on stdin: hrk project run pack --project %s --stdin\n",
+			project.RoadmapProposalPath, p.Name)
+		return
 	}
 	fmt.Fprintf(out, "feedback: no open %s runner; start a revision with the same feedback on stdin: hrk project run %s --project %s --stdin\n",
 		d.Gate, d.Gate, p.Name)

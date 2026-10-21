@@ -378,6 +378,36 @@ func TestTemplatePackConverters(t *testing.T) {
 	}
 }
 
+func TestTemplateLaterPackUpdatesTheRoadmapProposal(t *testing.T) {
+	dir := newRepo(t)
+	s, err := LoadStage("pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := NewRecord("demo-app")
+	proposal := "Write and commit only these paths: " + ApprovalFolder(rec) + "/, " + DiscoveryDir + "/roadmap-proposal.md."
+	for n := 1; n <= 2; n++ {
+		if n == 2 {
+			commitPack(t, dir, 1, "")
+		}
+		got, err := Preamble(task.Claude, rec, dir, "pack")
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := stageData(rec, "")
+		d.PackVersion = n
+		body, err := s.Render(task.Claude, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		later := n > 1
+		if strings.Contains(got, proposal) != later || strings.Contains(body, "bring the yaml block of") != later ||
+			strings.Contains(body, "do not write the next version here") == later {
+			t.Errorf("pack v%d: preamble:\n%s\nprompt:\n%s", n, got, body)
+		}
+	}
+}
+
 func TestTemplateUnknownStage(t *testing.T) {
 	for _, name := range []string{"deploy", "../preamble", ""} {
 		if _, err := LoadStage(name); err == nil {

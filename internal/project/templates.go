@@ -256,7 +256,8 @@ func (s Stage) Render(h task.Harness, d StageData) (string, error) {
 	return text, nil
 }
 
-// RenderOutputs returns the paths the stage may write.
+// RenderOutputs returns the paths the stage may write. An output that
+// renders empty is left out.
 func (s Stage) RenderOutputs(d StageData) ([]string, error) {
 	out := make([]string, 0, len(s.Outputs))
 	for _, o := range s.Outputs {
@@ -264,7 +265,9 @@ func (s Stage) RenderOutputs(d StageData) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		if p != "" {
+			out = append(out, p)
+		}
 	}
 	return out, nil
 }
@@ -346,6 +349,15 @@ func Preamble(h task.Harness, rec Record, root, stage string) (string, error) {
 	name := stage
 	if m, tmpl, ok := milestoneStage(stage); ok {
 		name, d.Milestone, d.MilestoneDir, d.PlanPath = tmpl, m, MilestoneDir(m), MilestonePlanPath(m)
+	}
+	if name == GatePack {
+		// The pack runner writes the version after the committed ones, as
+		// its prompt says.
+		n, err := CommittedPackVersion(context.Background(), root, rec)
+		if err != nil {
+			return "", err
+		}
+		d.PackVersion = n + 1
 	}
 	if s, err := LoadStage(name); err == nil {
 		if d.Outputs, err = s.RenderOutputs(d.StageData); err != nil {
