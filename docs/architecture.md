@@ -94,6 +94,7 @@ Commands live in `internal/cli`, one file per command or group, registered in `r
 
 - Agent screens and hook payloads are captured from live runs and kept under `internal/harness/testdata`. Tests read them as they are; a new agent version gets new captures rather than edited ones.
 - Runner tests use the fake herdr in `internal/runner/runner_test.go`, which records every call and answers from per-command handlers.
+- The lifecycle rules a test may assert with `runner.CheckInvariants` are listed in the [state model](state-model.md).
 - Live checks against real agents use a scratch build (`go build -o <scratch>/hrk ./cmd/hrk`) with `HRK_STATE_DIR` and `XDG_CONFIG_HOME` pointed at scratch folders, so the user's task store and `config.yaml` are never read or written.
 
 ## Developing against a running install
