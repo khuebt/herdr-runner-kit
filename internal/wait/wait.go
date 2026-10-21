@@ -568,7 +568,8 @@ func truncate(s string, n int) string {
 const lostEvery = time.Minute
 
 // backstop watches each live runner's agent and its progress once per
-// wait, fails launches that never finished, and fails runners herdr lost.
+// wait, fails launches that never finished, fails runners herdr lost, and
+// settles the waiting tasks a lost follow-up left behind.
 type backstop struct {
 	r       *runner.Runner
 	watched map[string]bool
@@ -589,6 +590,9 @@ func (b *backstop) scan(ctx context.Context, tasks []*task.Task) {
 			for _, t := range tasks {
 				b.r.CheckLost(ctx, t)
 			}
+			// A follow-up that never ran left the tasks waiting on its
+			// task, or its plan's plan-done, undecided.
+			_ = b.r.SettleWaiting(ctx, runner.SettleWindow)
 		}()
 	}
 	for _, t := range tasks {

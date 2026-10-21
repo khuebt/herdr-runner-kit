@@ -392,3 +392,23 @@ func TestStoppedFinalReviewReportsPlanDone(t *testing.T) {
 	}
 	checkStore(t, r)
 }
+
+func TestLostFollowUpOfTheLastPhaseIsRecoveredBySweep(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	phase, _ := planTask(t, r, repo, srcPhase)
+	// Done, and its follow-up never ran.
+	if _, err := r.Store.Update(phase.ID, func(t *task.Task) error { t.FinishedAt = time.Now(); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SettleWaiting(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if done := planDoneSummaries(t, r); len(done) != 1 {
+		t.Fatalf("plan-done = %q", done)
+	}
+	if err := r.SettleWaiting(context.Background(), 0); err != nil || len(planDoneSummaries(t, r)) != 1 {
+		t.Errorf("a second sweep emitted plan-done again: %v", err)
+	}
+	checkStore(t, r)
+}

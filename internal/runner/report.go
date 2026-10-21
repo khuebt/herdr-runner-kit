@@ -181,11 +181,14 @@ func (r *Runner) report(id string, o ReportOptions, finish int, judged *task.Pen
 	if git != nil {
 		ev.Git = git.Short()
 	}
-	if err := r.record(ev); err != nil {
-		return t, fmt.Errorf("write event: %w", err)
-	}
+	// The status is written, so the follow-up runs even when the log
+	// refused the event.
+	recErr := r.record(ev)
 	if err := r.StartAfter(t.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "hrk: %s: start follow-up: %v\n", t.ID, err)
+	}
+	if recErr != nil {
+		return t, fmt.Errorf("write event: %w", recErr)
 	}
 	return t, nil
 }
@@ -364,6 +367,35 @@ func (r *Runner) ended(t *task.Task) {
 	if err := r.StartAfter(t.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "hrk: %s: start follow-up: %v\n", t.ID, err)
 	}
+}
+
+// SettleWindow is how long the follow-up of a finished task has to settle
+// the tasks that wait for it before the wait backstop's sweep does.
+const SettleWindow = 2 * time.Minute
+
+// SettleWaiting is the wait backstop's sweep for follow-ups that never ran,
+// such as one a crash or a reboot lost. It settles every waiting task that
+// waiting-task-has-a-path finds stuck, and checks the plan of every run that
+// plan-run-finishes finds finished without its plan-done. What finished or
+// was created within window is left to the follow-up or spawn on its way.
+func (r *Runner) SettleWaiting(ctx context.Context, window time.Duration) error {
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	markers, err := r.planMarkers(tasks)
+	if err != nil {
+		return err
+	}
+	c := newCheck(Snapshot{Tasks: tasks, PlanDone: markers, Now: time.Now(), Settle: window})
+	var errs []error
+	for _, v := range waitingTaskHasAPath(c) {
+		errs = append(errs, r.Settle(ctx, v.Task))
+	}
+	for _, v := range planRunFinishes(c) {
+		errs = append(errs, r.planDone(ctx, c.byID[v.Task]))
+	}
+	return errors.Join(errs...)
 }
 
 // startDependents settles every task that waits for parent, which just

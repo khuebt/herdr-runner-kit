@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -622,4 +623,58 @@ func TestLauncherThatWillNotStartFailsWaitingChildren(t *testing.T) {
 		t.Errorf("child = %s (%s)", got.Status, got.Error)
 	}
 	checkStore(t, r)
+}
+
+func TestLostFollowUpIsRecoveredBySweep(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	dir := plainDir(t)
+	var launched []string
+	r.StartLauncher = func(id string) (int, error) { launched = append(launched, id); return 7, nil }
+	ok := running(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+	bad := running(t, r, SpawnOptions{Prompt: "b", Cwd: dir})
+	next, doomed := spawnQueued(t, r, ok.ID), spawnQueued(t, r, bad.ID)
+	launched = nil
+	// StartAfter does nothing here: both follow-ups are lost.
+	if _, err := r.Report(ok.ID, ReportOptions{Status: task.Done, Summary: "did a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(bad.ID, ReportOptions{Status: task.Failed, Summary: "broke"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SettleWaiting(context.Background(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(next); got.Status != task.Queued || len(launched) > 0 {
+		t.Fatalf("the sweep did not wait for the follow-up: %s, launched %v", got.Status, launched)
+	}
+	if err := r.SettleWaiting(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(next); got.Status != task.Starting || !slices.Equal(launched, []string{next}) {
+		t.Errorf("next = %s, launched %v", got.Status, launched)
+	}
+	if got, _ := r.Store.Get(doomed); got.Status != task.Failed || got.Error != "parent "+bad.ID+" failed" {
+		t.Errorf("doomed = %s (%s)", got.Status, got.Error)
+	}
+	checkStore(t, r)
+}
+
+func TestFollowUpStartsWhenTheEventWriteFails(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var follow []string
+	r.StartAfter = func(id string) error { follow = append(follow, id); return nil }
+	tk := running(t, r, SpawnOptions{Prompt: "a", Cwd: plainDir(t)})
+	log := r.Store.EventsPath()
+	if err := os.Remove(log); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(log, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "did a"}); err == nil || !strings.Contains(err.Error(), "write event") {
+		t.Fatalf("report = %v", err)
+	}
+	if !slices.Equal(follow, []string{tk.ID}) {
+		t.Errorf("follow-ups = %v", follow)
+	}
 }

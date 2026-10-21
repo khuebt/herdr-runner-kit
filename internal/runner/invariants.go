@@ -46,7 +46,7 @@ func (r *Runner) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	s := Snapshot{Tasks: tasks, Projects: map[string]project.Record{}, PlanDone: map[string][]string{}, Now: time.Now()}
+	s := Snapshot{Tasks: tasks, Projects: map[string]project.Record{}, Now: time.Now()}
 	projects, err := r.Store.Projects()
 	if err != nil {
 		return Snapshot{}, err
@@ -61,23 +61,32 @@ func (r *Runner) Snapshot() (Snapshot, error) {
 		}
 		s.Projects[p.Name] = rec
 	}
+	if s.PlanDone, err = r.planMarkers(tasks); err != nil {
+		return Snapshot{}, err
+	}
+	return s, nil
+}
+
+// planMarkers maps the plan folder of each plan task to the task ids of the
+// plan-done marker planDone wrote for it, for the plans that have one.
+func (r *Runner) planMarkers(tasks []*task.Task) (map[string][]string, error) {
+	out := map[string][]string{}
 	read := map[string]bool{}
 	for _, t := range tasks {
 		if t.Plan == "" || read[t.Plan] {
 			continue
 		}
 		read[t.Plan] = true
-		// The marker planDone writes.
 		data, err := os.ReadFile(filepath.Join(r.Store.Dir(), "plans", PlanLock(t.Plan)+".done"))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return Snapshot{}, err
+			return nil, err
 		}
-		s.PlanDone[t.Plan] = strings.Split(strings.TrimSpace(string(data)), ",")
+		out[t.Plan] = strings.Split(strings.TrimSpace(string(data)), ",")
 	}
-	return s, nil
+	return out, nil
 }
 
 // CheckInvariants returns every rule of docs/state-model.md that s breaks,
