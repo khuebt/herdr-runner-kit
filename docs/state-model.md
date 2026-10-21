@@ -32,33 +32,53 @@ This page is for contributors. It lists every piece of lifecycle state the kit p
 
 | Site | From → to | Write | Waiting children |
 |---|---|---|---|
-| `Spawn` | new → queued | `Store.Create` | none |
+| `Spawn` | new → queued, with its worktree in the same first write | `Store.CreateWith` | settles the new task once it exists |
+| `Spawn` | new → failed, when the branch is taken | `Store.CreateWith` | none |
 | `Spawn` | queued → held (human gate, no pending parent) | guarded | none |
 | `beginLaunch` | queued, held → starting | guarded | none |
-| `launch` | starting, needs-human → running, once the first prompt is typed | guarded | none |
+| `launch` | starting, needs-human → running, once the first prompt is typed | guarded; stops before the prompt when the task ended meanwhile | none |
 | `waitForHuman` | starting ↔ needs-human, on a startup dialog | guarded | none |
-| `report` | starting, running, needs-human → done, failed, needs-human | raw, refuses a terminal or waiting task | starts the detached follow-up (`StartAfter`, `hrk __after`) |
-| `startDependents` | queued → held | guarded | n/a |
-| `failDependent` | queued, held → failed | guarded | fails its own children in turn |
-| `skipFixup` | queued → done, when the final review passed | guarded | plan-done in the same follow-up |
+| `report` | starting, running, needs-human → done, failed, needs-human | raw, refuses a terminal or waiting task | starts the detached follow-up (`StartAfter`, `hrk __after`), even when the event write fails |
+| `Settle` | queued → starting, held, or done for a needless fixup; queued, held → failed | guarded | settles its own children when it fails the task |
+| `skipFixup`, from `Settle` | queued → done, when the final review passed | guarded | plan-done in the same follow-up, and a follow-up of its own for what waits on the fixup |
 | `Send` | done, failed → running (reopen) | raw | none |
 | `Answer` | needs-human → running | guarded | none |
-| `Stop` | any live → stopped | guarded | `failDependents` |
-| `failLost` | running, needs-human → failed | guarded | `failDependents` |
-| `fail`, called by `launch`, `Spawn`, `agentGone`, `CheckLaunch` and `relaunch` | any live → failed | guarded | none |
+| `Stop` | any live → stopped | guarded | `ended` |
+| `failLost` | running, needs-human → failed | guarded | `ended` |
+| `fail`, called by `Launch`, `startLauncher`, `agentGone`, `CheckLaunch`, `relaunch` and `claimSwitch` | any live → failed | guarded | `ended` |
 | `claimSwitch` | running, needs-human → starting, for a usage-limit fallback | raw, checks the status it read | none |
 | `Handoff` | running → starting | raw, checks the status it read | none |
 
-`Send` reopening a done or failed task is the only way out of a terminal status.
+`Send` reopening a done or failed task is the only way out of a terminal status. Every other writer either moves a status through `Store.Transition`, which never leaves a terminal one, or checks the status it read under the task lock.
 
-A waiting task starts in one of three ways: at spawn, when no parent is pending; from `startDependents`, in the detached follow-up of a parent that reported done; or by `release` of a held task. Nothing runs a follow-up again once it is lost.
+### The settle step
+
+`Settle` (`internal/runner/report.go`) decides one waiting task from its parents in the store, and is the only code that does:
+
+- A parent that failed, was stopped or does not exist fails the task, from queued or held, and settles the tasks that wait on it in turn.
+- Once every parent is done, a queued task starts through a detached launcher, is held for release (the human gate, or a plan phase whose check holds), or, as a fixup the final review passed, is closed as done.
+- Otherwise it changes nothing.
+
+Each move is a guarded transition from queued, or held for a failure, so any number of callers may settle the same task, and a task starts at most once. They are:
+
+- the follow-up of a parent that reported done (`startDependents`, which launches what it starts in its own process) or failed;
+- `ended`, after `fail`, `Stop` and `failLost`: it settles the waiting children at once, and gives a plan task the detached follow-up, which checks whether the plan is done. That check never runs in the caller, because `plan run` holds the plan's lock while it spawns, and a spawn can fail a task;
+- `Spawn`, once more after the task exists, for a parent that finished while spawn ran;
+- the wait backstop's sweep, `SettleWaiting`, once a minute: it settles every task `waiting-task-has-a-path` finds stuck and emits plan-done for every run `plan-run-finishes` finds finished without it, leaving what finished within `SettleWindow` (2 minutes) to the follow-up on its way. A follow-up a crash or a reboot lost is recovered at the next `wait` that still has a live task.
+
+A waiting task leaves only through `Settle`, `release` of a held task, or `stop`.
+
+### The launcher and stop
+
+The launcher's own writes (`launchUpdate`) notice a task that ended while it worked, such as one stopped before its pane was recorded. The launch records the tab it opened, types no prompt, and closes the runner through `closeRunner`.
 
 ### Other lifecycle fields
 
 | Field | Written by |
 |---|---|
 | `after` | `newTask`, once; `relinkQueued` during `milestone chain` |
-| `worktree.base` | `Spawn`, after `Create`; `startDependents` fills an empty base from the single parent's branch; `relinkQueued` |
+| `worktree` | `Spawn`, in the task's first write, also on a task that failed because its branch was taken; that task records the branch without owning it |
+| `worktree.base` | `Spawn`; `Settle` fills an empty base from the single parent's branch when it starts or holds the task; `relinkQueued` |
 | `worktree.path`, `branchCreated` | `launch` and the worktree it creates |
 | `worktree.removed`, `branchDeleted`, `offered` | cleanup (`Cleanup`, `NoticeCleanable`) and `closeRunner`; never cleared, not even by a `send` reopen |
 | `worktree.mergedTip` | `recordMergedTips` in cleanup, and `FinishMilestone` |
@@ -207,3 +227,5 @@ func CheckInvariants(s Snapshot) []Violation
 - `InFlight` names the parents whose follow-up has not run yet, for tests that hold follow-ups back.
 - `Prev` is an earlier snapshot of the same store. Only `terminal-stays-terminal` and `done-milestone-frozen` read it, and they are skipped without it.
 - The rules are a table in `invariants.go`, one function per rule, each with a comment that states it. Violations come sorted by rule, project and task.
+- `SettleWaiting` runs `waiting-task-has-a-path` and `plan-run-finishes` on the tasks and plan markers alone, and repairs what they find through `Settle` and `planDone`. Nothing else repairs.
+- `internal/runner/sequence_test.go` drives a store through random steps (spawn, launch, report, a gone agent, a passed launch deadline, a run or lost follow-up, stop, a stop during a launch, release, answer, send and the sweep) and checks every rule after each step. Its count follows `-quickchecks`, and `-seqseed` replays a failure; a failure prints the minimal steps.
