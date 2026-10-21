@@ -412,3 +412,25 @@ func TestLostFollowUpOfTheLastPhaseIsRecoveredBySweep(t *testing.T) {
 	}
 	checkStore(t, r)
 }
+
+func TestSkippedFixupStartsWhatWaitsOnIt(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var follow []string
+	r.StartAfter = func(id string) error { follow = append(follow, id); return nil }
+	review, fixup := finalReviewFixture(t, r, writeReport(t, "Verdict: pass\n"))
+	next := spawnQueued(t, r, fixup.ID)
+	finishTask(t, r, review.ID, task.Done, "Verdict: pass, 0 verified findings")
+	if err := r.After(context.Background(), review.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(follow, []string{fixup.ID}) {
+		t.Fatalf("follow-ups = %v, want the skipped fixup's", follow)
+	}
+	if err := r.After(context.Background(), fixup.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(next); got.Status == task.Queued {
+		t.Errorf("the task after the skipped fixup stayed queued")
+	}
+	checkStore(t, r)
+}

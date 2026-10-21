@@ -515,8 +515,10 @@ func (r *Runner) settle(ctx context.Context, id string) (bool, error) {
 			}
 		}
 		if p.Review.Verdict == task.ReviewPass {
+			// A fixup closed as done gets the follow-up a report would
+			// start, for what waits on it.
 			r.skipFixup(t, p)
-			return false, nil
+			return false, r.StartAfter(t.ID)
 		}
 	}
 	inputs, base, err := r.parentInputs(t.After)
