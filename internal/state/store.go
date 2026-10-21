@@ -77,6 +77,12 @@ func (s *Store) TaskDir(id string) string { return filepath.Join(s.dir, "tasks",
 // Create assigns the next id to t, stamps it and writes it. The caller fills
 // every other field.
 func (s *Store) Create(t *task.Task) error {
+	return s.CreateWith(t, nil)
+}
+
+// CreateWith is Create with fill applied once t has its id and before its
+// first write, so that write already holds what depends on the id.
+func (s *Store) CreateWith(t *task.Task, fill func(*task.Task)) error {
 	id, err := s.nextID()
 	if err != nil {
 		return err
@@ -85,6 +91,9 @@ func (s *Store) Create(t *task.Task) error {
 	t.ID = id
 	t.SchemaVersion = currentSchema
 	t.CreatedAt, t.UpdatedAt = now, now
+	if fill != nil {
+		fill(t)
+	}
 	if err := os.MkdirAll(s.TaskDir(id), dirPerm); err != nil {
 		return fmt.Errorf("create task dir: %w", err)
 	}

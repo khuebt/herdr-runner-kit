@@ -189,32 +189,41 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 			return nil, err
 		}
 	}
-	if err := r.Store.Create(t); err != nil {
-		return nil, err
-	}
-	if t.UseWorktree {
+	// The first write holds the worktree, so a parent's follow-up that
+	// finds the task always sees where it runs.
+	var taken string
+	if err := r.Store.CreateWith(t, func(t *task.Task) {
+		if !t.UseWorktree {
+			return
+		}
 		branch := o.Branch
 		if branch == "" {
 			branch = BranchName(r.Config.WorktreeBranchPrefix, t.ID, cmp.Or(o.BranchTitle, t.Title))
 		}
+		t.Worktree = &task.Worktree{Branch: branch, Base: base, BranchCreated: new(false)}
 		if BranchExists(ctx, t.RepoRoot, branch) {
-			r.fail(t.ID, fmt.Sprintf("branch %s already exists", branch))
-			return nil, fmt.Errorf("branch %s already exists in %s", branch, t.RepoRoot)
+			taken = branch
+			t.Status, t.Error, t.FinishedAt = task.Failed, fmt.Sprintf("branch %s already exists", branch), time.Now().UTC()
 		}
-		if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
-			t.Worktree = &task.Worktree{Branch: branch, Base: base, BranchCreated: new(false)}
-			return nil
-		}); err != nil {
-			return nil, err
-		}
+	}); err != nil {
+		return nil, err
+	}
+	if taken != "" {
+		r.emit(t, "failed", t.Error, "")
+		return nil, fmt.Errorf("branch %s already exists in %s", taken, t.RepoRoot)
 	}
 
 	switch {
 	case len(pending) > 0:
 		r.emit(t, "queued", "waits for "+strings.Join(pending, ", "), "")
-		return t, nil
+		// A parent that finished since pendingParents looked may have
+		// listed its waiting tasks before this one existed, so settle it
+		// here too. Both moves are guarded: whichever comes second changes
+		// nothing, and the sweep retries an error.
+		_ = r.Settle(ctx, t.ID)
+		return r.Store.Get(t.ID)
 	case t.Gate == task.GateHuman:
-		t, _, err = r.Store.SetStatus(t.ID, task.Held)
+		t, _, err = r.Store.SetStatus(t.ID, task.Held, task.Queued)
 		if err == nil {
 			r.emit(t, "held", task.HeldSummary(t), "")
 		}

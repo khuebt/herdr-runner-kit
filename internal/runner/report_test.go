@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -676,5 +677,53 @@ func TestFollowUpStartsWhenTheEventWriteFails(t *testing.T) {
 	}
 	if !slices.Equal(follow, []string{tk.ID}) {
 		t.Errorf("follow-ups = %v", follow)
+	}
+}
+
+func TestSpawnOnATakenBranchRecordsItsWorktree(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	if out, err := exec.Command("git", "-C", repo, "branch", "feat/x").CombinedOutput(); err != nil {
+		t.Fatal(err, string(out))
+	}
+	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, Branch: "feat/x"}); err == nil {
+		t.Fatal("spawn on a taken branch succeeded")
+	}
+	got, err := r.Store.Get("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.Failed || got.Worktree == nil || got.Worktree.Branch != "feat/x" || got.Worktree.OwnsBranch() {
+		t.Errorf("task = %s, worktree %+v", got.Status, got.Worktree)
+	}
+	checkStore(t, r)
+}
+
+// A parent that finishes while spawn creates its child lists its waiting
+// tasks before the child exists; the child must not stay queued.
+func TestSpawnAfterParentFinishedStarts(t *testing.T) {
+	ctx := context.Background()
+	for i := range 20 {
+		r, _, _ := newTestRunner(t)
+		dir := plainDir(t)
+		p := running(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			time.Sleep(time.Duration(i) * time.Millisecond)
+			if _, err := r.Report(p.ID, ReportOptions{Status: task.Done, Summary: "did a"}); err != nil {
+				t.Error(err)
+			}
+			if err := r.After(ctx, p.ID); err != nil {
+				t.Error(err)
+			}
+		})
+		c, err := r.Spawn(ctx, SpawnOptions{Prompt: "b", Cwd: dir, After: []string{p.ID}})
+		wg.Wait()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := r.Store.Get(c.ID); got.Status == task.Queued {
+			t.Fatalf("run %d: the child stayed queued behind its done parent", i)
+		}
 	}
 }
