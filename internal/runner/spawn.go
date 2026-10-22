@@ -172,44 +172,54 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 	if err != nil {
 		return nil, err
 	}
-	base := o.Base
-	if len(t.After) > 0 && len(pending) == 0 {
-		var parentBase string
-		t.Inputs, parentBase, err = r.parentInputs(ctx, t.After)
-		if errors.Is(err, errParentBranchGone) && (base != "" || !t.UseWorktree) {
-			err = nil // the child does not start from that branch
-		}
-		if err != nil {
-			return nil, err
-		}
-		if base == "" {
-			base = parentBase
-		}
-	}
-	// The owner's first wait must see this task's events. A project task's
-	// news reaches the caller's wait too, so its cursor starts here as well.
-	for _, owner := range []string{t.Owner, caller} {
-		if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
-			return nil, err
-		}
-	}
-	// The first write holds the worktree, so a parent's follow-up that
-	// finds the task always sees where it runs.
+	// Cleanup deletes a branch under this lock once no waiting task starts
+	// from it, so the base read here still exists when the task is written.
 	var taken string
-	if err := r.Store.CreateWith(t, func(t *task.Task) {
-		if !t.UseWorktree {
-			return
+	if err := func() error {
+		unlock, err := r.Store.Lock(branchBaseLock)
+		if err != nil {
+			return err
 		}
-		branch := o.Branch
-		if branch == "" {
-			branch = BranchName(r.Config.WorktreeBranchPrefix, t.ID, cmp.Or(o.BranchTitle, t.Title))
+		defer unlock()
+		base := o.Base
+		if len(t.After) > 0 && len(pending) == 0 {
+			var parentBase string
+			t.Inputs, parentBase, err = r.parentInputs(ctx, t.After)
+			if errors.Is(err, errParentBranchGone) && (base != "" || !t.UseWorktree) {
+				err = nil // the child does not start from that branch
+			}
+			if err != nil {
+				return err
+			}
+			if base == "" {
+				base = parentBase
+			}
 		}
-		t.Worktree = &task.Worktree{Branch: branch, Base: base, BranchCreated: new(false)}
-		if BranchExists(ctx, t.RepoRoot, branch) {
-			taken = branch
-			t.Status, t.Error, t.FinishedAt = task.Failed, fmt.Sprintf("branch %s already exists", branch), time.Now().UTC()
+		// The owner's first wait must see this task's events. A project
+		// task's news reaches the caller's wait too, so its cursor starts
+		// here as well.
+		for _, owner := range []string{t.Owner, caller} {
+			if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+				return err
+			}
 		}
-	}); err != nil {
+		// The first write holds the worktree, so a parent's follow-up that
+		// finds the task always sees where it runs.
+		return r.Store.CreateWith(t, func(t *task.Task) {
+			if !t.UseWorktree {
+				return
+			}
+			branch := o.Branch
+			if branch == "" {
+				branch = BranchName(r.Config.WorktreeBranchPrefix, t.ID, cmp.Or(o.BranchTitle, t.Title))
+			}
+			t.Worktree = &task.Worktree{Branch: branch, Base: base, BranchCreated: new(false)}
+			if BranchExists(ctx, t.RepoRoot, branch) {
+				taken = branch
+				t.Status, t.Error, t.FinishedAt = task.Failed, fmt.Sprintf("branch %s already exists", branch), time.Now().UTC()
+			}
+		})
+	}(); err != nil {
 		return nil, err
 	}
 	if taken != "" {

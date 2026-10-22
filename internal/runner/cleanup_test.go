@@ -674,6 +674,34 @@ func TestRemoveUnstartedLeavesAStartedTaskAlone(t *testing.T) {
 	}
 }
 
+// A child spawned after the check that found its parent merged still
+// starts from the parent's branch: cleanup reads the waiting tasks again
+// before it deletes the branch.
+func TestCleanupKeepsTheBranchAChildSpawnedSinceTheCheckStartsFrom(t *testing.T) {
+	ctx := context.Background()
+	r, fake, _ := newTestRunner(t)
+	parent, repo := worktreeTask(t, r, "feat/a")
+	herdrOwnsWorktree(fake, repo, parent.Worktree.Path)
+	squashMerge(t, repo, "feat/a")
+	it := cleanable(t, r, repo)
+	if it.Verdict != Merged {
+		t.Fatalf("item = %s %s", it.Verdict, it.Detail)
+	}
+	child, err := r.Spawn(ctx, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, After: []string{parent.ID}, Gate: task.GateHuman})
+	if err != nil || child.Status != task.Held || child.Worktree.Base != "feat/a" {
+		t.Fatalf("child = %+v, %v", child, err)
+	}
+	if _, err := r.Cleanup(ctx, []CleanupItem{it}); err != nil {
+		t.Fatal(err)
+	}
+	if !BranchExists(ctx, repo, "feat/a") {
+		t.Fatal("cleanup deleted the branch the held child starts from")
+	}
+	if got, _ := r.Store.Get(parent.ID); got.Worktree.BranchDeleted {
+		t.Error("the kept branch is recorded deleted")
+	}
+}
+
 // A child that has not started yet starts from its parent's branch, or
 // from the base it names, so cleanup keeps that branch, merged or not,
 // until the child has its worktree.

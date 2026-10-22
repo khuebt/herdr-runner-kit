@@ -168,6 +168,10 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 	return items, nil
 }
 
+// branchBaseLock orders spawn's choice of a task's base against cleanup's
+// deletion of that branch.
+const branchBaseLock = "branch-base"
+
 // startsFrom maps each repository and branch that an unfinished task with
 // no worktree yet will start from to that task: its base, or else the
 // branch of its single parent with one, as parentInputs picks it.
@@ -414,17 +418,31 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 			return fmt.Errorf("remove worktree: %w", err)
 		}
 	}
-	branchGone := false
+	// Spawn writes a task's base under this lock, and the deletion is
+	// recorded before it is released: a task spawned since the check either
+	// shows here, or reads the branch as deleted.
+	unlock, err := r.Store.Lock(branchBaseLock)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	branchGone, startsFromIt := false, ""
 	if it.Branch {
-		var err error
-		if branchGone, err = deleteMergedBranch(ctx, t.RepoRoot, t.Worktree.Branch, it.base, it.tips, it.branchAt); err != nil {
+		tasks, err := r.Store.List()
+		if err != nil {
 			return err
+		}
+		startsFromIt = startsFrom(tasks)[[2]string{t.RepoRoot, t.Worktree.Branch}]
+		if startsFromIt == "" {
+			if branchGone, err = deleteMergedBranch(ctx, t.RepoRoot, t.Worktree.Branch, it.base, it.tips, it.branchAt); err != nil {
+				return err
+			}
 		}
 	}
 	if err := r.recordMergedTips(ctx, t, it.checked()); err != nil {
 		fmt.Fprintf(os.Stderr, "hrk: %s: %v\n", t.ID, err)
 	}
-	t, err := r.Store.Update(t.ID, func(t *task.Task) error {
+	t, err = r.Store.Update(t.ID, func(t *task.Task) error {
 		t.Worktree.Removed = true
 		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone
 		return nil
@@ -433,7 +451,10 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 		return err
 	}
 	summary := "removed worktree and branch " + t.Worktree.Branch
-	if !branchGone {
+	switch {
+	case startsFromIt != "":
+		summary = "removed the worktree; kept branch " + t.Worktree.Branch + ", which " + startsFromIt + " starts from"
+	case !branchGone:
 		summary = "removed the worktree; kept branch " + t.Worktree.Branch
 	}
 	r.emit(t, "cleaned", summary, "")
