@@ -9,7 +9,7 @@ This page is for contributors. It lists every piece of lifecycle state the kit p
 | Entity | Stored in | States or key fields | Read or validated by |
 |---|---|---|---|
 | Task | `<S>/tasks/<id>/task.json`, written by `Store.Update` under `tasks/<id>/task.lock` | `queued`, `held`, `starting`, `running`, `needs-human`, `done`, `failed`, `stopped`; done, failed and stopped are terminal | `Store.Get`; `Store.Transition` never leaves a terminal status, `Store.Update` does not check |
-| Task links | the same file | `after` (the only edge a follow-up walks), `checkoutOf`, `fixupOf`, `review.of`, `project` and `stage` (`<M>/<node>` for a milestone step), `worktree.{branch,base,path,branchCreated,removed,branchDeleted,offered,mergedTip,olderMergedTips}` | spawn does not check that linked tasks exist; `pendingParents` fails on a missing one |
+| Task links | the same file | `after` (the only edge a follow-up walks), `checkoutOf`, `fixupOf`, `review.of`, `project` and `stage` (`<M>/<node>` for a milestone step), `node.{id,type,title,dependsOn}` (optional, written by `chain` after spawn), `worktree.{branch,base,path,branchCreated,removed,branchDeleted,offered,mergedTip,olderMergedTips}` | spawn does not check that linked tasks exist; `pendingParents` fails on a missing one |
 | Task id sequence | `<S>/seq` under `seq.lock` | a counter | `Store.nextID` |
 | Event log | `<S>/events.jsonl`, appended under a flock on the log | one JSON line per event | `ReadEventsSince` |
 | Cursor | `<S>/cursor-<name>`, a byte offset; `wait` holds `cursor-<name>.lock` without blocking | offset | `InitCursor` |
@@ -76,9 +76,9 @@ The launcher's own writes (`launchUpdate`) notice a task that ended while it wor
 
 | Field | Written by |
 |---|---|
-| `after` | `newTask`, once; `relinkQueued` during `milestone chain` |
+| `after` | `newTask`, once; `milestone chain` replaces a stale waiting runner instead of relinking it |
 | `worktree` | `Spawn`, in the task's first write, also on a task that failed because its branch was taken; that task records the branch without owning it |
-| `worktree.base` | `Spawn`; `Settle` fills an empty base from the single parent's branch when it starts or holds the task; `relinkQueued` |
+| `worktree.base` | `Spawn`; `Settle` fills an empty base from the single parent's branch when it starts or holds the task, or from the default branch once cleanup deleted that branch as merged; a parent branch deleted unmerged fails the task |
 | `worktree.path`, `branchCreated` | `launch` and the worktree it creates |
 | `worktree.removed`, `branchDeleted`, `offered` | cleanup (`Cleanup`, `NoticeCleanable`) and `closeRunner`; never cleared, not even by a `send` reopen |
 | `worktree.mergedTip` | `recordMergedTips` in cleanup, and `FinishMilestone` |
@@ -102,7 +102,7 @@ The launcher's own writes (`launchUpdate`) notice a task that ended while it wor
 
 ### Chain
 
-`PlanChain` maps each plan node to the newest task of stage `<M>/<node>`. A done or live node keeps its runner; a failed or stopped one is spawned again, on `<branch>-r<k>` when its branch is taken (`PickBranch`). `relinkQueued` points a queued child at the runners of its node's parents. The close runner is queued after the final integrate runner, with that runner's branch as its explicit base (`CloseStep`). A feature child with a single parent gets an empty base and takes the parent's branch when it starts.
+`PlanChain` maps each plan node to the newest task of stage `<M>/<node>`, and compares the `node` that task recorded with the plan. A done or running node keeps its runner, unless the plan changed its title or type: then chain is refused (stop a live runner and chain again; give a done node a new id). A waiting runner is kept only while it matches its node, waits for exactly the runners of its node's parents and has the node's branch; otherwise it is stopped and replaced (`ChainStep.Replace`). A failed or stopped node is spawned again, on `<branch>-r<k>` when its branch is taken (`PickBranch`), based on its old branch only while its parents are done. The branches of kept and live nodes are reserved, so no two nodes share one. The close runner is queued after the final integrate runner with no explicit base (`CloseStep`); like a feature child with a single parent, it takes its parent's branch when it starts.
 
 ## Invariants
 

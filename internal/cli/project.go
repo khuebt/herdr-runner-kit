@@ -1509,13 +1509,16 @@ func newMilestoneChainCommand() *cobra.Command {
 			"and an integrate node any number; a final integrate node over every leaf is added when " +
 			"the plan does not end in one, and a close runner after it. Runners are spawned in " +
 			"dependency order with --after their parents: root features and integrate nodes start from " +
-			"the default branch, a feature with a parent from its parent's branch, and the close runner " +
-			"from the final integrate node's branch. Integrate nodes work on integrate/<M>-<id>, the " +
+			"the default branch, and a feature with a parent and the close runner from their parent's " +
+			"branch when they start. Integrate nodes work on integrate/<M>-<id>, the " +
 			"close runner on release/<M>. Backlog items the plan takes are marked planned. Run it " +
 			"again after a runner failed, even while others still run: done and unfinished nodes are " +
-			"kept, failed and stopped nodes run again, and a queued node waits for its parent's new " +
-			"runner. A failed node whose runner created its branch continues on <branch>-r<k> from " +
-			"that branch, and any other existing branch is refused before anything is spawned.",
+			"kept, failed and stopped nodes run again, and a queued runner whose node, parents or branch " +
+			"changed is stopped and replaced. A running or done runner whose node's title or type " +
+			"changed is refused: stop a running one and chain again, give a done node a new id. A " +
+			"failed node whose runner created its branch continues on <branch>-r<k>, from that branch " +
+			"when its parents are done, and any other existing branch is refused before anything is " +
+			"spawned. A done milestone must be reopened first.",
 		Example: `  hrk project milestone chain M1`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
