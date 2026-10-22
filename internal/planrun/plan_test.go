@@ -1,6 +1,7 @@
 package planrun
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -176,5 +177,29 @@ func TestReadRefusesBadReviewFields(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "plan.md") {
 			t.Errorf("%q: error = %v, want %q", fm, err, want)
 		}
+	}
+}
+
+// SetStatus replaces the file whole: a reader that opened it before keeps
+// the old content instead of a truncated one, and the mode is kept.
+func TestSetStatusReplacesTheFileWhole(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "phase.md")
+	src := "---\nstatus: pending\n---\nbody\n"
+	if err := os.WriteFile(file, []byte(src), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := SetStatus(file, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	if old, _ := io.ReadAll(f); string(old) != src {
+		t.Errorf("an open reader saw %q", old)
+	}
+	if info, _ := os.Stat(file); info.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %o", info.Mode().Perm())
 	}
 }

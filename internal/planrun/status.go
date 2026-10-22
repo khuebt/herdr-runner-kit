@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 )
 
 // ErrNoStatus is returned by SetStatus for a file without a status line in
@@ -15,7 +17,8 @@ var ErrNoStatus = errors.New("no status line in the frontmatter")
 var statusLineRe = regexp.MustCompile(`^status:`)
 
 // SetStatus rewrites the status line in the leading frontmatter of file and
-// keeps every other byte. A file without that line is left alone and gets
+// keeps every other byte. The file is replaced whole, so a reader never sees
+// it half written. A file without that line is left alone and gets
 // ErrNoStatus.
 func SetStatus(file, status string) error {
 	data, err := os.ReadFile(file)
@@ -51,7 +54,7 @@ func SetStatus(file, status string) error {
 			if err != nil {
 				return err
 			}
-			return os.WriteFile(file, out, info.Mode().Perm())
+			return fsutil.WriteFileAtomic(file, out, info.Mode().Perm())
 		}
 		pos = lineEnd + 1
 	}
