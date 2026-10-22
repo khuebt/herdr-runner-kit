@@ -158,6 +158,9 @@ type seqWorld struct {
 	// next launch, counted from 1.
 	stopAt, calls int
 	stopID        string
+	// prev is the snapshot the last check saw, so the rules that compare
+	// two snapshots see every step.
+	prev *Snapshot
 }
 
 // takenBranch exists in the shared repository, so a spawn that names it
@@ -522,12 +525,14 @@ func (w *seqWorld) spawn(s seqStep) string {
 }
 
 // check returns what the store breaks, with the queued and lost follow-ups
-// in flight.
+// in flight, against the snapshot the last check saw.
 func (w *seqWorld) check() []Violation {
 	s, err := w.r.Snapshot()
 	if err != nil {
 		w.t.Fatal(err)
 	}
+	cur := s
+	s.Prev, w.prev = w.prev, &cur
 	w.mu.Lock()
 	s.InFlight = map[string]bool{}
 	for _, id := range w.afters {
@@ -541,23 +546,28 @@ func (w *seqWorld) check() []Violation {
 }
 
 // drain runs every queued launcher and follow-up, and the sweep that
-// recovers the lost ones, until nothing is left.
-func (w *seqWorld) drain() []string {
-	var trace []string
+// recovers the lost ones, until nothing is left, and checks the rules after
+// each. It returns the trace and the first failure, or "".
+func (w *seqWorld) drain(trace []string) ([]string, string) {
 	for range 100 {
+		var op string
 		switch {
 		case len(w.afters) > 0:
-			trace = append(trace, w.step(seqStep{Op: "run-follow-up"}))
+			op = "run-follow-up"
 		case len(w.launchers) > 0:
-			trace = append(trace, w.step(seqStep{Op: "run-launcher"}))
+			op = "run-launcher"
 		case len(w.lost) > 0:
-			trace = append(trace, w.step(seqStep{Op: "settle-sweep"}))
+			op = "settle-sweep"
 		default:
-			return trace
+			return trace, ""
+		}
+		trace = append(trace, w.step(seqStep{Op: op}))
+		if vs := w.check(); len(vs) > 0 {
+			return trace, "while draining the queues:\n" + formatViolations(vs)
 		}
 	}
 	w.t.Fatal("the queues never drained")
-	return nil
+	return nil, ""
 }
 
 func formatViolations(vs []Violation) string {
@@ -582,10 +592,26 @@ func TestTaskLifecycleSequences(t *testing.T) {
 				return trace, fmt.Sprintf("after step %d:\n%s", i+1, formatViolations(vs))
 			}
 		}
-		trace = append(trace, w.drain()...)
-		if vs := w.check(); len(vs) > 0 {
-			return trace, "after draining the queues:\n" + formatViolations(vs)
-		}
-		return trace, ""
+		return w.drain(trace)
 	})
+}
+
+// The harness compares each snapshot with the one before it, so a writer
+// that takes a stopped task back to running is caught.
+func TestSequenceCheckSeesAStoppedTaskRunAgain(t *testing.T) {
+	w := newSeqWorld(t, gitRepo(t))
+	w.step(seqStep{Op: "spawn"})
+	w.step(seqStep{Op: "stop"})
+	if vs := w.check(); len(vs) > 0 {
+		t.Fatalf("a stopped task breaks:\n%s", formatViolations(vs))
+	}
+	if _, err := w.r.Store.Update("t1", func(t *task.Task) error {
+		t.Status, t.FinishedAt = task.Running, time.Time{}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rulesOf(w.check()); !slices.Contains(got, "terminal-stays-terminal") {
+		t.Errorf("rules = %q, want terminal-stays-terminal", got)
+	}
 }
