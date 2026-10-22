@@ -275,6 +275,12 @@ func TestSpawnRefusesExistingBranch(t *testing.T) {
 	if got.Status != task.Failed {
 		t.Errorf("status = %s, want failed", got.Status)
 	}
+	// The failed task still records the branch it wanted, without owning
+	// it, so it keeps worktree-recorded.
+	if got.Worktree == nil || got.Worktree.Branch != "hrk/t1-x" || got.Worktree.OwnsBranch() {
+		t.Errorf("worktree = %+v", got.Worktree)
+	}
+	checkStore(t, r)
 }
 
 func TestSpawnQueuedAndHeld(t *testing.T) {
