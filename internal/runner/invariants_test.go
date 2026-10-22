@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -430,5 +431,65 @@ func TestInvariantSnapshotReadsProjectRecords(t *testing.T) {
 	got := CheckInvariants(s)
 	if len(got) != 1 || got[0].Rule != "done-milestone-has-release" || got[0].Project != "p" {
 		t.Fatalf("violations = %v", got)
+	}
+}
+
+func TestCheckGit(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	head := gitOut(ctx, repo, "rev-parse", "HEAD")
+	git(t, repo, "branch", "feat/a")
+	git(t, repo, "update-ref", task.MergedTipRef("t3"), head)
+	git(t, repo, "tag", "v0.M1.0")
+	plan := project.MilestonePlanPath("M2")
+	writeFiles(t, repo, map[string]string{plan: "# M2 plan\n\n```yaml\nnodes:\n  - {id: F1, type: feature, title: List}\n```\n"})
+	git(t, repo, "add", plan)
+	git(t, repo, "commit", "-q", "-m", "docs: plan M2")
+
+	in := func(root string) func(*task.Task) { return func(t *task.Task) { t.RepoRoot = root } }
+	started := func(t *task.Task) { t.Worktree.Path = "/wt/" + t.ID }
+	merged := func(t *task.Task) { t.Worktree.MergedTip, t.Worktree.BranchDeleted = head, true }
+	s := withRecord(invSnap(
+		invTask("t1", task.Running, in(repo), branch("feat/a", "main"), started),
+		invTask("t2", task.Queued, in(repo), after("t1"), branch("feat/b", "gone")),
+		invTask("t3", task.Done, in(repo), branch("feat/c", "main"), started, merged),
+		invTask("t4", task.Done, in(repo), branch("feat/d", "main"), started, merged),
+		invTask("t5", task.Queued, in(repo), after("t1"), branch("feat/e", "")),
+		invTask("t6", task.Queued, in("/no/such/repo"), after("t1"), branch("feat/f", "gone")),
+		invTask("t7", task.Running, in(repo), stage("p", "M2/F1")),
+		invTask("t8", task.Running, in(repo), stage("p", "M2/F9")),
+		invTask("t9", task.Queued, in(repo), stage("p", "M2/integrate"), after("t7")),
+		invTask("t10", task.Queued, in(repo), stage("p", "M2/close"), after("t9")),
+	), milestone("M1", project.MilestoneDone), milestone("M0", project.MilestoneDone), milestone("M2", project.MilestoneInProgress))
+	s.Paths = map[string]string{"p": repo}
+	writeFiles(t, r.Store.Dir(), map[string]string{"events.jsonl": "0123456789\n"})
+	for name, offset := range map[string]int64{"ok": 11, "mid": 5, "past": 20} {
+		if err := r.Store.SaveCursor(name, offset); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var got []string
+	for _, v := range r.CheckGit(ctx, s) {
+		got = append(got, v.Rule+" "+v.Task+" "+v.Detail)
+	}
+	want := []string{
+		"base-branch-exists t2 queued to start from gone, which is gone",
+		"chain-matches-plan t8 running, but the plan of M2 at HEAD has no node F9",
+		"cursor-within-log  cursor mid is at 5, inside a line of the event log",
+		"cursor-within-log  cursor past is at 20, past the end of the event log at 11",
+		"done-milestone-has-release  done milestone M0 has no tag v0.M0.0 in " + repo,
+		"merged-tip-has-ref t4 refs/hrk/merged/t4 is \"\", want " + head,
+	}
+	slices.Sort(got[2:4]) // cursors come in directory order
+	if !slices.Equal(got, want) {
+		t.Fatalf("CheckGit =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// A plan with uncommitted changes is not read.
+	writeFiles(t, repo, map[string]string{plan: "# M2 plan, being edited\n"})
+	if vs := r.CheckGit(ctx, s); slices.Contains(rulesOf(vs), "chain-matches-plan") {
+		t.Errorf("a dirty plan was checked: %v", vs)
 	}
 }

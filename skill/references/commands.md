@@ -54,7 +54,7 @@ Each of your calls re-reads your whole context, about 200k tokens in a long sess
 | `project dep set <Dn> --status needed\|requested\|ready` | Change its status; `ready` lists the held tasks that wait for it. |
 | `project share <stitch\|lavish-hosted> <on\|off>` | The user's opt-in to share work outside this machine. |
 | `project milestone start <M>` | M0: the scaffold runner, then its close runner. Later milestones: the plan runner. |
-| `project milestone chain <M>` | Spawn the feature, integrate and close runners from the committed plan. Run it again after a failed runner, even while others run; done and unfinished nodes are kept, and a queued runner whose node or parents changed is replaced (`replaced <stage>: <old> → <new>`). A live runner whose node changed: stop it and chain again; a done one: give the node a new id. A done milestone: reopen it first. |
+| `project milestone chain <M>` | Spawn the feature, integrate and close runners from the committed plan. A `state check: <rule>: …` warning after it, or after `cleanup --yes`, means a kit bug: relay the line to the user as is; the command still succeeded. Run it again after a failed runner, even while others run; done and unfinished nodes are kept, and a queued runner whose node or parents changed is replaced (`replaced <stage>: <old> → <new>`). A live runner whose node changed: stop it and chain again; a done one: give the node a new id. A done milestone: reopen it first. |
 | `project milestone done <M> [--merged-commit SHA]` | After the user merged `release/<M>` and pulled: commit the records and tag the release locally. The notes it finds must be the close branch's, not a release merged before a reopen. |
 | `project milestone reopen <M> --reason WHY` | Put a done milestone back in progress and delete its local tag. |
 | `project milestone close <M>` | A new close runner on `release/<M>-r<k>` after a reopen or a failed close. |
@@ -84,7 +84,7 @@ At the start of a session that touches a project, and when the user asks "where 
 
 ### Discovery stages
 
-`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held, except a `pack` chained with `--after`: it waits so the user can review the earlier stages first. Ask the user, then `release` it. Before UX or prototype work, run `hrk doctor --tools` and tell the user which optional tools are missing.
+`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held, except a `pack` chained with `--after`: it waits so the user can review the earlier stages first. Ask the user, then `release` it. Before UX or prototype work, run `hrk doctor --tools` and tell the user which optional tools are missing. A `warn state: <rule>: …` line of `doctor` names broken kit state with its `fix:`; relay it, and never repair state files by hand.
 
 The `ux` and `design` runners first sample the one or two main screens and ask one direction round through `needs-human`: layout, navigation and density for `ux`; for `design`, pick, combine or another round of at least two visual directions. Relay the sample paths and every option in one message, suggest viewing the samples with Lavish when it is installed, and pass the user's choice with `answer`. The round is a question, not a gate. Notes that ask to skip the round, or give a design system to follow, skip it.
 
@@ -178,7 +178,7 @@ Picking an agent: the brief names each runner's harness, model and effort with o
 
 ## Task statuses
 
-`queued` (waiting for parents) → `held` (human gate) → `starting` → `running` → `done`, `needs-human`, `failed` or `stopped`. A `needs-human` task returns to `running` after `answer`.
+`queued` (waiting for parents) → `held` (human gate) → `starting` → `running` → `done`, `needs-human`, `failed` or `stopped`. A `needs-human` task returns to `running` after `answer`. A parent that fails or stops, however it fails, fails its waiting children with `parent <id> failed` or `parent <id> stopped`.
 
 ## News that wait reports
 

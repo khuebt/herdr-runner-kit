@@ -8,9 +8,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -227,5 +229,37 @@ func TestOOMPreferenceCheck(t *testing.T) {
 		if wantFix := c.level == "warn" && c.err == nil; wantFix != strings.Contains(r.fix, "ManagedOOMPreference=avoid") {
 			t.Errorf("%s fix = %q", c.name, r.fix)
 		}
+	}
+}
+
+func TestDoctorState(t *testing.T) {
+	home, _, _ := setupEnv(t)
+	if got := checkState(t.Context()); len(got) != 1 || got[0] != ok("no state yet") {
+		t.Fatalf("no state = %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, "state")); err == nil {
+		t.Fatal("doctor created the state folder")
+	}
+	store, err := state.Open(filepath.Join(home, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := checkState(t.Context()); len(got) != 1 || got[0] != ok("0 tasks, 0 projects, every rule holds") {
+		t.Fatalf("empty store = %+v", got)
+	}
+	// A child left queued after its parent finished an hour ago.
+	parent := &task.Task{Kind: "code", Agent: "codex", Prompt: "a", Status: task.Done, FinishedAt: time.Now().Add(-time.Hour)}
+	if err := store.Create(parent); err != nil {
+		t.Fatal(err)
+	}
+	child := &task.Task{Kind: "code", Agent: "codex", Prompt: "b", Status: task.Queued, After: []string{parent.ID}}
+	if err := store.Create(child); err != nil {
+		t.Fatal(err)
+	}
+	got := checkState(t.Context())
+	if len(got) != 1 || got[0].level != "warn" ||
+		got[0].detail != "waiting-task-has-a-path: "+child.ID+": queued, but every parent is done" ||
+		got[0].fix != "run `hrk wait` once so the settle sweep decides it, or `hrk stop "+child.ID+"`" {
+		t.Fatalf("stranded child = %+v", got)
 	}
 }

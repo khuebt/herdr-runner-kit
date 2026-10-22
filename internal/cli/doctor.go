@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
+	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 	"github.com/khuebt/herdr-runner-kit/internal/telegram"
 	"github.com/khuebt/herdr-runner-kit/internal/upgrade"
@@ -56,7 +58,8 @@ func newDoctorCommand() *cobra.Command {
 		Short: "Check that herdr, the agents, Telegram and the kit's own files are ready",
 		Long: "doctor checks every dependency and setting the kit relies on and prints the fix " +
 			"for each problem. It changes nothing. It exits 1 when a check fails; warnings " +
-			"only point at optional features. --tools also lists the optional tools project " +
+			"point at optional features, or at kit state that breaks a rule of the state " +
+			"model (the state lines). --tools also lists the optional tools project " +
 			"stage templates suggest when present; a missing tool is never a failure.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -77,6 +80,9 @@ func newDoctorCommand() *cobra.Command {
 			}
 			ctx := cmd.Context()
 			show("kit", checkKit())
+			for _, r := range checkState(ctx) {
+				show("state", r)
+			}
 			show("updates", checkUpdates(ctx))
 			show("herdr", checkHerdr(ctx))
 			integrations := herdrIntegrations(ctx)
@@ -184,6 +190,107 @@ func checkKit() checkResult {
 		return warn("herdr-runner-kit on PATH is "+resolved+", not this binary ("+bin+")", "delete "+old+", or link it here: ln -sf "+bin+" "+old)
 	}
 	return ok("%s, state schema v%d", buildinfo.Version, buildinfo.SchemaVersion)
+}
+
+// stateTimeout bounds the state check, so a large store cannot hang doctor.
+const stateTimeout = 10 * time.Second
+
+// checkState checks every rule of docs/state-model.md on the store: one ok
+// line, or one warning per broken rule. It never fails doctor.
+func checkState(ctx context.Context) []checkResult {
+	dir, err := stateDir()
+	if err != nil {
+		return nil // the kit check reports it
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tasks")); errors.Is(err, fs.ErrNotExist) {
+		return []checkResult{ok("no state yet")}
+	}
+	store, err := state.Open(dir)
+	if err != nil {
+		return []checkResult{warn(err.Error(), "")}
+	}
+	ctx, cancel := context.WithTimeout(ctx, stateTimeout)
+	defer cancel()
+	s, vs, err := stateViolations(ctx, &runner.Runner{Store: store}, true)
+	var out []checkResult
+	for _, v := range vs {
+		fix := cmp.Or(stateFixes[v.Rule], stateFixBug)
+		if v.Task != "" {
+			fix = strings.ReplaceAll(fix, "<id>", v.Task)
+		}
+		out = append(out, warn(v.String(), fix))
+	}
+	if err != nil {
+		out = append(out, warn(err.Error(), ""))
+	}
+	if len(out) == 0 {
+		return []checkResult{ok("%d tasks, %d projects, every rule holds", len(s.Tasks), len(s.Projects))}
+	}
+	return out
+}
+
+// stateViolations takes a snapshot of r's store with the runtime settle
+// window and returns the rules it breaks, with the rules that need git when
+// git is set. Those are dropped when ctx ends first, because a git command
+// cut short reads as a missing branch or ref.
+func stateViolations(ctx context.Context, r *runner.Runner, git bool) (runner.Snapshot, []runner.Violation, error) {
+	s, err := r.Snapshot()
+	if err != nil {
+		return s, nil, err
+	}
+	s.Settle = runner.SettleWindow
+	vs := runner.CheckInvariants(s)
+	if git {
+		g := r.CheckGit(ctx, s)
+		if ctx.Err() != nil {
+			return s, vs, fmt.Errorf("the git checks did not finish: %w", ctx.Err())
+		}
+		vs = append(vs, g...)
+	}
+	return s, vs, nil
+}
+
+// warnState prints a "state check:" line through warnf for each rule the
+// store breaks that keep selects; t is the task the violation names, or
+// nil. A line means a kit bug; the command that calls it still succeeds.
+func warnState(ctx context.Context, r *runner.Runner, warnf func(string), git bool, keep func(v runner.Violation, t *task.Task) bool) {
+	ctx, cancel := context.WithTimeout(ctx, stateTimeout)
+	defer cancel()
+	s, vs, err := stateViolations(ctx, r, git)
+	byID := map[string]*task.Task{}
+	for _, t := range s.Tasks {
+		byID[t.ID] = t
+	}
+	for _, v := range vs {
+		if keep(v, byID[v.Task]) {
+			warnf("state check: " + v.String())
+		}
+	}
+	if err != nil {
+		warnf("state check: " + err.Error())
+	}
+}
+
+// stateFixBug is the fix of a broken rule only a kit bug can cause.
+const stateFixBug = "a kit bug: report this line with hrk show of the task it names"
+
+// stateFixes is the fix doctor prints for each broken rule.
+var stateFixes = map[string]string{
+	"waiting-task-has-a-path":           "run `hrk wait` once so the settle sweep decides it, or `hrk stop <id>`",
+	"plan-run-finishes":                 "run `hrk wait` once so the settle sweep emits plan-done",
+	"stopped-gets-no-agent":             "`hrk gc` closes its runner",
+	"links-resolve":                     "`hrk stop <id>` while it waits; " + stateFixBug,
+	"one-live-runner-per-step":          "`hrk stop` the older runner",
+	"child-follows-current-parents":     "run `hrk project milestone chain <M>` again; it replaces the stale queued runner",
+	"base-is-a-parent-branch":           "run `hrk project milestone chain <M>` again; it replaces the stale queued runner",
+	"chain-matches-plan":                "`hrk stop <id>`, then run `hrk project milestone chain <M>` again",
+	"done-milestone-has-release":        "`hrk project milestone reopen <M> --reason WHY`, then close and done it again",
+	"done-milestone-has-no-live-runner": "`hrk stop <id>`",
+	"base-branch-exists":                "`hrk stop <id>`; a chain step: run its parent again through `hrk project milestone chain <M>`",
+	"cleanup-spares-live-work":          "`hrk stop <id>` and spawn the work again",
+	"live-task-has-checkout":            "`hrk stop <id>` and spawn the work again",
+	"merged-tip-has-ref":                "run `git update-ref <ref> <commit>` with the ref and commit named, in the task's repository",
+	"cursor-within-log":                 "stop every `hrk wait`, then delete that cursor file in the state folder; the next wait starts at the end of the log",
 }
 
 // notOnPathFix is the fix when no hrk is on PATH. A binary still named

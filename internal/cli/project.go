@@ -1533,7 +1533,18 @@ func newMilestoneChainCommand() *cobra.Command {
 
 // chainMilestone spawns the runners of milestone id's plan in dependency
 // order. Every check runs before the first spawn.
-func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) error {
+func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) (err error) {
+	defer func() {
+		if err == nil && o.Warn != nil {
+			// The milestone's tasks and the project record, as chain left them.
+			warnState(ctx, r, o.Warn, false, func(v runner.Violation, t *task.Task) bool {
+				if t == nil {
+					return v.Task == "" && v.Project == p.Name
+				}
+				return t.Project == p.Name && strings.HasPrefix(t.Stage, id+"/")
+			})
+		}
+	}()
 	rec, err := project.Load(r.Store, p.Name)
 	if err != nil {
 		return err

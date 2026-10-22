@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -161,8 +162,16 @@ func TestMilestoneStartSpawnsTheFirstRunner(t *testing.T) {
 
 func TestMilestoneChain(t *testing.T) {
 	r, p := approvedRunner(t)
+	// M0 done and released, as done leaves it.
+	if err := startMilestone(t.Context(), io.Discard, r, p, "M0", milestoneRun{Warn: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range projectTasks(t, r, "M0/") {
+		setTask(t, r, tk.ID, task.Done, false)
+	}
 	if _, err := project.Update(r.Store, "demo-app", func(rec *project.Record) error {
-		rec.Milestones[0].Status = project.MilestoneDone
+		m := &rec.Milestones[0]
+		m.Status, m.Tag, m.Closed, m.Released, m.Branch = project.MilestoneDone, "v0.0.0", time.Now().UTC(), []string{"notes"}, "release/M0"
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -202,8 +211,18 @@ func TestMilestoneChain(t *testing.T) {
 	}
 	commitFiles(t, p.Path, plan("paging"))
 	out.Reset()
-	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+	var warned []string
+	o := milestoneRun{Warn: func(line string) { warned = append(warned, line) }}
+	stateChecks := func() []string {
+		lines := slices.DeleteFunc(slices.Clone(warned), func(l string) bool { return !strings.HasPrefix(l, "state check: ") })
+		warned = nil
+		return lines
+	}
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", o); err != nil {
 		t.Fatal(err)
+	}
+	if lines := stateChecks(); len(lines) > 0 {
+		t.Errorf("a chain over a clean state warned:\n%s", strings.Join(lines, "\n"))
 	}
 	nodes := projectTasks(t, r, "M1/")[1:]
 	byStage := map[string]*task.Task{}
@@ -250,12 +269,30 @@ func TestMilestoneChain(t *testing.T) {
 
 	// While every node is unfinished, running the chain again keeps them all.
 	out.Reset()
-	if err := chainMilestone(t.Context(), &out, r, p, "M1", milestoneRun{}); err != nil {
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", o); err != nil {
 		t.Fatalf("chain while nodes run: %v", err)
 	}
 	if n := len(projectTasks(t, r, "M1/")); n != 6 || !strings.Contains(out.String(), "no node of M1 failed; nothing to run again") {
 		t.Fatalf("chain while nodes run spawned %d tasks:\n%s", n-6, out.String())
 	}
+	if lines := stateChecks(); len(lines) > 0 {
+		t.Errorf("a chain over a clean state warned:\n%s", strings.Join(lines, "\n"))
+	}
+	// A broken rule on a task of the milestone is printed, and chain still
+	// succeeds.
+	question := func(q string) {
+		if _, err := r.Store.Update(f1.ID, func(tk *task.Task) error { tk.Question = q; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	question("which list?")
+	if err := chainMilestone(t.Context(), &out, r, p, "M1", o); err != nil {
+		t.Fatalf("chain over a broken rule: %v", err)
+	}
+	if lines := stateChecks(); len(lines) != 1 || !strings.HasPrefix(lines[0], "state check: fields-match-status: demo-app: "+f1.ID+": ") {
+		t.Errorf("state checks = %q", lines)
+	}
+	question("")
 
 	// F1 is done; F2 failed after it created its branch; F3 and the
 	// integrate node failed with it.

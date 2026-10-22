@@ -7,7 +7,7 @@ Every command prints short plain text, so the main agent's context stays small. 
 | Command | What it does |
 |---|---|
 | `setup [--claude-config DIR]… [--force] [--no-hook]` | Installs the main-agent skill and the auto re-arm hook, and creates the config and state. A second run prints `no changes`. |
-| `doctor [--claude-config DIR]… [--tools]` | Checks every dependency and prints the fix for each problem. `--tools` also lists the optional tools the project stage templates use when present; a missing one is never a failure. |
+| `doctor [--claude-config DIR]… [--tools]` | Checks every dependency and prints the fix for each problem. `--tools` also lists the optional tools the project stage templates use when present; a missing one is never a failure. Its `state` line checks every rule of the [state model](state-model.md#invariants) on the task store, the project records and their repositories, within 10 seconds: `ok state: <n> tasks, <m> projects, every rule holds`, or one `warn state: <rule>: <detail>` line with a `fix:` per broken rule. Rules that wait on a follow-up skip tasks that finished in the last 2 minutes. A broken rule is a warning, so it never makes `doctor` exit 1; it reports and repairs nothing. |
 | `uninstall [--claude-config DIR]… [--purge [--yes]]` | Removes what `setup` installed; `--purge` also deletes config and state. |
 | `upgrade [--version vX.Y.Z] [--check] [--yes] [--claude-config DIR]…` | Installs the latest release, or the named one, after verifying its checksum, then runs the new binary's `setup` for the given folders, the default one and every `~/.claude*` folder that holds the kit's skill, and names each. `--check` only shows what would change. It asks before a new major version, or before 1.0 a new minor one. |
 | `version [--json] [--check]` | Prints the version, schema and contract. `--check` also asks GitHub for a newer release. |
@@ -60,7 +60,7 @@ A project is a git repository the kit keeps a record for, so a main session can 
 | `project backlog add --stdin` | Keeps an idea as the next backlog item. |
 | `project dep add <name>`, `project dep set <Dn> --status S` | Tracks what the project waits on outside itself. |
 | `project milestone start <M>` | Starts a milestone: M0's scaffold runner and its close runner, or a later milestone's plan runner. See **Milestones** below. |
-| `project milestone chain <M>` | Spawns the milestone's feature, integrate and close runners from its committed plan. |
+| `project milestone chain <M>` | Spawns the milestone's feature, integrate and close runners from its committed plan. After it succeeds, it checks the milestone's tasks and the project record against the [state rules](state-model.md#invariants) and prints a `state check: <rule>: <detail>` warning for each one broken; it still succeeds. |
 | `project milestone done <M> [--merged-commit SHA]` | Records the milestone done once you merged its release branch, commits the records and tags it locally. |
 | `project milestone reopen <M> --reason WHY`, `project milestone close <M>` | Puts a done milestone back in progress, deleting its local tag; spawns a new close runner after a reopen or a failed close. |
 | `project graduate [--export DIR [--include-original]] [--yes]` | Removes the discovery folder from the tree in one commit and tags the commit before it. See **Graduation** below. |
@@ -85,7 +85,7 @@ A project is a git repository the kit keeps a record for, so a main session can 
 
 `spawn --after t1,t2` queues a task until every parent is done. The parents' summaries, outputs and worktree branches are added to the child's first prompt. A worktree child of a single worktree parent starts from that parent's branch unless `--base` says otherwise.
 
-With `--gate auto` (the default) the child starts by itself within about a second of the last parent's report. With `--gate human` it moves to `held` and waits for `release`. `--reason TEXT` says why, such as `needs D2`; it shows on the `held` line, and a Telegram reply must then name the task to release it. A parent that fails or is stopped fails its waiting dependents.
+With `--gate auto` (the default) the child starts by itself within about a second of the last parent's report. With `--gate human` it moves to `held` and waits for `release`. `--reason TEXT` says why, such as `needs D2`; it shows on the `held` line, and a Telegram reply must then name the task to release it. A parent that fails or is stopped fails its waiting dependents, with `parent <id> failed` or `parent <id> stopped`; that holds for every way a parent fails, including a launch that fails, a launcher that never starts, a dead agent and a passed launch deadline.
 
 A Claude runner uses the main session's Claude config folder, and so its account. `spawn --claude-config DIR` picks another one, as a path or a bare name: `claude2` means `~/.claude2`, and `claude` means Claude's default, `~/.claude`. Run `setup` and `doctor` for that folder too, so its herdr hook and permission prompt are ready.
 
@@ -168,6 +168,8 @@ Finished runners close on their own (see `gc`), but their worktrees and branches
 - **kept:** the runner is kept open with `keep`; run `keep --off <id>` first. A merged branch is kept too while a task that has no worktree yet will start from it, as its `--base` or as the branch of its single parent with one, such as a queued or held child; the list says `<id> starts from it`, and the first `cleanup` after that task started removes it.
 
 `cleanup --yes` never closes a runner whose agent is still working or waiting at a prompt; it skips that task, and a later run cleans it.
+
+After `cleanup --yes` removed something, it checks the tasks of the owners it cleaned against the [state rules](state-model.md#invariants), including those that read the repository, such as a branch a waiting task will start from, and prints a `state check: <rule>: <detail>` warning on stderr for each one broken. The command still succeeds. Such a line means a kit bug; report it.
 
 A worktree removed outside the kit, such as with `git worktree remove`, is marked removed the next time `cleanup` or `wait` looks. The runner's herdr workspace, left open on the deleted folder, is closed then, unless another unfinished task, such as a later phase of the same plan run, still works in it. When its branch is gone too, the task gets a `cleaned` event with "removed outside the kit"; otherwise the branch is still listed.
 

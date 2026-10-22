@@ -2,12 +2,14 @@ package runner
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,9 @@ import (
 type Snapshot struct {
 	Tasks    []*task.Task // in creation order, as Store.List returns them
 	Projects map[string]project.Record
+	// Paths maps a registered project to its main checkout; only CheckGit
+	// reads it.
+	Paths map[string]string
 	// PlanDone maps a plan folder to the task ids its plan-done marker
 	// holds, for the plans that have one.
 	PlanDone map[string][]string
@@ -46,12 +51,13 @@ func (r *Runner) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	s := Snapshot{Tasks: tasks, Projects: map[string]project.Record{}, Now: time.Now()}
+	s := Snapshot{Tasks: tasks, Projects: map[string]project.Record{}, Paths: map[string]string{}, Now: time.Now()}
 	projects, err := r.Store.Projects()
 	if err != nil {
 		return Snapshot{}, err
 	}
 	for _, p := range projects {
+		s.Paths[p.Name] = p.Path
 		rec, err := project.Load(r.Store, p.Name)
 		if errors.Is(err, project.ErrNoRecord) {
 			continue // reserved, or registered by a version before records
@@ -100,6 +106,10 @@ func CheckInvariants(s Snapshot) []Violation {
 			out = append(out, v)
 		}
 	}
+	return sortViolations(out)
+}
+
+func sortViolations(out []Violation) []Violation {
 	slices.SortStableFunc(out, func(a, b Violation) int {
 		return cmp.Or(strings.Compare(a.Rule, b.Rule), strings.Compare(a.Project, b.Project), compareIDs(a.Task, b.Task))
 	})
@@ -208,7 +218,7 @@ func waitingTaskHasAPath(c *check) []Violation {
 		}
 		switch {
 		case problem != "" && !settling:
-			out = append(out, taskViolation(t, "%s %s", t.Status, problem))
+			out = append(out, taskViolation(t, "%s, but %s", t.Status, problem))
 		case t.Status == task.Queued && !live && !settling && problem == "":
 			out = append(out, taskViolation(t, "queued, but every parent is done"))
 		}
@@ -625,7 +635,7 @@ func doneMilestoneHasRelease(c *check) []Violation {
 				missing = append(missing, "a done close runner")
 			}
 			if len(missing) > 0 {
-				out = append(out, Violation{Project: name, Detail: fmt.Sprintf("done milestone %s has no %s", m.ID, strings.Join(missing, ", "))})
+				out = append(out, Violation{Project: name, Detail: fmt.Sprintf("done milestone %s lacks %s", m.ID, strings.Join(missing, ", "))})
 			}
 		}
 	}
@@ -700,4 +710,260 @@ func liveTaskHasCheckout(c *check) []Violation {
 		}
 	}
 	return out
+}
+
+// CheckGit returns every rule of docs/state-model.md that needs git or
+// files, which CheckInvariants leaves out, sorted the same way. It skips
+// the tasks and projects whose repository is gone. Settle and InFlight do
+// not apply: none of these rules waits on a follow-up.
+func (r *Runner) CheckGit(ctx context.Context, s Snapshot) []Violation {
+	g := &gitCheck{check: newCheck(s), r: r, ctx: ctx, repos: map[string]bool{}, refs: map[string]map[string]string{}}
+	var out []Violation
+	for _, rule := range gitRules {
+		for _, v := range rule.check(g) {
+			v.Rule = rule.name
+			out = append(out, v)
+		}
+	}
+	return sortViolations(out)
+}
+
+var gitRules = []struct {
+	name  string
+	check func(*gitCheck) []Violation
+}{
+	{"base-branch-exists", baseBranchExists},
+	{"merged-tip-has-ref", mergedTipHasRef},
+	{"done-milestone-has-release", releaseTagExists},
+	{"chain-matches-plan", chainMatchesPlan},
+	{"cursor-within-log", cursorWithinLog},
+}
+
+// gitCheck is a check that may read repositories, with what it read.
+type gitCheck struct {
+	*check
+	r     *Runner
+	ctx   context.Context
+	repos map[string]bool              // root -> a repository is there
+	refs  map[string]map[string]string // root -> merged-tip ref -> commit
+}
+
+// repo reports whether root is still a git repository.
+func (g *gitCheck) repo(root string) bool {
+	if root == "" {
+		return false
+	}
+	ok, seen := g.repos[root]
+	if !seen {
+		ok = gitOut(g.ctx, root, "rev-parse", "--git-dir") != ""
+		g.repos[root] = ok
+	}
+	return ok
+}
+
+// baseBranchExists: the branch a waiting task will start from exists:
+// its base, else the branch of its single parent, once that parent made it.
+func baseBranchExists(g *gitCheck) []Violation {
+	owner := map[[2]string]*task.Task{} // the newest task that owns each branch of a repository
+	for _, t := range g.Tasks {
+		if t.Worktree != nil && t.Worktree.Branch != "" {
+			owner[[2]string{t.RepoRoot, t.Worktree.Branch}] = t
+		}
+	}
+	var out []Violation
+	for _, t := range g.Tasks {
+		from := g.startBranch(t)
+		if from == "" || !g.repo(t.RepoRoot) {
+			continue
+		}
+		if o := owner[[2]string{t.RepoRoot, from}]; o != nil && !o.Worktree.OwnsBranch() {
+			continue // its owner has not made it yet
+		}
+		if gitOut(g.ctx, t.RepoRoot, "rev-parse", "--verify", "--quiet", from+"^{commit}") == "" {
+			out = append(out, taskViolation(t, "%s to start from %s, which is gone", t.Status, from))
+		}
+	}
+	return out
+}
+
+// startBranch returns the branch a live task with no checkout yet will
+// start from: its base, else the branch of its single parent with one,
+// unless cleanup deleted that branch after its merge, when the task starts
+// from the default branch. It returns "" for any other task.
+func (c *check) startBranch(t *task.Task) string {
+	if t.Status.Terminal() || t.Worktree == nil || t.Worktree.Path != "" {
+		return ""
+	}
+	if t.Worktree.Base != "" {
+		return t.Worktree.Base
+	}
+	var parents []*task.Task
+	for _, id := range t.After {
+		if p := c.byID[id]; p != nil && p.Worktree != nil && p.Worktree.Branch != "" {
+			parents = append(parents, p)
+		}
+	}
+	if len(parents) != 1 || parents[0].Worktree.BranchDeleted && parents[0].Worktree.MergedTip != "" {
+		return ""
+	}
+	return parents[0].Worktree.Branch
+}
+
+// mergedTipHasRef: every recorded merged tip has its refs/hrk/merged/ ref.
+func mergedTipHasRef(g *gitCheck) []Violation {
+	var out []Violation
+	for _, t := range g.Tasks {
+		if t.Worktree == nil || t.Worktree.MergedTip == "" || !g.repo(t.RepoRoot) {
+			continue
+		}
+		refs, read := g.refs[t.RepoRoot]
+		if !read {
+			refs = map[string]string{}
+			for line := range strings.Lines(gitOut(g.ctx, t.RepoRoot, "for-each-ref", "--format=%(refname) %(objectname)", task.MergedTipRef(""))) {
+				if ref, commit, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+					refs[ref] = commit
+				}
+			}
+			g.refs[t.RepoRoot] = refs
+		}
+		for _, ref := range t.Worktree.MergedTipRefs(t.ID) {
+			if got := refs[ref[0]]; got != ref[1] {
+				out = append(out, taskViolation(t, "%s is %q, want %s", ref[0], got, ref[1]))
+			}
+		}
+	}
+	return out
+}
+
+// releaseTagExists: the tag of a done milestone exists in its project's
+// repository.
+func releaseTagExists(g *gitCheck) []Violation {
+	var out []Violation
+	for _, name := range g.projectNames() {
+		root := g.Paths[name]
+		if !g.repo(root) {
+			continue
+		}
+		for _, m := range g.Projects[name].Milestones {
+			if m.Status == project.MilestoneDone && m.Tag != "" &&
+				gitOut(g.ctx, root, "rev-parse", "--verify", "--quiet", "refs/tags/"+m.Tag) == "" {
+				out = append(out, Violation{Project: name, Detail: fmt.Sprintf("done milestone %s has no tag %s in %s", m.ID, m.Tag, root)})
+			}
+		}
+	}
+	return out
+}
+
+// finalIntegrate is the id of the integrate node chain adds over the
+// leaves of a plan that does not end in one, as project.PlanChain names it.
+const finalIntegrate = "integrate"
+
+// chainMatchesPlan: every live chain task of a milestone in progress runs
+// its first step, its close, a node of its plan at HEAD, or the integrate
+// node chain adds. A plan that cannot be read, as while it has uncommitted
+// changes, is skipped.
+func chainMatchesPlan(g *gitCheck) []Violation {
+	steps := map[string]map[string]bool{} // project and milestone -> its steps; nil when unread
+	var out []Violation
+	for _, t := range g.Tasks {
+		if t.Status.Terminal() || !chainTask(t) {
+			continue
+		}
+		m, step, _ := strings.Cut(t.Stage, "/")
+		key := stageKey(t.Project, m)
+		ok, read := steps[key]
+		if !read {
+			ok = g.planSteps(t.Project, m)
+			steps[key] = ok
+		}
+		if ok != nil && !ok[step] {
+			out = append(out, taskViolation(t, "%s, but the plan of %s at HEAD has no node %s", t.Status, m, step))
+		}
+	}
+	return out
+}
+
+// planSteps returns the steps a chain of milestone id of project name may
+// run, or nil when the milestone is not in progress or its plan cannot be
+// read.
+func (g *gitCheck) planSteps(name, id string) map[string]bool {
+	rec, ok := g.Projects[name]
+	root := g.Paths[name]
+	i := slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })
+	if !ok || id == project.ScaffoldMilestone || i < 0 || rec.Milestones[i].Status != project.MilestoneInProgress || !g.repo(root) {
+		return nil
+	}
+	plan, err := project.ReadPlan(g.ctx, root, rec, id)
+	if err != nil {
+		return nil
+	}
+	steps := map[string]bool{}
+	for _, s := range []string{project.FirstStage(id), project.CloseStage(id)} {
+		_, step, _ := strings.Cut(s, "/")
+		steps[step] = true
+	}
+	hasChild := map[string]bool{}
+	for _, n := range plan.Nodes {
+		steps[n.ID] = true
+		for _, d := range n.DependsOn {
+			hasChild[d] = true
+		}
+	}
+	leaves := slices.DeleteFunc(slices.Clone(plan.Nodes), func(n project.BlockNode) bool { return hasChild[n.ID] })
+	if len(leaves) != 1 || leaves[0].Type != project.NodeIntegrate {
+		added := finalIntegrate
+		for k := 2; steps[added]; k++ {
+			added = finalIntegrate + "-" + strconv.Itoa(k)
+		}
+		steps[added] = true
+	}
+	return steps
+}
+
+// cursorWithinLog: every saved cursor offset is at most the size of the
+// event log and falls on a line boundary.
+func cursorWithinLog(g *gitCheck) []Violation {
+	dir := g.r.Store.Dir()
+	names, err := filepath.Glob(filepath.Join(dir, "cursor-*"))
+	if err != nil || len(names) == 0 {
+		return nil
+	}
+	log, err := os.Open(g.r.Store.EventsPath())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return []Violation{{Detail: err.Error()}}
+	}
+	var size int64
+	if log != nil {
+		defer func() { _ = log.Close() }()
+		info, err := log.Stat()
+		if err != nil {
+			return []Violation{{Detail: err.Error()}}
+		}
+		size = info.Size()
+	}
+	var out []Violation
+	for _, path := range names {
+		name := strings.TrimPrefix(filepath.Base(path), "cursor-")
+		if strings.Contains(name, ".") {
+			continue // a lock or a temporary file
+		}
+		offset, saved, err := g.r.Store.Cursor(name)
+		switch {
+		case err != nil:
+			out = append(out, Violation{Detail: err.Error()})
+		case !saved || offset == 0:
+		case offset > size:
+			out = append(out, Violation{Detail: fmt.Sprintf("cursor %s is at %d, past the end of the event log at %d", name, offset, size)})
+		case !lineEndAt(log, offset-1):
+			out = append(out, Violation{Detail: fmt.Sprintf("cursor %s is at %d, inside a line of the event log", name, offset)})
+		}
+	}
+	return out
+}
+
+// lineEndAt reports whether the byte of f at offset ends a line.
+func lineEndAt(f *os.File, offset int64) bool {
+	b := []byte{0}
+	_, err := f.ReadAt(b, offset)
+	return err == nil && b[0] == '\n'
 }
