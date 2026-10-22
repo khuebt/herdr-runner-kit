@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
@@ -347,7 +348,8 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (string
 		return "", err
 	}
 	for _, f := range files {
-		if err := os.WriteFile(filepath.Join(dir, f.Name), f.Data, 0o600); err != nil {
+		// The agent and its hooks may read these while a respawn rewrites them.
+		if err := fsutil.WriteFileAtomic(filepath.Join(dir, f.Name), f.Data, 0o600); err != nil {
 			return "", err
 		}
 	}
