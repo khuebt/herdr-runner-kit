@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.7](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.6...v0.15.7) (2026-10-22)
+
+
+### Bug Fixes
+
+* harden task, chain and project lifecycle state ([#102](https://github.com/khuebt/herdr-runner-kit/issues/102)) ([460c2f5](https://github.com/khuebt/herdr-runner-kit/commit/460c2f55344cfd8c738cce7ce867991ed0fd0b13))
+
 ## [0.15.6](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.5...v0.15.6) (2026-10-22)
 
 
