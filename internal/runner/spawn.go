@@ -175,7 +175,11 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 	base := o.Base
 	if len(t.After) > 0 && len(pending) == 0 {
 		var parentBase string
-		if t.Inputs, parentBase, err = r.parentInputs(t.After); err != nil {
+		t.Inputs, parentBase, err = r.parentInputs(ctx, t.After)
+		if errors.Is(err, errParentBranchGone) && (base != "" || !t.UseWorktree) {
+			err = nil // the child does not start from that branch
+		}
+		if err != nil {
 			return nil, err
 		}
 		if base == "" {

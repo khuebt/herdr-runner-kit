@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -521,8 +522,12 @@ func (r *Runner) settle(ctx context.Context, id string) (bool, error) {
 			return false, r.StartAfter(t.ID)
 		}
 	}
-	inputs, base, err := r.parentInputs(t.After)
-	if err != nil {
+	inputs, base, err := r.parentInputs(ctx, t.After)
+	if errors.Is(err, errParentBranchGone) && t.Worktree != nil && t.Worktree.Base == "" {
+		r.failDependent(t.ID, err.Error())
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, errParentBranchGone) {
 		return false, err
 	}
 	withInputs := func(t *task.Task) {
@@ -550,12 +555,20 @@ func (r *Runner) settle(ctx context.Context, id string) (bool, error) {
 	return changed, err
 }
 
+// errParentBranchGone means the branch a child would start from was
+// deleted before its work was merged.
+var errParentBranchGone = errors.New("parent branch is gone")
+
 // parentInputs describes the results of done parents for the child's first
 // prompt. base is the worktree branch of the only parent that has one, the
 // default starting point for a child worktree that builds on its code.
-func (r *Runner) parentInputs(after []string) (inputs, base string, err error) {
+// Once cleanup deleted that branch as merged, base is the default branch,
+// which holds its work; deleted unmerged, base is still the branch and the
+// error wraps errParentBranchGone, for a child that would start from it.
+func (r *Runner) parentInputs(ctx context.Context, after []string) (inputs, base string, err error) {
 	var lines []string
 	var branches []string
+	var owner *task.Task
 	for _, id := range after {
 		p, err := r.Store.Get(id)
 		if err != nil {
@@ -573,15 +586,28 @@ func (r *Runner) parentInputs(after []string) (inputs, base string, err error) {
 		}
 		if p.Worktree != nil && p.Worktree.Branch != "" {
 			line += " Branch: " + p.Worktree.Branch + "."
-			branches = append(branches, p.Worktree.Branch)
+			branches, owner = append(branches, p.Worktree.Branch), p
 		}
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
 		return "", "", nil
 	}
-	if len(branches) == 1 {
-		base = branches[0]
+	inputs = "Inputs from the tasks this one waited for:\n" + strings.Join(lines, "\n")
+	if len(branches) != 1 {
+		return inputs, "", nil
 	}
-	return "Inputs from the tasks this one waited for:\n" + strings.Join(lines, "\n"), base, nil
+	base = branches[0]
+	switch w := owner.Worktree; {
+	case !w.BranchDeleted:
+	case w.MergedTip == "":
+		return inputs, base, fmt.Errorf("%w: parent branch %s of %s was deleted before it was merged", errParentBranchGone, base, owner.ID)
+	default:
+		def, err := project.DefaultBranch(ctx, owner.RepoRoot)
+		if err != nil {
+			return inputs, base, err
+		}
+		base = def
+	}
+	return inputs, base, nil
 }
