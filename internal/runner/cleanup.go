@@ -25,7 +25,9 @@ const (
 	Merged   = "merged"
 	Unmerged = "unmerged"
 	Dirty    = "dirty"
-	// Kept means the runner is kept open; keep --off comes first.
+	// Kept means the worktree and branch stay although merged: the runner
+	// is kept open, and keep --off comes first, or a task that has no
+	// worktree yet starts from the branch.
 	Kept = "kept"
 )
 
@@ -154,7 +156,46 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 			r.recordMergedTips(ctx, it.Task, it.checked())
 		}
 	}
+	spared := startsFrom(tasks)
+	for i := range items {
+		it := &items[i]
+		if id := spared[[2]string{it.Task.RepoRoot, it.Task.Worktree.Branch}]; it.Verdict == Merged && it.Branch && id != "" {
+			it.Verdict, it.Detail = Kept, id+" starts from it"
+		}
+	}
 	return items, nil
+}
+
+// startsFrom maps each repository and branch that an unfinished task with
+// no worktree yet will start from to that task: its base, or else the
+// branch of its single parent with one, as parentInputs picks it.
+func startsFrom(tasks []*task.Task) map[[2]string]string {
+	byID := make(map[string]*task.Task, len(tasks))
+	for _, t := range tasks {
+		byID[t.ID] = t
+	}
+	out := map[[2]string]string{}
+	for _, t := range tasks {
+		if t.Status.Terminal() || t.Worktree == nil || t.Worktree.Path != "" {
+			continue
+		}
+		from := t.Worktree.Base
+		if from == "" {
+			var branches []string
+			for _, id := range t.After {
+				if p := byID[id]; p != nil && p.Worktree != nil && p.Worktree.Branch != "" {
+					branches = append(branches, p.Worktree.Branch)
+				}
+			}
+			if len(branches) == 1 {
+				from = branches[0]
+			}
+		}
+		if from != "" {
+			out[[2]string{t.RepoRoot, from}] = t.ID
+		}
+	}
+	return out
 }
 
 // recordMergedTips records tips, commits the check found merged, on task t,

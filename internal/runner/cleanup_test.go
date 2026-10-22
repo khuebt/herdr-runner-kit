@@ -673,3 +673,48 @@ func TestRemoveUnstartedLeavesAStartedTaskAlone(t *testing.T) {
 		})
 	}
 }
+
+// A child that has not started yet starts from its parent's branch, or
+// from the base it names, so cleanup keeps that branch, merged or not,
+// until the child has its worktree.
+func TestCleanupKeepsTheBranchAQueuedChildStartsFrom(t *testing.T) {
+	ctx := context.Background()
+	for _, held := range []bool{false, true} {
+		r, fake, _ := newTestRunner(t)
+		parent, repo := worktreeTask(t, r, "feat/a")
+		herdrOwnsWorktree(fake, repo, parent.Worktree.Path)
+		squashMerge(t, repo, "feat/a")
+		child := &task.Task{
+			Kind: "code", Agent: "codex", Prompt: "x", Cwd: repo, Owner: repo, RepoRoot: repo,
+			UseWorktree: true, After: []string{parent.ID}, Gate: task.GateAuto, Status: task.Queued,
+			Worktree: &task.Worktree{Branch: "feat/b", BranchCreated: new(false)},
+		}
+		if held {
+			// Held for release after its parent finished, with the base set.
+			child.Status, child.Gate, child.Worktree.Base = task.Held, task.GateHuman, "feat/a"
+		}
+		if err := r.Store.Create(child); err != nil {
+			t.Fatal(err)
+		}
+		it := cleanable(t, r, repo)
+		if it.Verdict != Kept || it.Detail != child.ID+" starts from it" {
+			t.Fatalf("held=%v: item = %s %s", held, it.Verdict, it.Detail)
+		}
+		if cleaned, err := r.Cleanup(ctx, []CleanupItem{it}); err != nil || len(cleaned) != 0 {
+			t.Fatalf("held=%v: Cleanup = %v, %v", held, cleaned, err)
+		}
+		if !BranchExists(ctx, repo, "feat/a") || !isDir(parent.Worktree.Path) {
+			t.Fatalf("held=%v: the branch or worktree the child starts from is gone", held)
+		}
+		// Once the child has its worktree, the parent's branch is free.
+		if _, err := r.Store.Update(child.ID, func(t *task.Task) error {
+			t.Status, t.Worktree.Path = task.Running, filepath.Join(t.Cwd, "wt-b")
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if it := cleanable(t, r, repo); it.Verdict != Merged {
+			t.Errorf("held=%v: after the child started: %s %s", held, it.Verdict, it.Detail)
+		}
+	}
+}
