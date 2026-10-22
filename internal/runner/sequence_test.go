@@ -87,16 +87,21 @@ func minimise(steps []seqStep, fails func([]seqStep) bool) []seqStep {
 // checkSequences runs prop on quick's scenarios, and on a failure minimises
 // the steps and fails with the seed, the minimal steps and what broke.
 // prop returns the resolved steps it ran and the first failure, or "".
-func checkSequences[S ~[]seqStep](t *testing.T, prop func([]seqStep) (trace []string, failure string)) {
+// maxCount, when not 0, replaces the flag's default count.
+func checkSequences[S ~[]seqStep](t *testing.T, maxCount int, prop func([]seqStep) (trace []string, failure string)) {
 	t.Helper()
 	seed := *seqSeed
 	if seed == 0 {
 		seed = time.Now().UnixNano()
 	}
+	cfg := &quick.Config{Rand: rand.New(rand.NewSource(seed))}
+	if f := flag.Lookup("quickchecks"); f == nil || f.Value.String() == "100" {
+		cfg.MaxCount = maxCount // the flag's default: this test's own budget
+	}
 	err := quick.Check(func(s S) bool {
 		_, failure := prop(s)
 		return failure == ""
-	}, &quick.Config{Rand: rand.New(rand.NewSource(seed))})
+	}, cfg)
 	if err == nil {
 		return
 	}
@@ -583,7 +588,7 @@ func TestTaskLifecycleSequences(t *testing.T) {
 	if out, err := exec.Command("git", "-C", repo, "branch", takenBranch).CombinedOutput(); err != nil {
 		t.Fatal(err, string(out))
 	}
-	checkSequences[taskScenario](t, func(steps []seqStep) ([]string, string) {
+	checkSequences[taskScenario](t, 0, func(steps []seqStep) ([]string, string) {
 		w := newSeqWorld(t, repo)
 		var trace []string
 		for i, s := range steps {
