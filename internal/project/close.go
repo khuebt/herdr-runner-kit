@@ -55,12 +55,13 @@ func closeNode(milestone, parent string) BlockNode {
 }
 
 // CloseStep lays out a close runner of milestone that starts after the
-// step parent, from base, the branch where the milestone's work ends: the
-// final integrate node's, or the scaffold's. It gets release/<M>, or
-// release/<M>-r<k> when an earlier close runner created that branch or
-// the record holds it as merged, so a new release never reuses one.
-// taken is as PickBranch's.
-func CloseStep(name, milestone, parent, base, merged string, tasks []*task.Task, taken func(string) string) (ChainStep, error) {
+// step parent, the final integrate node or the scaffold. It has no
+// explicit base: it starts from the branch of its parent's runner, where
+// the milestone's work ends, which the task takes when it starts. It gets
+// release/<M>, or release/<M>-r<k> when an earlier close runner created
+// that branch or the record holds it as merged, so a new release never
+// reuses one. taken is as PickBranch's.
+func CloseStep(name, milestone, parent, merged string, tasks []*task.Task, taken func(string) string) (ChainStep, error) {
 	stage := CloseStage(milestone)
 	own := stageTasks(tasks, name, stage)
 	release := func(b string) string {
@@ -73,7 +74,7 @@ func CloseStep(name, milestone, parent, base, merged string, tasks []*task.Task,
 	if err != nil {
 		return ChainStep{}, fmt.Errorf("close of %s: %w", milestone, err)
 	}
-	return ChainStep{Node: closeNode(milestone, parent), Stage: stage, Branch: branch, Base: base, Note: note}, nil
+	return ChainStep{Node: closeNode(milestone, parent), Stage: stage, Branch: branch, Note: note}, nil
 }
 
 // CloseStale reports whether the close runner of m prepared the release
@@ -88,8 +89,9 @@ func CloseStale(m Milestone, closer *task.Task) bool {
 // progress and its close runner failed, stopped, or prepared a release
 // that was merged before the milestone was reopened. The new runner starts
 // after the latest done runner of the step the old one waited for, from
-// its branch, which holds the fixes made since; that runner is returned
-// for --after. taken is as PickBranch's.
+// its branch, which holds the fixes made since, or from the default branch
+// once cleanup deleted that branch as merged; that runner is returned for
+// --after. taken is as PickBranch's.
 func Reclose(rec Record, name, id string, tasks []*task.Task, taken func(string) string) (ChainStep, *task.Task, error) {
 	i, err := findMilestone(rec, id)
 	if err != nil {
@@ -119,7 +121,7 @@ func Reclose(rec Record, name, id string, tasks []*task.Task, taken func(string)
 	if err != nil {
 		return ChainStep{}, nil, fmt.Errorf("milestone %s: %w", id, err)
 	}
-	step, err := CloseStep(name, id, strings.TrimPrefix(parent.Stage, id+"/"), taskBranch(parent), m.Branch, tasks, taken)
+	step, err := CloseStep(name, id, strings.TrimPrefix(parent.Stage, id+"/"), m.Branch, tasks, taken)
 	if err != nil {
 		return ChainStep{}, nil, err
 	}

@@ -480,7 +480,7 @@ func TestReopenThenCloseAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parent != fix || step.Stage != "M0/close" || step.Branch != "release/M0-r1" || step.Base != "feat/M0-scaffold-r1" || NodeTemplate(step.Node) != "close" {
+	if parent != fix || step.Stage != "M0/close" || step.Branch != "release/M0-r1" || step.Base != "" || NodeTemplate(step.Node) != "close" {
 		t.Errorf("close again = %+v after %v", step, parent.ID)
 	}
 
@@ -658,7 +658,7 @@ func TestReleaseBranchAvoidsNameClashes(t *testing.T) {
 			t.Errorf("BranchTaken(%s) = %q, want %q", b, got, want)
 		}
 	}
-	step, err := CloseStep("demo-app", "M1", "I1", "integrate/M1-I1", "", nil, taken)
+	step, err := CloseStep("demo-app", "M1", "I1", "", nil, taken)
 	if err != nil {
 		t.Fatal(err)
 	}

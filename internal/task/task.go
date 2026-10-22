@@ -57,6 +57,14 @@ func (g Gate) Valid() bool {
 	return g == GateAuto || g == GateHuman
 }
 
+// Node is a milestone plan node as a chain runner was spawned for it.
+type Node struct {
+	ID        string   `json:"id"`
+	Type      string   `json:"type"`
+	Title     string   `json:"title"`
+	DependsOn []string `json:"dependsOn,omitempty"`
+}
+
 // Worktree describes the git worktree a task runs in.
 type Worktree struct {
 	Path   string `json:"path"`
@@ -186,6 +194,9 @@ type Task struct {
 	// project stage it runs, if any.
 	Project string `json:"project,omitempty"`
 	Stage   string `json:"stage,omitempty"`
+	// Node is the milestone plan node a chain runner was spawned for, as
+	// the plan held it then, so a later chain sees a node the plan changed.
+	Node *Node `json:"node,omitempty"`
 	// RepoRoot is the main repository root of Cwd, empty outside git. Trust
 	// is prepared for it, and worktrees are created from it.
 	RepoRoot string `json:"repoRoot,omitempty"`
