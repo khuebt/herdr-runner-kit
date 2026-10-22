@@ -740,14 +740,10 @@ func mergedOrUnder(ctx context.Context, dir, ref, base string, tips []string) (o
 }
 
 // holdsWork reports whether branch has the work of tips, commits found
-// merged: it has everything on the ref cleanup checks merges against, or
-// each tip is merged into it. A local default branch not yet updated from
-// the remote, where the merge happened, has neither.
+// merged: each one is merged into it. A local default branch not yet
+// updated from the remote, where the merge happened, fails this.
 func holdsWork(ctx context.Context, root, branch string, tips []string) bool {
-	if ref := defaultBranch(ctx, root); ref != "" && isAncestor(ctx, root, ref, branch) {
-		return true
-	}
-	return !slices.ContainsFunc(tips, func(tip string) bool {
+	return len(tips) > 0 && !slices.ContainsFunc(tips, func(tip string) bool {
 		ok, _ := merged(ctx, root, tip, branch)
 		return !ok
 	})
