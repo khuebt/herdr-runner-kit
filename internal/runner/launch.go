@@ -78,9 +78,17 @@ func (r *Runner) Launch(ctx context.Context, id string) error {
 	err = r.launch(ctx, t)
 	if errors.Is(err, errEnded) {
 		// Stopped while it launched: close what this launch opened, which
-		// the stop could not see yet.
+		// the stop could not see yet. A stop that ran while herdr started
+		// the agent found none and may have marked the runner closed
+		// already, and a worktree's pane outlives the close: quit the agent
+		// this launch started either way.
 		if cur, gerr := r.Store.Get(id); gerr == nil {
 			_ = r.closeRunner(ctx, cur, false, closeCheck{})
+			if cur.Herdr.PaneID != "" {
+				quitCtx, cancel := context.WithTimeout(ctx, quitBudget)
+				_ = r.quitAgent(quitCtx, cur.Herdr.PaneID)
+				cancel()
+			}
 		}
 		return err
 	}
