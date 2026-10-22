@@ -330,10 +330,11 @@ type preambleData struct {
 
 // Preamble returns the fixed rules every runner of rec's project gets in
 // its contract, in the skill syntax of harness h. stage may be empty or a
-// stage without a template, in which case the runner may write only the
-// handbook files its task names. A milestone task's stage, such as
+// stage without a template, in which case code decides whether the runner
+// may change code or only the handbook files its task names; a stage with a
+// template sets that itself. A milestone task's stage, such as
 // "M2/F1", follows the template of its step.
-func Preamble(h task.Harness, rec Record, root, stage string) (string, error) {
+func Preamble(h task.Harness, rec Record, root, stage string, code bool) (string, error) {
 	data, err := skill.Files.ReadFile(preamblePath)
 	if err != nil {
 		return "", fmt.Errorf("read preamble: %w", err)
@@ -344,7 +345,7 @@ func Preamble(h task.Harness, rec Record, root, stage string) (string, error) {
 	}
 	d := preambleData{
 		StageData: NewStageData(rec, root, Tools{}, "", time.Now()),
-		Stage:     stage, BriefDir: BriefDir, Charter: CharterPath, Banned: bannedSkills,
+		Stage:     stage, Code: code, BriefDir: BriefDir, Charter: CharterPath, Banned: bannedSkills,
 	}
 	name := stage
 	if m, tmpl, ok := milestoneStage(stage); ok {

@@ -93,6 +93,9 @@ func spawnTask(ctx context.Context, r *runner.Runner, o runner.SpawnOptions, rev
 	}
 	if t.Project != "" {
 		parallelNote(r.Store, t.Project, o.Warn)
+		if _, err := fmt.Fprintln(errOut, writeRuleNote(t, r.Config.WritesCode(t.Kind))); err != nil {
+			return err
+		}
 	}
 	if want {
 		rt, err := r.SpawnReview(ctx, runner.ReviewSpawn{Writer: t, Warn: o.Warn})
@@ -109,6 +112,15 @@ func spawnTask(ctx context.Context, r *runner.Runner, o runner.SpawnOptions, rev
 		return err
 	}
 	return nil
+}
+
+// writeRuleNote tells the main session which write rule a project task got
+// from its kind: code, or the handbook only.
+func writeRuleNote(t *task.Task, code bool) string {
+	if code {
+		return "note: " + t.ID + " may change code (kind " + t.Kind + "), besides the project docs."
+	}
+	return "note: " + t.ID + " may write only the handbook files its task names (kind " + t.Kind + "); use a code, flow or fix task to change code."
 }
 
 // branchNote tells the main session that a worktree task got the kit's

@@ -321,3 +321,16 @@ func TestPathHonoursXDG(t *testing.T) {
 		t.Errorf("Path() = %q, %v", got, err)
 	}
 }
+
+func TestWritesCode(t *testing.T) {
+	cfg := Default()
+	cfg.Kinds["docs"] = Kind{Worktree: true}
+	cfg.Kinds["notes"] = Kind{}
+	for kind, want := range map[string]bool{
+		"code": true, "flow": true, "fix": true, "research": false, "report": false, "docs": true, "notes": false, "nope": false,
+	} {
+		if got := cfg.WritesCode(kind); got != want {
+			t.Errorf("WritesCode(%q) = %v, want %v", kind, got, want)
+		}
+	}
+}

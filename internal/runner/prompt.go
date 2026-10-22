@@ -68,7 +68,7 @@ func (r *Runner) contract(t *task.Task, outDir string, h task.Harness) (string, 
 	if root == "" {
 		root = t.Cwd
 	}
-	preamble, err := project.Preamble(h, rec, root, t.Stage)
+	preamble, err := project.Preamble(h, rec, root, t.Stage, r.Config.WritesCode(t.Kind))
 	if err != nil {
 		return "", err
 	}

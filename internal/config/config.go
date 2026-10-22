@@ -32,6 +32,19 @@ type Kind struct {
 	Review   bool // chain a review runner after each task of the kind
 }
 
+// WritesCode reports whether tasks of the named kind change code: the kinds
+// code, flow and fix, and any other kind that runs in a worktree. Research
+// and report only write documents.
+func (c Config) WritesCode(kind string) bool {
+	switch kind {
+	case "code", "flow", "fix":
+		return true
+	case "research", "report":
+		return false
+	}
+	return c.Kinds[kind].Worktree
+}
+
 // ReviewConfig sets the review runner: Agent overrides the default reviewer
 // on another harness, Skill is the skill it runs, empty for none.
 type ReviewConfig struct {

@@ -678,3 +678,22 @@ func TestMilestoneStartOnALiteProjectWithThePackWaived(t *testing.T) {
 		t.Fatalf("plan task = %+v", plan)
 	}
 }
+
+func TestSpawnProjectTaskPrintsItsWriteRule(t *testing.T) {
+	r, _ := approvedRunner(t)
+	r.StartLauncher = func(string) (int, error) { return 4242, nil }
+	for kind, want := range map[string]string{
+		"flow":     "may change code (kind flow)",
+		"fix":      "may change code (kind fix)",
+		"research": "may write only the handbook files its task names (kind research)",
+	} {
+		var out, errOut bytes.Buffer
+		o := runner.SpawnOptions{Kind: kind, Project: "demo-app", Prompt: "do " + kind, Warn: func(string) {}}
+		if err := spawnTask(t.Context(), r, o, nil, &out, &errOut); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("kind %s: notes %q, want %q", kind, errOut.String(), want)
+		}
+	}
+}
