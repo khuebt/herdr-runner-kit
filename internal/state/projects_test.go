@@ -252,7 +252,7 @@ func TestForgetProjectKeepsTheLockFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer waiter.Close()
+	defer func() { _ = waiter.Close() }()
 	if err := s.ForgetProject("demo-app"); err != nil {
 		t.Fatal(err)
 	}
