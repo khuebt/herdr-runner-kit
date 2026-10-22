@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -300,6 +301,10 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 		if _, uerr := r.launchUpdate(t.ID, func(t *task.Task) { t.Herdr.AgentName = name }); uerr != nil {
 			return spec, nil, "", uerr
 		}
+	}
+	// A stop that ran while herdr started the agent found no agent to quit.
+	if endErr := r.launchEnded(t.ID); endErr != nil {
+		return spec, nil, "", endErr
 	}
 	if err := r.settleStartup(ctx, t, adapter, pane, err); err != nil {
 		return spec, nil, "", err
@@ -691,10 +696,16 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d 
 	if err != nil {
 		return err
 	}
-	if changed {
-		r.emit(nt, "needs-human", dialog, q)
+	if !changed {
+		// Only a stop or a failure moves a starting task elsewhere.
+		return r.launchEnded(t.ID)
 	}
+	r.emit(nt, "needs-human", dialog, q)
 	_, err = r.Herdr.AgentWait(ctx, pane, dialogAnswerTimeout, "idle", "done")
+	// A stop meanwhile quits the agent, which ends the wait.
+	if endErr := r.launchEnded(t.ID); endErr != nil {
+		return endErr
+	}
 	switch {
 	case herdr.HasCode(err, herdr.CodeAgentNotRunning):
 		return fmt.Errorf("the agent exited at the %s dialog", dialog)
@@ -703,14 +714,26 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d 
 	}
 	if d.IdleWhileShown {
 		if err := r.waitScreenClears(ctx, pane, d, deadline); err != nil {
-			return err
+			return cmp.Or(r.launchEnded(t.ID), err)
 		}
 	}
-	_, _, err = r.Store.Transition(t.ID, task.Starting, []task.Status{task.NeedsHuman}, func(t *task.Task) {
+	_, changed, err = r.Store.Transition(t.ID, task.Starting, []task.Status{task.NeedsHuman}, func(t *task.Task) {
 		t.Error, t.Question, t.DialogAnswers = "", "", nil
 		t.LaunchDeadline = time.Now().UTC().Add(LaunchBudget)
 	})
+	if err == nil && !changed {
+		return r.launchEnded(t.ID)
+	}
 	return err
+}
+
+// launchEnded returns errEnded once task id has been stopped or failed, for
+// the launch steps that wait on herdr and cannot see it end.
+func (r *Runner) launchEnded(id string) error {
+	if cur, err := r.Store.Get(id); err == nil && cur.Status.Terminal() {
+		return errEnded
+	}
+	return nil
 }
 
 // dialogPollEvery is how often waitForHuman reads the screen while a

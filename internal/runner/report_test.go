@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -761,53 +762,68 @@ func TestStopDuringLaunchTypesNoPrompt(t *testing.T) {
 // no agent yet and marks the runner closed; the agent that starts after it
 // must still be quit, since the worktree's pane stays open.
 func TestStopDuringWorktreeAgentStartQuitsTheAgent(t *testing.T) {
-	r, fake, _ := newTestRunner(t)
-	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: gitRepo(t)})
-	var mu sync.Mutex
-	alive := false
-	isAlive := func() bool { mu.Lock(); defer mu.Unlock(); return alive }
-	start := fake.handlers["agent start"]
-	fake.on("agent start", func(args []string) (string, error) {
-		if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
-			t.Error(err)
-		}
-		mu.Lock()
-		alive = true
-		mu.Unlock()
-		return start(args)
-	})
-	fake.on("agent get", func([]string) (string, error) {
-		if !isAlive() {
-			return "", herdrError("agent_not_found")
-		}
-		return `{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`, nil
-	})
-	fake.on("agent send-keys", func(args []string) (string, error) {
-		if slices.Contains(args, "ctrl+c") {
-			mu.Lock()
-			alive = false
-			mu.Unlock()
-		}
-		return "{}", nil
-	})
-	fake.on("agent wait", func([]string) (string, error) {
-		if !isAlive() {
-			return "", herdrError("agent_not_found")
-		}
-		return `{"result":{"agent":{"agent_status":"working"}}}`, nil
-	})
-	if err := r.Launch(context.Background(), tk.ID); err == nil {
-		t.Error("the launch of a stopped task succeeded")
+	// The agent comes up ready, or on a startup dialog that waits for the
+	// user: a stopped task waits on neither.
+	for _, onDialog := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ready", true: "dialog"}[onDialog], func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: gitRepo(t)})
+			var mu sync.Mutex
+			alive := false
+			isAlive := func() bool { mu.Lock(); defer mu.Unlock(); return alive }
+			start := fake.handlers["agent start"]
+			fake.on("agent start", func(args []string) (string, error) {
+				if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+					t.Error(err)
+				}
+				mu.Lock()
+				alive = true
+				mu.Unlock()
+				if onDialog {
+					return "", herdrError(herdr.CodeAgentNotReady)
+				}
+				return start(args)
+			})
+			if onDialog {
+				fake.on("pane read", ok("Quick safety check: Is this a project you created or one you trust?\n❯ 1. Yes, I trust this folder\n"))
+			}
+			fake.on("agent get", func([]string) (string, error) {
+				if !isAlive() {
+					return "", herdrError("agent_not_found")
+				}
+				return `{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`, nil
+			})
+			fake.on("agent send-keys", func(args []string) (string, error) {
+				if slices.Contains(args, "ctrl+c") {
+					mu.Lock()
+					alive = false
+					mu.Unlock()
+				}
+				return "{}", nil
+			})
+			fake.on("agent wait", func(args []string) (string, error) {
+				if !isAlive() {
+					return "", herdrError("agent_not_found")
+				}
+				if slices.Contains(args, "idle") {
+					t.Error("the stopped task waits for the user to answer its startup dialog")
+				}
+				return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+			})
+			if err := r.Launch(context.Background(), tk.ID); err == nil {
+				t.Error("the launch of a stopped task succeeded")
+			}
+			got, _ := r.Store.Get(tk.ID)
+			if got.Status != task.Stopped || got.Worktree == nil || !got.Herdr.Closed {
+				t.Fatalf("task = %s, herdr %+v", got.Status, got.Herdr)
+			}
+			if isAlive() {
+				t.Error("the agent started after the stop is still running in the worktree's pane")
+			}
+			if fake.count("agent", "prompt") != 0 {
+				t.Errorf("prompts %d", fake.count("agent", "prompt"))
+			}
+			checkStore(t, r)
+		})
 	}
-	got, _ := r.Store.Get(tk.ID)
-	if got.Status != task.Stopped || got.Worktree == nil || !got.Herdr.Closed {
-		t.Fatalf("task = %s, herdr %+v", got.Status, got.Herdr)
-	}
-	if isAlive() {
-		t.Error("the agent started after the stop is still running in the worktree's pane")
-	}
-	if fake.count("agent", "prompt") != 0 {
-		t.Errorf("prompts %d", fake.count("agent", "prompt"))
-	}
-	checkStore(t, r)
 }
