@@ -275,7 +275,7 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 		}
 	}
 	decision := Decision{At: stamp(o.Now), Text: fmt.Sprintf("%s done: %s is merged into %s; tagged %s locally", id, d.Branch, d.DefaultBranch, d.Tag)}
-	var before []Milestone
+	var before, wrote []Milestone
 	if _, err := update(s, p.Name, func(rec *Record) error {
 		before = slices.Clone(rec.Milestones)
 		if hasRoadmap {
@@ -302,13 +302,14 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 		d.Milestone = *ms
 		rec.Decisions = append(rec.Decisions, decision)
 		rec.Pending++
+		wrote = slices.Clone(rec.Milestones)
 		return nil
 	}); err != nil {
 		return Finished{}, err
 	}
 	d.Commit, err = commitRendered(ctx, s, p, fmt.Sprintf("docs(project): %s done", id), RenderedPaths)
 	if err != nil {
-		return Finished{}, undoDone(ctx, s, p, id, before, decision, err)
+		return Finished{}, undoDone(ctx, s, p, id, before, wrote, decision, err)
 	}
 	if tip != "" && releaseHeld(ctx, p.Path, tip, d.Merged, d.DefaultBranch) {
 		// cleanup counts the branches stacked under the release as merged,
@@ -346,24 +347,31 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 
 // undoDone puts milestone id back in progress after its records commit
 // failed, and restores the rendered files, so done can run again once the
-// cause is fixed.
-func undoDone(ctx context.Context, s *state.Store, p state.Project, id string, before []Milestone, decision Decision, cause error) error {
+// cause is fixed. It takes back only what done wrote: before is the
+// milestone list done read, wrote the one it left. A milestone another
+// command changed since, such as a pack approval that does not wait for
+// done, is kept as it is and named.
+func undoDone(ctx context.Context, s *state.Store, p state.Project, id string, before, wrote []Milestone, decision Decision, cause error) error {
 	reason := cause.Error()
 	var ce *commitError
 	if errors.As(cause, &ce) {
 		reason = ce.reason
 	}
 	msg := fmt.Sprintf("%s stays in progress and is not tagged: committing its records failed: %s", id, reason)
-	var errs []string
+	var errs, kept []string
 	if _, err := update(s, p.Name, func(rec *Record) error {
-		rec.Milestones = before
-		if k := len(rec.Decisions) - 1; k >= 0 && rec.Decisions[k] == decision {
-			rec.Decisions = rec.Decisions[:k]
-		}
+		rec.Milestones, kept = undoOwn(rec.Milestones, before, wrote, func(m Milestone) string { return m.ID })
+		rec.Decisions = dropLast(rec.Decisions, decision)
 		rec.Pending = max(rec.Pending-1, 0)
 		return nil
 	}); err != nil {
 		errs = append(errs, "the kit's record still says done: "+err.Error())
+	}
+	if len(kept) > 0 {
+		msg += fmt.Sprintf("; milestone(s) %s changed meanwhile and are kept as they are", strings.Join(kept, ", "))
+		if slices.Contains(kept, id) {
+			msg = strings.Replace(msg, id+" stays in progress", id+" may still say done", 1)
+		}
 	}
 	if err := restoreRendered(ctx, p.Path); err != nil {
 		errs = append(errs, err.Error())
@@ -661,4 +669,15 @@ func checkReopen(rec Record, id string) error {
 		}
 	}
 	return nil
+}
+
+// dropLast removes the last decision equal to d, which a failed command
+// appended; decisions other commands appended since stay.
+func dropLast(ds []Decision, d Decision) []Decision {
+	for k := len(ds) - 1; k >= 0; k-- {
+		if ds[k] == d {
+			return slices.Delete(ds, k, k+1)
+		}
+	}
+	return ds
 }
