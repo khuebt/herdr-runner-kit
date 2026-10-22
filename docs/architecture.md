@@ -96,7 +96,7 @@ Commands live in `internal/cli`, one file per command or group, registered in `r
 - Agent screens and hook payloads are captured from live runs and kept under `internal/harness/testdata`. Tests read them as they are; a new agent version gets new captures rather than edited ones.
 - Runner tests use the fake herdr in `internal/runner/runner_test.go`, which records every call and answers from per-command handlers.
 - The lifecycle rules a test may assert with `runner.CheckInvariants` are listed in the [state model](state-model.md).
-- Live checks against real agents use a scratch build (`go build -o <scratch>/hrk ./cmd/hrk`) with `HRK_STATE_DIR` and `XDG_CONFIG_HOME` pointed at scratch folders, so the user's task store and `config.yaml` are never read or written. A scratch `HRK_STATE_DIR` turns Telegram off unless `TELEGRAM_STATE_DIR` names a plugin folder, so leave that unset, or point it at a scratch bot, never at the user's.
+- Live checks against real agents use a scratch build (`go build -o <scratch>/hrk ./cmd/hrk`) with `HRK_STATE_DIR` and `XDG_CONFIG_HOME` pointed at scratch folders, so the user's task store and `config.yaml` are never read or written. Point `TELEGRAM_STATE_DIR` at an empty scratch folder too, and drop the `telegram:` keys from a copied config: a scratch `HRK_STATE_DIR` only skips the plugin's default folder, so an explicit bot would still be messaged.
 
 ## Developing against a running install
 

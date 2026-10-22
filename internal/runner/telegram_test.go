@@ -75,28 +75,51 @@ func TestSendNotification(t *testing.T) {
 	}
 }
 
-// A runner on a scratch state sends nothing, even with the user's bot in
-// the config.
-func TestSendNotificationFromAScratchStateSendsNothing(t *testing.T) {
-	r, _, e := newTestRunner(t)
-	var calls atomic.Int32
-	withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})
-	r.Config.Telegram.Notify = []string{"failed", "needs-human"}
-	e["HOME"], e["HRK_STATE_DIR"] = t.TempDir(), r.Store.Dir()
-	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
-	for _, typ := range []string{"needs-human", "failed"} {
-		if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: typ, Summary: "x"}); err != nil {
+// A main session on a scratch state sends nothing through the plugin's
+// default folder, while one on the default state hands its runners a mark
+// that lets their news find the bot there.
+func TestSendNotificationFollowsTheStateFolder(t *testing.T) {
+	for _, own := range []bool{true, false} {
+		r, _, e := newTestRunner(t)
+		var calls atomic.Int32
+		withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+		// Only the plugin's default folder knows the bot.
+		r.Config.Telegram.EnvFile = ""
+		home := t.TempDir()
+		dir := filepath.Join(home, ".claude", "channels", "telegram")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if n := calls.Load(); n != 0 {
-		t.Errorf("a scratch state sent %d Telegram messages", n)
-	}
-	if ev := events(t, r, tk.ID); slices.Contains(ev, "notified") || slices.Contains(ev, "notify-failed") {
-		t.Errorf("events = %v", ev)
+		_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("TELEGRAM_BOT_TOKEN=1:abc\n"), 0o600)
+		_ = os.WriteFile(filepath.Join(dir, "access.json"), []byte(`{"allowFrom":["42"]}`), 0o600)
+		e["HOME"], e["CLAUDE_CONFIG_DIR"] = home, ""
+		if own {
+			e["HRK_STATE_DIR"] = r.Store.Dir()
+		}
+		r.Config.Telegram.Notify = []string{"failed"}
+		tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+		// The runner's own environment, as its detached news command gets it.
+		runnerEnv := env{}
+		for _, kv := range r.runnerEnv(tk) {
+			k, v, _ := strings.Cut(kv, "=")
+			runnerEnv[k] = v
+		}
+		runnerEnv["HOME"] = home
+		if _, marked := runnerEnv[telegram.StateDefaultEnv]; marked == own {
+			t.Fatalf("own state %v: runner env %v", own, runnerEnv)
+		}
+		for _, getenv := range []func(string) string{e.get, runnerEnv.get} {
+			r.Getenv = getenv
+			if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: "failed", Summary: "x"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if want := map[bool]int32{true: 0, false: 2}[own]; calls.Load() != want {
+			t.Errorf("own state %v: sent %d messages, want %d", own, calls.Load(), want)
+		}
 	}
 }
 

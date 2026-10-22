@@ -72,37 +72,33 @@ func TestResolvePluginDirOrder(t *testing.T) {
 	}
 }
 
-// A scratch state never resolves the user's bot from the config or the
-// plugin's default folder; only $TELEGRAM_STATE_DIR turns it on.
-func TestResolveScratchStateUsesOnlyTelegramStateDir(t *testing.T) {
-	home, scratch, plugin := t.TempDir(), t.TempDir(), t.TempDir()
+// A state folder of its own skips only the plugin's implicit default
+// folder: explicit config and $TELEGRAM_STATE_DIR still work, and so does
+// the default the kit hands down to its runners.
+func TestResolveOwnStateSkipsOnlyThePluginDefault(t *testing.T) {
+	home, plugin := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(home, ".claude", "channels", "telegram", ".env"), "TELEGRAM_BOT_TOKEN=home\n")
 	write(t, filepath.Join(home, ".claude", "channels", "telegram", "access.json"), `{"allowFrom":["111"]}`)
 	write(t, filepath.Join(home, ".env.bot"), "TELEGRAM_BOT_TOKEN=envfile\nTELEGRAM_CHAT_ID=42\n")
-	write(t, filepath.Join(plugin, ".env"), "TELEGRAM_BOT_TOKEN=scratch\n")
+	write(t, filepath.Join(plugin, ".env"), "TELEGRAM_BOT_TOKEN=plugin\n")
 	write(t, filepath.Join(plugin, "access.json"), `{"allowFrom":["999"]}`)
-	def := filepath.Join(home, ".local", "state", "herdr-runner-kit")
-	if err := os.MkdirAll(def, 0o700); err != nil {
-		t.Fatal(err)
+	own := map[string]string{"HOME": home, "HRK_STATE_DIR": filepath.Join(home, "data")}
+	if c, err := Resolve(config.Telegram{}, envOf(own)); !errors.Is(err, ErrNoCredentials) {
+		t.Errorf("own state reached the plugin's default folder: %+v, %v", c, err)
 	}
-	link := filepath.Join(t.TempDir(), "state")
-	if err := os.Symlink(def, link); err != nil {
-		t.Fatal(err)
-	}
-	for _, cfg := range []config.Telegram{{}, {EnvFile: "~/.env.bot"}, {StateDir: filepath.Join(home, ".claude", "channels", "telegram"), ChatID: "7"}} {
-		if c, err := Resolve(cfg, envOf(map[string]string{"HOME": home, "HRK_STATE_DIR": scratch})); !errors.Is(err, ErrNoCredentials) {
-			t.Errorf("scratch state with %+v: %+v, %v", cfg, c, err)
-		}
-		c, err := Resolve(cfg, envOf(map[string]string{"HOME": home, "HRK_STATE_DIR": scratch, "TELEGRAM_STATE_DIR": plugin}))
-		if err != nil || c.Token != "scratch" || !slices.Equal(c.ChatIDs, []string{"999"}) {
-			t.Errorf("scratch state with TELEGRAM_STATE_DIR and %+v: %+v, %v", cfg, c, err)
-		}
-	}
-	// The default folder, by any path, is not a scratch state.
-	for _, dir := range []string{def, def + "/", link} {
-		c, err := Resolve(config.Telegram{}, envOf(map[string]string{"HOME": home, "HRK_STATE_DIR": dir}))
-		if err != nil || c.Token != "home" {
-			t.Errorf("HRK_STATE_DIR=%s: %+v, %v", dir, c, err)
+	for _, tc := range []struct {
+		name string
+		cfg  config.Telegram
+		env  map[string]string
+		want string
+	}{
+		{"envFile", config.Telegram{EnvFile: "~/.env.bot"}, own, "envfile"},
+		{"stateDir", config.Telegram{StateDir: plugin}, own, "plugin"},
+		{"TELEGRAM_STATE_DIR", config.Telegram{}, map[string]string{"HOME": home, "HRK_STATE_DIR": own["HRK_STATE_DIR"], "TELEGRAM_STATE_DIR": plugin}, "plugin"},
+		{"handed-down default", config.Telegram{}, map[string]string{"HOME": home, "HRK_STATE_DIR": filepath.Join(home, ".local", "state", "herdr-runner-kit"), StateDefaultEnv: "1"}, "home"},
+	} {
+		if c, err := Resolve(tc.cfg, envOf(tc.env)); err != nil || c.Token != tc.want {
+			t.Errorf("%s: %+v, %v", tc.name, c, err)
 		}
 	}
 }

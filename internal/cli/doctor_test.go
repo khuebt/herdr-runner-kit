@@ -125,7 +125,7 @@ func TestDoctorChecksTaskClaudeConfigs(t *testing.T) {
 		"t5": `{"agent":"claude"}`,
 	}
 	for id, body := range tasks {
-		dir := filepath.Join(home, "herdr-runner-kit", "tasks", id)
+		dir := filepath.Join(home, "state", "tasks", id)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -237,10 +237,10 @@ func TestDoctorState(t *testing.T) {
 	if got := checkState(t.Context()); len(got) != 1 || got[0] != ok("no state yet") {
 		t.Fatalf("no state = %+v", got)
 	}
-	if _, err := os.Stat(filepath.Join(home, "herdr-runner-kit")); err == nil {
+	if _, err := os.Stat(filepath.Join(home, "state")); err == nil {
 		t.Fatal("doctor created the state folder")
 	}
-	store, err := state.Open(filepath.Join(home, "herdr-runner-kit"))
+	store, err := state.Open(filepath.Join(home, "state"))
 	if err != nil {
 		t.Fatal(err)
 	}

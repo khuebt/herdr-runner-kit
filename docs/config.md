@@ -189,7 +189,7 @@ If a trust dialog still appears, the task moves to `needs-human` and waits up to
 
 ## State
 
-Task state lives in `${XDG_STATE_HOME:-~/.local/state}/herdr-runner-kit/`, or in `$HRK_STATE_DIR` when that is set. The directory is created with mode `0700` and every file with `0600`, because it holds prompts:
+Task state lives in `${XDG_STATE_HOME:-~/.local/state}/herdr-runner-kit/`, or in `$HRK_STATE_DIR` when that is set. With `$HRK_STATE_DIR` set, Telegram no longer falls back to the plugin's default folder: set `telegram.envFile`, `telegram.stateDir` or `$TELEGRAM_STATE_DIR` to keep it on (see [telegram.md](telegram.md)). The kit hands its runners the folder it uses as `HRK_STATE_DIR`, with `HRK_STATE_DEFAULT=1` when it is the default one, so their news still finds the bot. The directory is created with mode `0700` and every file with `0600`, because it holds prompts:
 
 - `state.json` records the schema version;
 - `seq` is the task id counter;
