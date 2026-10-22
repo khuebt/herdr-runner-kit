@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"os"
 	"os/exec"
 	"reflect"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"testing/quick"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
@@ -167,11 +169,91 @@ type chainWorld struct {
 	prev    *runner.Snapshot
 }
 
+// chainBase is the world newChainWorld builds once per test, kept as
+// copies of its state folder and project that every later world of the
+// test starts from instead of building it again.
+type chainBase struct {
+	state, project, stateCopy, projectCopy string
+	p                                      state.Project
+}
+
+var chainBases sync.Map // *testing.T → *chainBase
+
 // newChainWorld returns a project with M0 done and released, and M1 in
 // progress with its plan runner done and the first plan committed.
 func newChainWorld(t *testing.T) *chainWorld {
+	if b, ok := chainBases.Load(t); ok {
+		return restoreChainWorld(t, b.(*chainBase))
+	}
 	r, sp := approvedRunner(t)
 	w := &chainWorld{t: t, ctx: t.Context(), r: r, p: sp, lost: map[string]bool{}, gone: map[string]bool{}}
+	w.wire()
+	// M0 done and released, as done leaves it.
+	if err := startMilestone(w.ctx, &w.out, r, sp, "M0", milestoneRun{Warn: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range projectTasks(t, r, "M0/") {
+		setTask(t, r, tk.ID, task.Done, false)
+	}
+	if _, err := project.Update(r.Store, "demo-app", func(rec *project.Record) error {
+		m := &rec.Milestones[0]
+		m.Status, m.Tag, m.Closed, m.Released, m.Branch = project.MilestoneDone, "v0.0.0", time.Now().UTC(), []string{"notes"}, "release/M0"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := startMilestone(w.ctx, &w.out, r, sp, "M1", milestoneRun{Warn: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+	setTask(t, r, projectTasks(t, r, "M1/plan")[0].ID, task.Done, false)
+	w.launchers = nil
+	w.plan = firstPlan()
+	w.commitPlan()
+	b := &chainBase{state: r.Store.Dir(), project: sp.Path, stateCopy: t.TempDir(), projectCopy: t.TempDir(), p: sp}
+	for _, d := range [][2]string{{b.stateCopy, b.state}, {b.projectCopy, b.project}} {
+		if err := os.CopyFS(d[0], os.DirFS(d[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chainBases.Store(t, b)
+	t.Cleanup(func() { chainBases.Delete(t) })
+	return w
+}
+
+// restoreChainWorld puts b's state folder and project back as they were
+// built and returns a world on them with a new runner.
+func restoreChainWorld(t *testing.T, b *chainBase) *chainWorld {
+	for _, d := range [][2]string{{b.state, b.stateCopy}, {b.project, b.projectCopy}} {
+		if err := os.RemoveAll(d[0]); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.CopyFS(d[0], os.DirFS(d[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := state.Open(b.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := runner.New(store, config.Default(), "/usr/local/bin/hrk")
+	r.Notify = nil
+	w := &chainWorld{t: t, ctx: t.Context(), r: r, p: b.p, lost: map[string]bool{}, gone: map[string]bool{}, plan: firstPlan()}
+	w.wire()
+	return w
+}
+
+// firstPlan is the plan newChainWorld commits.
+func firstPlan() []planNode {
+	return []planNode{
+		{ID: "F1", Type: "feature", Title: "Contract"},
+		{ID: "F2", Type: "feature", Title: "List", DependsOn: []string{"F1"}},
+		{ID: "F3", Type: "feature", Title: "Settings"},
+	}
+}
+
+// wire points w.r's herdr, launcher and follow-up hooks at w.
+func (w *chainWorld) wire() {
+	t, r := w.t, w.r
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEX_HOME", t.TempDir())
 	env := map[string]string{"HERDR_ENV": "1", "HERDR_WORKSPACE_ID": "w1", "CLAUDE_CONFIG_DIR": t.TempDir()}
@@ -194,32 +276,6 @@ func newChainWorld(t *testing.T) *chainWorld {
 		w.afters = append(w.afters, id)
 		return nil
 	}
-	// M0 done and released, as done leaves it.
-	if err := startMilestone(w.ctx, &w.out, r, sp, "M0", milestoneRun{Warn: func(string) {}}); err != nil {
-		t.Fatal(err)
-	}
-	for _, tk := range projectTasks(t, r, "M0/") {
-		setTask(t, r, tk.ID, task.Done, false)
-	}
-	if _, err := project.Update(r.Store, "demo-app", func(rec *project.Record) error {
-		m := &rec.Milestones[0]
-		m.Status, m.Tag, m.Closed, m.Released, m.Branch = project.MilestoneDone, "v0.0.0", time.Now().UTC(), []string{"notes"}, "release/M0"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := startMilestone(w.ctx, &w.out, r, sp, "M1", milestoneRun{Warn: func(string) {}}); err != nil {
-		t.Fatal(err)
-	}
-	setTask(t, r, projectTasks(t, r, "M1/plan")[0].ID, task.Done, false)
-	w.launchers = nil
-	w.plan = []planNode{
-		{ID: "F1", Type: "feature", Title: "Contract"},
-		{ID: "F2", Type: "feature", Title: "List", DependsOn: []string{"F1"}},
-		{ID: "F3", Type: "feature", Title: "Settings"},
-	}
-	w.commitPlan()
-	return w
 }
 
 // exec stands in for herdr. A worktree create makes its branch in the
