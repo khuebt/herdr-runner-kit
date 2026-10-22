@@ -153,7 +153,9 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 			// The branch still counts as merged once later commits on the
 			// default branch change the same lines and its squash merge no
 			// longer applies cleanly.
-			r.recordMergedTips(ctx, it.Task, it.checked())
+			if err := r.recordMergedTips(ctx, it.Task, it.checked()); err != nil {
+				fmt.Fprintf(os.Stderr, "hrk: %s: %v\n", it.Task.ID, err)
+			}
 		}
 	}
 	spared := startsFrom(tasks)
@@ -201,10 +203,12 @@ func startsFrom(tasks []*task.Task) map[[2]string]string {
 // recordMergedTips records tips, commits the check found merged, on task t,
 // keeping every tip recorded before that is not an ancestor of them. Refs
 // under refs/hrk/merged keep each recorded tip from being pruned once no
-// branch holds it.
-func (r *Runner) recordMergedTips(ctx context.Context, t *task.Task, tips []string) {
+// branch holds it. They are written first, and a failed one leaves the
+// record as it was: a ref without the record only pins a commit, while a
+// record without its ref can lose the commit to gc.
+func (r *Runner) recordMergedTips(ctx context.Context, t *task.Task, tips []string) error {
 	errSame := errors.New("unchanged")
-	nt, err := r.Store.Update(t.ID, func(t *task.Task) error {
+	_, err := r.Store.Update(t.ID, func(t *task.Task) error {
 		changed := false
 		for _, tip := range tips {
 			if t.Worktree != nil && t.Worktree.AddMergedTip(tip, func(a, b string) bool { return isAncestor(ctx, t.RepoRoot, a, b) }) {
@@ -214,14 +218,17 @@ func (r *Runner) recordMergedTips(ctx context.Context, t *task.Task, tips []stri
 		if !changed {
 			return errSame
 		}
+		for _, ref := range t.Worktree.MergedTipRefs(t.ID) {
+			if out, err := exec.CommandContext(ctx, "git", "-C", t.RepoRoot, "update-ref", ref[0], ref[1]).CombinedOutput(); err != nil {
+				return fmt.Errorf("record merged commit %s: %s", ref[1], strings.TrimSpace(string(out)))
+			}
+		}
 		return nil
 	})
-	if err != nil {
-		return
+	if errors.Is(err, errSame) {
+		return nil
 	}
-	for _, ref := range nt.Worktree.MergedTipRefs(nt.ID) {
-		gitOut(ctx, nt.RepoRoot, "update-ref", ref[0], ref[1])
-	}
+	return err
 }
 
 // tipKey scopes merged tips to one owner and repository.
@@ -414,7 +421,9 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 			return err
 		}
 	}
-	r.recordMergedTips(ctx, t, it.checked())
+	if err := r.recordMergedTips(ctx, t, it.checked()); err != nil {
+		fmt.Fprintf(os.Stderr, "hrk: %s: %v\n", t.ID, err)
+	}
 	t, err := r.Store.Update(t.ID, func(t *task.Task) error {
 		t.Worktree.Removed = true
 		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone

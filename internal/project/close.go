@@ -316,8 +316,10 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 	if tip != "" && releaseHeld(ctx, p.Path, tip, d.Merged, d.DefaultBranch) {
 		// cleanup counts the branches stacked under the release as merged,
 		// even once the release branch is gone. Without the record they are
-		// only listed unmerged, so a failure is not worth failing done.
-		if t, err := s.Update(closer.ID, func(t *task.Task) error {
+		// only listed unmerged, so a failure is not worth failing done. The
+		// refs come first, and a failed one leaves the record as it was: a
+		// record without its ref can lose the commit to gc.
+		_, _ = s.Update(closer.ID, func(t *task.Task) error {
 			if t.Worktree == nil {
 				return errors.New("no worktree")
 			}
@@ -327,12 +329,13 @@ func FinishMilestone(ctx context.Context, s *state.Store, p state.Project, id st
 			}) {
 				return errors.New("already recorded")
 			}
-			return nil
-		}); err == nil {
 			for _, ref := range t.Worktree.MergedTipRefs(t.ID) {
-				_, _ = git(ctx, p.Path, "update-ref", ref[0], ref[1])
+				if _, err := git(ctx, p.Path, "update-ref", ref[0], ref[1]); err != nil {
+					return err
+				}
 			}
-		}
+			return nil
+		})
 	}
 	if d.Commit == "" {
 		if d.Commit, err = git(ctx, p.Path, "rev-parse", "HEAD"); err != nil {

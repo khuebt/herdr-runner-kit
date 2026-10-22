@@ -741,3 +741,26 @@ func TestSendRefusesACleanedTask(t *testing.T) {
 		t.Errorf("status = %s, want done", got.Status)
 	}
 }
+
+// A merged commit is recorded only once its ref holds it, so gc never
+// prunes a commit the record counts on.
+func TestCleanupRecordsAMergedTipOnlyWithItsRef(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "feat/a")
+	squashMerge(t, repo, "feat/a")
+	// A ref below the task's merged ref keeps git from creating it.
+	git(t, repo, "update-ref", task.MergedTipRef(tk.ID)+"/x", "HEAD")
+	if it := cleanable(t, r, repo); it.Verdict != Merged {
+		t.Fatalf("verdict = %s %s", it.Verdict, it.Detail)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Worktree.MergedTip != "" {
+		t.Fatalf("recorded %s without its ref", got.Worktree.MergedTip)
+	}
+	git(t, repo, "update-ref", "-d", task.MergedTipRef(tk.ID)+"/x")
+	cleanable(t, r, repo)
+	got, _ := r.Store.Get(tk.ID)
+	if tip := gitOut(ctx, repo, "rev-parse", task.MergedTipRef(tk.ID)); got.Worktree.MergedTip == "" || tip != got.Worktree.MergedTip {
+		t.Errorf("tip %q, ref %q", got.Worktree.MergedTip, tip)
+	}
+}
