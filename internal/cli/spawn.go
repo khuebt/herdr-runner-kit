@@ -93,7 +93,7 @@ func spawnTask(ctx context.Context, r *runner.Runner, o runner.SpawnOptions, rev
 	}
 	if t.Project != "" {
 		parallelNote(r.Store, t.Project, o.Warn)
-		if _, err := fmt.Fprintln(errOut, writeRuleNote(t, r.Config.WritesCode(t.Kind))); err != nil {
+		if _, err := fmt.Fprintln(errOut, writeRuleNote(t, r.WritesCode(t))); err != nil {
 			return err
 		}
 	}

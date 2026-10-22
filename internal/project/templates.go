@@ -321,7 +321,8 @@ type preambleData struct {
 	BriefDir string
 	Charter  string
 	Banned   []string
-	// Code is set for a stage whose runner writes code.
+	// Code lets the runner change code: set by the stage template, else by
+	// the task's kind.
 	Code bool
 	// Context lists the open change requests and the dependencies not
 	// ready, fenced as untrusted data, or is empty.

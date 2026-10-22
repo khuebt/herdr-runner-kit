@@ -48,6 +48,12 @@ func heavyRule(bin string) string {
 	return "\n- Run tests, lint, typecheck and builds as " + bin + " heavy -- <command>; it waits for a free slot shared by every runner and the main session."
 }
 
+// WritesCode reports whether t may change code: its kind writes code and it
+// is not a review task, which is read-only.
+func (r *Runner) WritesCode(t *task.Task) bool {
+	return t.Review == nil && r.Config.WritesCode(t.Kind)
+}
+
 // contract returns t's report contract and, for a project task, the
 // project's preamble in the skill syntax of harness h. A record that cannot
 // be read still yields the preamble, with sharing off and no context pack.
@@ -68,7 +74,7 @@ func (r *Runner) contract(t *task.Task, outDir string, h task.Harness) (string, 
 	if root == "" {
 		root = t.Cwd
 	}
-	preamble, err := project.Preamble(h, rec, root, t.Stage, r.Config.WritesCode(t.Kind))
+	preamble, err := project.Preamble(h, rec, root, t.Stage, r.WritesCode(t))
 	if err != nil {
 		return "", err
 	}
