@@ -68,3 +68,30 @@ func TestSpawnKeep(t *testing.T) {
 		t.Error("spawn dropped Keep")
 	}
 }
+
+func TestProjectTaskWriteRuleFollowsItsKind(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	if err := project.Save(r.Store, project.NewRecord("demo-app")); err != nil {
+		t.Fatal(err)
+	}
+	const codeRule = "the code, tests and tooling your task needs"
+	for _, tt := range []struct {
+		name string
+		task task.Task
+		code bool
+	}{
+		{"flow", task.Task{Kind: "flow"}, true},
+		{"research", task.Task{Kind: "research"}, false},
+		{"review of a flow task", task.Task{Kind: "flow", Review: &task.Review{Of: "t1"}}, false},
+	} {
+		tk := tt.task
+		tk.ID, tk.Project, tk.RepoRoot, tk.Cwd = "t9", "demo-app", "/work/demo-app", "/work/demo-app"
+		got, err := r.contract(&tk, "/out", task.Claude)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(got, codeRule) != tt.code {
+			t.Errorf("%s: code rule present = %v, want %v:\n%s", tt.name, !tt.code, tt.code, got)
+		}
+	}
+}
