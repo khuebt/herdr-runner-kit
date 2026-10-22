@@ -149,6 +149,10 @@ func (claude) SessionContext(request string) string { return ClaudeSessionContex
 // run. Claude ends its turn then and wakes on its own later.
 var claudeBackgroundCount = regexp.MustCompile(`(?i)\b\d+\s+(background\s+)?(shells?|bash(es)?|tasks?|agents?)\b`)
 
+// WakesOnBackground is true: Claude starts a turn when a background shell
+// or agent it left running finishes.
+func (claude) WakesOnBackground() bool { return true }
+
 // WorksInBackground looks only at Claude's mode line, so text in the
 // conversation can never match.
 func (claude) WorksInBackground(screen Screen) (bool, error) {

@@ -155,9 +155,124 @@ func TestStallRetryNeverEscalates(t *testing.T) {
 func TestStallSkipsAnAgentThatIsNotWorking(t *testing.T) {
 	r, fake, tk, _ := stallRunner(t, harnessFixture(t, "working-claude-1.txt"))
 	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`))
-	sampleEvery(t, r, tk.ID, time.Now(), 0, 30)
+	// Below stallAfter an idle agent is not looked at; past it, checkIdle
+	// takes over, never the progress ladder.
+	sampleEvery(t, r, tk.ID, time.Now(), 0, 9)
 	if p := kitPrompts(fake); len(p) != 0 || fake.count("pane", "read") != 0 {
 		t.Errorf("an idle agent was sampled: prompts %q", p)
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "interrupted") {
+		t.Errorf("an idle agent was interrupted: %v", ev)
+	}
+}
+
+// idleRunner returns a running task of agent whose agent sits idle at its
+// prompt, with the given unreported turns, and whose pane shows screen.
+func idleRunner(t *testing.T, agent string, unreported int, screen string) (*Runner, *fakeHerdr, *task.Task) {
+	t.Helper()
+	r, fake, _ := newTestRunner(t)
+	r.Config.StallAfter = 10 * time.Minute
+	tk := running(t, r, SpawnOptions{Kind: "research", Agent: agent, Prompt: "x", Cwd: plainDir(t)})
+	tk, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Unreported = unreported; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.on("pane read", ok(screen))
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}`))
+	return r, fake, tk
+}
+
+// A Codex runner that ended its turn to wait, was nudged by the turn end
+// and was never woken, as a missed turn end leaves it, becomes stalled news
+// after stallAfter idle, once.
+func TestIdleRunnerAfterATurnEndNudgeIsStalled(t *testing.T) {
+	r, fake, tk := idleRunner(t, "codex", 1, "› \n")
+	start := time.Now()
+	sampleEvery(t, r, tk.ID, start, 0, 9)
+	if ev := eventsOf(t, r, tk.ID, "stalled"); len(ev) != 0 {
+		t.Fatalf("stalled before stallAfter: %+v", ev)
+	}
+	sampleEvery(t, r, tk.ID, start, 10, 120)
+	stalled := eventsOf(t, r, tk.ID, "stalled")
+	if len(stalled) != 1 || stalled[0].Summary != "idle at its prompt for 10 min without a report after a nudge; the runner is left open" {
+		t.Fatalf("stalled = %+v", stalled)
+	}
+	if p := kitPrompts(fake); len(p) != 0 {
+		t.Errorf("prompts = %q", p)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running || got.Unreported != 2 {
+		t.Errorf("task = %s, unreported %d", got.Status, got.Unreported)
+	}
+	checkStore(t, r)
+}
+
+// A runner idle without a report, whose turn end the kit never saw, gets
+// one nudge that tells it to wait in its turn, then stalled news.
+func TestIdleRunnerIsNudgedThenStalled(t *testing.T) {
+	r, fake, tk := idleRunner(t, "codex", 0, "› \n")
+	start := time.Now()
+	sampleEvery(t, r, tk.ID, start, 0, 10)
+	p := kitPrompts(fake)
+	if len(p) != 1 || !strings.HasPrefix(p[0], "You have been idle at your prompt for 10 minutes") || !strings.Contains(p[0], "wait for them in this same turn") {
+		t.Fatalf("prompts = %q", p)
+	}
+	if ev := eventsOf(t, r, tk.ID, "nudged"); len(ev) != 1 || ev[0].Summary != "idle at its prompt for 10 min without a report; nudged" {
+		t.Fatalf("nudged = %+v", ev)
+	}
+	// The nudge changed the task, so the idle clock starts again.
+	sampleEvery(t, r, tk.ID, start, 11, 20)
+	if ev := eventsOf(t, r, tk.ID, "stalled"); len(ev) != 0 {
+		t.Fatalf("stalled too early: %+v", ev)
+	}
+	sampleEvery(t, r, tk.ID, start, 21, 60)
+	if ev := eventsOf(t, r, tk.ID, "stalled"); len(ev) != 1 {
+		t.Fatalf("stalled = %+v", ev)
+	}
+	if len(kitPrompts(fake)) != 1 {
+		t.Errorf("prompts = %q", kitPrompts(fake))
+	}
+	// A message from the main session starts the ladder over.
+	if _, err := r.Send(context.Background(), tk.ID, "go on"); err != nil {
+		t.Fatal(err)
+	}
+	sampleEvery(t, r, tk.ID, start, 61, 71)
+	if n := len(eventsOf(t, r, tk.ID, "nudged")); n != 2 {
+		t.Errorf("nudges after a send = %d, want 2", n)
+	}
+	checkStore(t, r)
+}
+
+// A Claude runner idle while its screen shows its own background work is
+// woken by that work, so it is nudged only after three times stallAfter.
+func TestIdleClaudeWaitingOnBackgroundWorkIsNudgedLater(t *testing.T) {
+	r, fake, tk := idleRunner(t, "claude", 0, harnessFixture(t, "background-agents-claude-2.txt"))
+	start := time.Now()
+	sampleEvery(t, r, tk.ID, start, 0, 29)
+	if p := kitPrompts(fake); len(p) != 0 {
+		t.Fatalf("nudged a runner waiting on its background work: %q", p)
+	}
+	sampleEvery(t, r, tk.ID, start, 30, 30)
+	p := kitPrompts(fake)
+	if len(p) != 1 || !strings.Contains(p[0], "you are woken when they finish") {
+		t.Fatalf("prompts = %q", p)
+	}
+	if ev := eventsOf(t, r, tk.ID, "nudged"); len(ev) != 1 || ev[0].Summary != "idle at its prompt for 30 min with background work and no report; nudged" {
+		t.Errorf("nudged = %+v", ev)
+	}
+}
+
+// A held done is a report: its turn end finishes it, so no nudge.
+func TestIdleRunnerWithAHeldDoneIsLeftAlone(t *testing.T) {
+	r, fake, tk := idleRunner(t, "codex", 0, "› \n")
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.PendingDone = &task.PendingDone{Since: time.Now().UTC()}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sampleEvery(t, r, tk.ID, time.Now(), 0, 60)
+	if p := kitPrompts(fake); len(p) != 0 || len(eventsOf(t, r, tk.ID, "stalled")) != 0 {
+		t.Errorf("prompts %q, events %v", p, events(t, r, tk.ID))
 	}
 }
 

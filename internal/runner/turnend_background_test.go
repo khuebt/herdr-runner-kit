@@ -64,9 +64,24 @@ func TestTurnEndFallsBackToTheModeLine(t *testing.T) {
 
 func TestNudgeNeverAsksToWaitInTheTurn(t *testing.T) {
 	r, _, _ := newTestRunner(t)
-	nudge := r.nudgeText()
+	nudge := r.nudgeText(task.Claude)
 	if strings.Contains(nudge, "wait for it") || !strings.Contains(nudge, "Never start sleep or heartbeat commands") ||
 		!strings.Contains(nudge, "end your turn now without reporting: you are woken when they finish") {
 		t.Errorf("nudge = %q", nudge)
+	}
+}
+
+// Only Claude is woken when its background work ends: every other harness
+// is told to wait for it in the same turn.
+func TestNudgeAsksOtherHarnessesToWaitInTheTurn(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	for _, h := range []task.Harness{task.Codex, task.Pi, task.Omp} {
+		for _, nudge := range []string{r.nudgeText(h), r.idleNudgeText(h, 10)} {
+			if strings.Contains(nudge, "you are woken") || strings.Contains(nudge, "end your turn now") ||
+				!strings.Contains(nudge, "wait for them in this same turn") || !strings.Contains(nudge, "Never end your turn to wait") ||
+				!strings.Contains(nudge, r.Bin+" report done") {
+				t.Errorf("%s nudge = %q", h, nudge)
+			}
+		}
 	}
 }

@@ -235,6 +235,10 @@ type Adapter interface {
 	// WorksInBackground reports whether the agent's screen shows background
 	// work still running. It returns screen's error when it cannot tell.
 	WorksInBackground(screen Screen) (bool, error)
+	// WakesOnBackground reports whether the agent starts a turn of its own
+	// when background work it left running finishes, so it may end its
+	// turn to wait for that work.
+	WakesOnBackground() bool
 	// DoneAtTurnEnd reports whether a done report waits for the end of the
 	// turn it came in, because the agent may keep working after it: the
 	// kit holds the done and makes it final at the turn end.

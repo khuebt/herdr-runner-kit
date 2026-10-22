@@ -72,6 +72,10 @@ A waiting task leaves only through `Settle`, `release` of a held task, or `stop`
 
 The launcher's own writes (`launchUpdate`) notice a task that ended while it worked, such as one stopped before its pane was recorded. The launch records the tab it opened, types no prompt, and closes the runner through `closeRunner`.
 
+### Unreported turns
+
+`Unreported` counts the turns since the last report, `send` or `answer` that ended without a report; those reset it, and so does a fallback or handoff. The turn-end hook adds one per such turn, and the progress watcher (`checkIdle`) adds one for an agent idle at its prompt for `stallAfter`, under a check that the count and the running status did not change since it read them. The first step is a nudge; the second is news (`turn-ended-unreported` from a turn end, `stalled` from the watcher), and nothing follows until a reset. The count changes no status.
+
 ### Other lifecycle fields
 
 | Field | Written by |

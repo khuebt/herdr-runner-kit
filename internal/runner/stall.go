@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -32,6 +33,9 @@ const (
 	interruptSettle = 10 * time.Second
 	// progressScreenLines is how much of the pane a sample reads.
 	progressScreenLines = 40
+	// backgroundIdleFactor stretches the idle bound of an agent whose
+	// screen shows its own background work, which wakes it when it ends.
+	backgroundIdleFactor = 3
 )
 
 // Ladder steps, each taken once per stall.
@@ -59,13 +63,17 @@ type progressState struct {
 	StepAt      time.Time `json:"stepAt,omitzero"` // when the last step was taken
 	RetrySince  time.Time `json:"retrySince,omitzero"`
 	RetryNoted  bool      `json:"retryNoted,omitempty"`
+	// IdleSince is when the agent was first seen idle at its prompt since
+	// it last worked or the task last changed.
+	IdleSince time.Time `json:"idleSince,omitzero"`
 }
 
 // WatchProgress samples a running task's agent once per progressEvery
 // while ctx lasts, and climbs the stall ladder when a working agent shows no
 // progress for stallAfter: first a queued nudge, then an interrupt and a
-// resume prompt, then stalled news with the runner left open. It returns
-// when the task finishes or its runner closes.
+// resume prompt, then stalled news with the runner left open. An agent idle
+// at its prompt without a report is handled by checkIdle. It returns when
+// the task finishes or its runner closes.
 func (r *Runner) WatchProgress(ctx context.Context, id string) {
 	if r.Config.StallAfter <= 0 {
 		return
@@ -105,9 +113,15 @@ func (r *Runner) checkProgress(ctx context.Context, t *task.Task, now time.Time)
 		// Not working: nothing can hang, and the next working stretch is
 		// measured from here.
 		st.Since, st.Samples, st.RetrySince, st.RetryNoted = now, 0, time.Time{}, false
+		if t.Status == task.Running && !t.Stalled && err == nil && (a.Status == "idle" || a.Status == "done") {
+			r.checkIdle(ctx, t, adapter, &st, now)
+		} else {
+			st.IdleSince = time.Time{}
+		}
 		r.saveProgress(t.ID, st)
 		return
 	}
+	st.IdleSince = time.Time{}
 	if r.Store.HeavyWaiting(t.ID) {
 		// Queued for a heavy command slot: the wait is someone else's
 		// command, so it never nudges or interrupts this runner.
@@ -188,6 +202,57 @@ func (r *Runner) climb(ctx context.Context, t *task.Task, step int, idle time.Du
 	case stepStalled:
 		r.emit(t, "stalled", fmt.Sprintf("no progress for %d min after a nudge and an interrupt; the runner is left open", minutes), "")
 	}
+}
+
+// checkIdle handles a running task whose agent sits idle at its prompt, as
+// one that ended its turn to wait for work nothing wakes it from does. Once
+// it has been idle for stallAfter since the task last changed, or three
+// times that while its screen shows background work of its own, it takes
+// the next step of the turn-end ladder, so a turn end the kit missed counts
+// too: with no unreported turn it is nudged, after one it is stalled news.
+// A runner that already had both is left alone. A held done is a report,
+// and its turn end finishes it.
+func (r *Runner) checkIdle(ctx context.Context, t *task.Task, adapter harness.Adapter, st *progressState, now time.Time) {
+	if st.IdleSince.IsZero() {
+		st.IdleSince = now
+	}
+	idle, bound := now.Sub(st.IdleSince), r.Config.StallAfter
+	if idle < bound || t.PendingDone != nil || t.Unreported >= 2 {
+		return
+	}
+	screen := func(lines int) (string, error) { return r.Herdr.PaneRead(ctx, t.Herdr.PaneID, lines) }
+	background, _ := adapter.WorksInBackground(screen)
+	if background {
+		bound *= backgroundIdleFactor
+		if idle < bound {
+			return
+		}
+	}
+	before := t.Unreported
+	cur, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		if t.Status != task.Running || t.Unreported != before || t.PendingDone != nil {
+			return errNotRunning // a report, a send or a turn end came first
+		}
+		t.Unreported++
+		return nil
+	})
+	if err != nil {
+		return
+	}
+	minutes := int(idle.Minutes())
+	what := "without a report"
+	if background {
+		what = "with background work and no report"
+	}
+	if cur.Unreported == 1 {
+		text := r.idleNudgeText(adapter.Harness(), minutes)
+		if err := r.typePrompt(ctx, cur, cur.Herdr.PaneID, text); err != nil {
+			return
+		}
+		r.emit(cur, "nudged", fmt.Sprintf("idle at its prompt for %d min %s; nudged", minutes, what), "")
+		return
+	}
+	r.emit(cur, "stalled", fmt.Sprintf("idle at its prompt for %d min %s after a nudge; the runner is left open", minutes, what), "")
 }
 
 func (r *Runner) progressPath(id string) string {
