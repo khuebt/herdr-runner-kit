@@ -609,3 +609,39 @@ func TestMilestoneDataFencesUntrustedText(t *testing.T) {
 		t.Errorf("close prompt shows the title outside its fence:\n%s", got)
 	}
 }
+
+// Register takes the record from the committed snapshot only when its
+// milestones keep the record's rules.
+func TestRegisterRefusesASnapshotThatBreaksMilestoneRules(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		ms   []Milestone
+		want string
+	}{
+		{"two in progress", []Milestone{{ID: "M0", Title: "a", Status: MilestoneInProgress}, {ID: "M1", Title: "b", Status: MilestoneInProgress}},
+			"milestones M0 and M1 are both in progress"},
+		{"planned before done", []Milestone{{ID: "M0", Title: "a", Status: MilestonePlanned}, {ID: "M1", Title: "b", Status: MilestoneDone}},
+			"milestone M0 is planned, but M1 after it is done"},
+		{"feature twice", []Milestone{
+			{ID: "M0", Title: "a", Status: MilestoneInProgress, Features: []Feature{{ID: "F1", Title: "x"}}},
+			{ID: "M1", Title: "b", Status: MilestonePlanned, Features: []Feature{{ID: "F1", Title: "x"}}},
+		}, "feature F1 is in milestones M0 and M1"},
+		{"unknown status", []Milestone{{ID: "M0", Title: "a", Status: "active"}}, `milestone M0 has status "active"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := newRepo(t)
+			rec := NewRecord("demo-app")
+			rec.Milestones = c.ms
+			data, err := Render(rec, SnapshotPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, dir, SnapshotPath, string(data))
+			run(t, dir, "add", SnapshotPath)
+			run(t, dir, "commit", "-q", "-m", "docs(project): snapshot")
+			if _, _, err := Register(context.Background(), openStore(t), dir, "", ""); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("register = %v, want %q", err, c.want)
+			}
+		})
+	}
+}

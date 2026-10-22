@@ -339,7 +339,7 @@ func TestDependencyAddAndSet(t *testing.T) {
 		}
 	}
 	if _, err := Update(s, "demo-app", func(r *Record) error {
-		r.Milestones = []Milestone{{ID: "M1", Title: "Lists"}}
+		r.Milestones = []Milestone{{ID: "M1", Title: "Lists", Status: MilestonePlanned}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)

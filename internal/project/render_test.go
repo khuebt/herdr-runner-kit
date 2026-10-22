@@ -28,7 +28,7 @@ func TestRenderSnapshot(t *testing.T) {
 - Spec gate: approved v2 by Lan on 2026-10-14
 - Pack gate: waived on 2026-10-14
 - Re-approval needed: scope grew
-- Milestone: M1 Reading lists (active)
+- Milestone: M1 Reading lists (in-progress)
 - Graduated: 2026-10-14 v0.3.0
 
 ## Change requests
@@ -71,7 +71,7 @@ func TestRenderDecisionsBacklogRoadmap(t *testing.T) {
 
 ## M1 Reading lists
 
-- Status: active
+- Status: in-progress
 - Planned: 2026-10-14
 - Started: 2026-10-14
 - Branch: release/M1

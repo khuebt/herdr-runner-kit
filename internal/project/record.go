@@ -212,6 +212,41 @@ func (r *Record) Validate() error {
 	if r.Gates.Spec.Waived {
 		return errors.New("the spec gate cannot be waived")
 	}
+	return checkMilestoneList(r.Milestones)
+}
+
+// checkMilestoneList checks the milestone rules a record must keep: each
+// status is planned, in progress or done, at most one is in progress,
+// every milestone before one in progress or done is done, and a feature
+// id is in one milestone at most.
+func checkMilestoneList(ms []Milestone) error {
+	last, running := -1, ""
+	where := map[string]string{}
+	for i, m := range ms {
+		switch m.Status {
+		case MilestoneInProgress:
+			if running != "" {
+				return fmt.Errorf("milestones %s and %s are both in progress", running, m.ID)
+			}
+			running, last = m.ID, i
+		case MilestoneDone:
+			last = i
+		case MilestonePlanned:
+		default:
+			return fmt.Errorf("milestone %s has status %q: want %s, %s or %s", m.ID, m.Status, MilestonePlanned, MilestoneInProgress, MilestoneDone)
+		}
+		for _, f := range m.Features {
+			if first, ok := where[f.ID]; ok && first != m.ID {
+				return fmt.Errorf("feature %s is in milestones %s and %s", f.ID, first, m.ID)
+			}
+			where[f.ID] = m.ID
+		}
+	}
+	for _, m := range ms[:max(last, 0)] {
+		if m.Status != MilestoneDone {
+			return fmt.Errorf("milestone %s is %s, but %s after it is %s", m.ID, m.Status, ms[last].ID, ms[last].Status)
+		}
+	}
 	return nil
 }
 
@@ -251,6 +286,7 @@ func ParseSnapshot(data []byte) (Record, error) {
 	if err := dec.Decode(&rec); err != nil {
 		return Record{}, fmt.Errorf("parse project snapshot: %w", err)
 	}
+	healMoved(rec.Milestones) // as Load does, for a snapshot an older kit rendered
 	if err := rec.Validate(); err != nil {
 		return Record{}, err
 	}
