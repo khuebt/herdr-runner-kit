@@ -45,7 +45,7 @@ const updateAttempts = 3
 
 // UpdateWritten runs between Update's write and its check of the result;
 // tests rewrite the file there the way another program may.
-var UpdateWritten = func(path string) {}
+var UpdateWritten = func(string) {}
 
 // Update rewrites path under a lock on lockAt: it reads the file (nil when
 // it is missing), hands it to edit, and writes what edit returns with
