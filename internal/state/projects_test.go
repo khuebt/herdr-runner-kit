@@ -205,9 +205,8 @@ func TestReleaseStaleReservation(t *testing.T) {
 	}
 }
 
-// Forget waits for a holder of a project lock before it removes the lock
-// files, so the holder never keeps a lock on a file a new opener no longer
-// sees.
+// Forget waits for a holder of a project lock before it removes the
+// project's files.
 func TestForgetProjectWaitsForLockHolders(t *testing.T) {
 	s := openTestStore(t)
 	if _, err := s.ReserveProject("demo-app", filepath.Join(resolvedTemp(t), "app")); err != nil {
@@ -224,8 +223,8 @@ func TestForgetProjectWaitsForLockHolders(t *testing.T) {
 		t.Fatalf("forget did not wait for the checkout holder: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if _, err := os.Stat(filepath.Join(s.ProjectDir("demo-app"), "checkout.lock")); err != nil {
-		t.Fatalf("lock file removed under its holder: %v", err)
+	if _, err := os.Stat(s.ProjectDir("demo-app")); err != nil {
+		t.Fatalf("project files removed under the lock holder: %v", err)
 	}
 	unlock()
 	if err := <-done; err != nil {
@@ -233,5 +232,41 @@ func TestForgetProjectWaitsForLockHolders(t *testing.T) {
 	}
 	if _, err := os.Stat(s.ProjectDir("demo-app")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("project files kept: %v", err)
+	}
+}
+
+// A caller that opened a project lock before Forget removed the project's
+// folder, and waits on it, locks the same file as the next caller.
+func TestForgetProjectKeepsTheLockFiles(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.ReserveProject("demo-app", filepath.Join(resolvedTemp(t), "app")); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := s.LockProject("demo-app", "milestone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	path := filepath.Join(s.dir, "project-locks", "demo-app", "milestone.lock")
+	waiter, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiter.Close()
+	if err := s.ForgetProject("demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err = s.LockProject("demo-app", "milestone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	held, err := waiter.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := os.Stat(path)
+	if err != nil || !os.SameFile(held, next) {
+		t.Fatalf("the waiter and the next caller lock different files: %v", err)
 	}
 }

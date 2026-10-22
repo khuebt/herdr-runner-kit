@@ -53,15 +53,21 @@ type projectsFile struct {
 func (s *Store) ProjectDir(name string) string { return filepath.Join(s.dir, "projects", name) }
 
 // LockProject takes the named flock of a project, such as "checkout" or
-// "record", creating the project's folder if needed.
+// "record", creating the project's folder if needed. The lock files live
+// outside that folder and are never removed, so ForgetProject, which
+// removes the folder, never leaves a waiter locking a file the next opener
+// no longer sees.
 func (s *Store) LockProject(name, which string) (func(), error) {
 	if err := CheckProjectName(name); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(s.ProjectDir(name), dirPerm); err != nil {
-		return nil, fmt.Errorf("create project dir: %w", err)
+	locks := filepath.Join(s.dir, "project-locks", name)
+	for _, dir := range []string{s.ProjectDir(name), locks} {
+		if err := os.MkdirAll(dir, dirPerm); err != nil {
+			return nil, fmt.Errorf("create project dir: %w", err)
+		}
 	}
-	return lock(filepath.Join(s.ProjectDir(name), which+".lock"))
+	return lock(filepath.Join(locks, which+".lock"))
 }
 
 // ReserveProject adds name at path as a reserved entry. It refuses a name
@@ -163,9 +169,8 @@ func (s *Store) ForgetProject(name string) error {
 	if err != nil {
 		return err
 	}
-	// The folder holds the project's lock files, so it goes only while
-	// this holds them, in lock order: no holder is left on a removed file
-	// while the next opener locks a new one.
+	// The folder goes only while this holds the project's locks, in lock
+	// order, so no writer is left on a file in it.
 	for _, which := range []string{"milestone", "checkout", "record"} {
 		unlock, err := s.LockProject(name, which)
 		if err != nil {
