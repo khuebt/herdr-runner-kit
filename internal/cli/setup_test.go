@@ -13,7 +13,9 @@ func setupEnv(t *testing.T) (home, claude1, claude2 string) {
 	home = t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("HRK_STATE_DIR", filepath.Join(home, "state"))
+	// The default state folder: a scratch HRK_STATE_DIR turns Telegram off.
+	t.Setenv("XDG_STATE_HOME", home)
+	t.Setenv("HRK_STATE_DIR", "")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("TELEGRAM_STATE_DIR", "")
 	claude1, claude2 = filepath.Join(home, ".claude"), filepath.Join(home, ".claude2")
@@ -36,7 +38,7 @@ func TestSetupIsIdempotent(t *testing.T) {
 
 	first := runCommand(t, "setup", "--claude-config", c1, "--claude-config", c2)
 	for _, want := range []string{
-		"created " + filepath.Join(home, "state"),
+		"created " + filepath.Join(home, "herdr-runner-kit"),
 		"created " + filepath.Join(c1, "skills", "herdr-runner-kit", "SKILL.md"),
 		"created " + filepath.Join(c2, "skills", "herdr-runner-kit", "references", "commands.md"),
 		"created the auto re-arm hook in " + filepath.Join(c2, "settings.json"),
@@ -102,11 +104,11 @@ func TestUninstallPurgeNeedsConfirmation(t *testing.T) {
 	if err := root.Execute(); err == nil {
 		t.Fatal("purge without a yes must fail")
 	}
-	if _, err := os.Stat(filepath.Join(home, "state")); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "herdr-runner-kit")); err != nil {
 		t.Fatal("a cancelled purge must keep the state")
 	}
 	runCommand(t, "uninstall", "--claude-config", c1, "--purge", "--yes")
-	for _, p := range []string{filepath.Join(home, "state"), filepath.Join(home, ".config", "herdr-runner-kit")} {
+	for _, p := range []string{filepath.Join(home, "herdr-runner-kit"), filepath.Join(home, ".config", "herdr-runner-kit")} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Fatalf("purge kept %s", p)
 		}

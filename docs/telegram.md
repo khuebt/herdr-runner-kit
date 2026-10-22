@@ -20,6 +20,8 @@ telegram:
 
 or let it use the channel plugin's own files: the token from `<dir>/.env` and the chats from `allowFrom` in `<dir>/access.json`, where `<dir>` is `telegram.stateDir`, else `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. `telegram.chatId` overrides the chat ids from either source. Without credentials, Telegram is simply off.
 
+A scratch state, `HRK_STATE_DIR` set to a folder other than the default `${XDG_STATE_HOME:-~/.local/state}/herdr-runner-kit`, reads only `$TELEGRAM_STATE_DIR`, and ignores `telegram.envFile`, `telegram.stateDir`, `telegram.chatId` and the plugin's default folder. Without `$TELEGRAM_STATE_DIR` Telegram is off there, so a live check on a copy of the state never messages your chat.
+
 Use the same bot for the plugin and the kit.
 
 ## Setting up the plugin

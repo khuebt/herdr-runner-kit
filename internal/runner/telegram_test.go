@@ -75,6 +75,31 @@ func TestSendNotification(t *testing.T) {
 	}
 }
 
+// A runner on a scratch state sends nothing, even with the user's bot in
+// the config.
+func TestSendNotificationFromAScratchStateSendsNothing(t *testing.T) {
+	r, _, e := newTestRunner(t)
+	var calls atomic.Int32
+	withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	r.Config.Telegram.Notify = []string{"failed", "needs-human"}
+	e["HOME"], e["HRK_STATE_DIR"] = t.TempDir(), r.Store.Dir()
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	for _, typ := range []string{"needs-human", "failed"} {
+		if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: typ, Summary: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("a scratch state sent %d Telegram messages", n)
+	}
+	if ev := events(t, r, tk.ID); slices.Contains(ev, "notified") || slices.Contains(ev, "notify-failed") {
+		t.Errorf("events = %v", ev)
+	}
+}
+
 func TestSendNotificationFailureIsRecorded(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {

@@ -33,7 +33,19 @@ type Creds struct {
 // where <dir> is telegram.stateDir, $TELEGRAM_STATE_DIR, or
 // ${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram. telegram.chatId
 // overrides the chat ids from either source.
+//
+// A scratch state, HRK_STATE_DIR naming a folder other than the default
+// one, reads only $TELEGRAM_STATE_DIR and is off without it: a live check
+// on a copy of the state and config never reaches the user's bot through
+// the config or the plugin's default folder.
 func Resolve(cfg config.Telegram, getenv func(string) string) (Creds, error) {
+	if ScratchState(getenv) {
+		dir := getenv("TELEGRAM_STATE_DIR")
+		if dir == "" {
+			return Creds{}, fmt.Errorf("%w: HRK_STATE_DIR is a scratch state, which uses only $TELEGRAM_STATE_DIR", ErrNoCredentials)
+		}
+		cfg = config.Telegram{StateDir: dir}
+	}
 	var c Creds
 	if cfg.EnvFile != "" {
 		path := expandHome(cfg.EnvFile, getenv)
@@ -67,6 +79,26 @@ func Resolve(cfg config.Telegram, getenv func(string) string) (Creds, error) {
 		return Creds{}, fmt.Errorf("%w: no chat id (set telegram.chatId, or pair a chat with the plugin)", ErrNoCredentials)
 	}
 	return c, nil
+}
+
+// ScratchState reports whether HRK_STATE_DIR names a state folder other
+// than the default ${XDG_STATE_HOME:-~/.local/state}/herdr-runner-kit.
+func ScratchState(getenv func(string) string) bool {
+	dir := getenv("HRK_STATE_DIR")
+	if dir == "" {
+		return false
+	}
+	base := getenv("XDG_STATE_HOME")
+	if base == "" {
+		base = filepath.Join(getenv("HOME"), ".local", "state")
+	}
+	def := filepath.Join(base, "herdr-runner-kit")
+	if filepath.Clean(dir) == def {
+		return false
+	}
+	a, errA := os.Stat(dir)
+	b, errB := os.Stat(def)
+	return errA != nil || errB != nil || !os.SameFile(a, b)
 }
 
 func pluginDir(cfg config.Telegram, getenv func(string) string) string {

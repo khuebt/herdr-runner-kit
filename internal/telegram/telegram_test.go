@@ -72,6 +72,41 @@ func TestResolvePluginDirOrder(t *testing.T) {
 	}
 }
 
+// A scratch state never resolves the user's bot from the config or the
+// plugin's default folder; only $TELEGRAM_STATE_DIR turns it on.
+func TestResolveScratchStateUsesOnlyTelegramStateDir(t *testing.T) {
+	home, scratch, plugin := t.TempDir(), t.TempDir(), t.TempDir()
+	write(t, filepath.Join(home, ".claude", "channels", "telegram", ".env"), "TELEGRAM_BOT_TOKEN=home\n")
+	write(t, filepath.Join(home, ".claude", "channels", "telegram", "access.json"), `{"allowFrom":["111"]}`)
+	write(t, filepath.Join(home, ".env.bot"), "TELEGRAM_BOT_TOKEN=envfile\nTELEGRAM_CHAT_ID=42\n")
+	write(t, filepath.Join(plugin, ".env"), "TELEGRAM_BOT_TOKEN=scratch\n")
+	write(t, filepath.Join(plugin, "access.json"), `{"allowFrom":["999"]}`)
+	def := filepath.Join(home, ".local", "state", "herdr-runner-kit")
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(def, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, cfg := range []config.Telegram{{}, {EnvFile: "~/.env.bot"}, {StateDir: filepath.Join(home, ".claude", "channels", "telegram"), ChatID: "7"}} {
+		if c, err := Resolve(cfg, envOf(map[string]string{"HOME": home, "HRK_STATE_DIR": scratch})); !errors.Is(err, ErrNoCredentials) {
+			t.Errorf("scratch state with %+v: %+v, %v", cfg, c, err)
+		}
+		c, err := Resolve(cfg, envOf(map[string]string{"HOME": home, "HRK_STATE_DIR": scratch, "TELEGRAM_STATE_DIR": plugin}))
+		if err != nil || c.Token != "scratch" || !slices.Equal(c.ChatIDs, []string{"999"}) {
+			t.Errorf("scratch state with TELEGRAM_STATE_DIR and %+v: %+v, %v", cfg, c, err)
+		}
+	}
+	// The default folder, by any path, is not a scratch state.
+	for _, dir := range []string{def, def + "/", link} {
+		c, err := Resolve(config.Telegram{}, envOf(map[string]string{"HOME": home, "HRK_STATE_DIR": dir}))
+		if err != nil || c.Token != "home" {
+			t.Errorf("HRK_STATE_DIR=%s: %+v, %v", dir, c, err)
+		}
+	}
+}
+
 func TestResolveMissing(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := Resolve(config.Telegram{}, envOf(map[string]string{"HOME": dir})); !errors.Is(err, ErrNoCredentials) {
