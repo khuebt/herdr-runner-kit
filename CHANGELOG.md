@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.6](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.5...v0.15.6) (2026-10-22)
+
+
+### Bug Fixes
+
+* **project:** give project tasks the code write rule of their kind ([#100](https://github.com/khuebt/herdr-runner-kit/issues/100)) ([f5a7cf4](https://github.com/khuebt/herdr-runner-kit/commit/f5a7cf476bcf301e93426a9dbddcaf043f303d36))
+
 ## [0.15.5](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.4...v0.15.5) (2026-10-21)
 
 
