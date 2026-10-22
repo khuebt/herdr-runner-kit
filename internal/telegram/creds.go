@@ -32,13 +32,12 @@ type Creds struct {
 // the token from <dir>/.env and the chats from <dir>/access.json allowFrom,
 // where <dir> is telegram.stateDir, $TELEGRAM_STATE_DIR, or
 // ${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram. telegram.chatId
-// overrides the chat ids from either source.
-//
-// A state folder of its own, HRK_STATE_DIR not handed down by the kit as
-// the default one (see OwnState), skips that last, implicit folder: a live
-// check on a scratch state never reaches the user's bot unless something
-// names it explicitly.
+// overrides the chat ids from either source. HRK_TELEGRAM=off turns
+// Telegram off before anything is read, as a live check sets it.
 func Resolve(cfg config.Telegram, getenv func(string) string) (Creds, error) {
+	if Off(getenv) {
+		return Creds{}, fmt.Errorf("%w: %s=off", ErrNoCredentials, OffEnv)
+	}
 	var c Creds
 	if cfg.EnvFile != "" {
 		path := expandHome(cfg.EnvFile, getenv)
@@ -49,9 +48,6 @@ func Resolve(cfg config.Telegram, getenv func(string) string) (Creds, error) {
 		c = Creds{Token: vars["TELEGRAM_BOT_TOKEN"], ChatIDs: splitIDs(vars["TELEGRAM_CHAT_ID"]), Source: path}
 	} else {
 		dir := pluginDir(cfg, getenv)
-		if dir == "" {
-			return Creds{}, fmt.Errorf("%w: HRK_STATE_DIR is set, which skips the plugin's default folder (set telegram.stateDir or $TELEGRAM_STATE_DIR)", ErrNoCredentials)
-		}
 		envPath := filepath.Join(dir, ".env")
 		vars, err := readDotenv(envPath)
 		if errors.Is(err, os.ErrNotExist) {
@@ -77,6 +73,14 @@ func Resolve(cfg config.Telegram, getenv func(string) string) (Creds, error) {
 	return c, nil
 }
 
+// OffEnv names the variable that turns Telegram off when set to "off". The
+// kit hands it down to every runner, so a scratch live check and its
+// runners never reach the user's bot, whatever config they read.
+const OffEnv = "HRK_TELEGRAM"
+
+// Off reports whether OffEnv turns Telegram off.
+func Off(getenv func(string) string) bool { return getenv(OffEnv) == "off" }
+
 func pluginDir(cfg config.Telegram, getenv func(string) string) string {
 	if cfg.StateDir != "" {
 		return expandHome(cfg.StateDir, getenv)
@@ -84,25 +88,11 @@ func pluginDir(cfg config.Telegram, getenv func(string) string) string {
 	if dir := getenv("TELEGRAM_STATE_DIR"); dir != "" {
 		return dir
 	}
-	if OwnState(getenv) {
-		return ""
-	}
 	base := getenv("CLAUDE_CONFIG_DIR")
 	if base == "" {
 		base = filepath.Join(getenv("HOME"), ".claude")
 	}
 	return filepath.Join(base, "channels", "telegram")
-}
-
-// StateDefaultEnv marks an HRK_STATE_DIR the kit hands down to runners
-// and their detached commands when the main session uses the default
-// state folder.
-const StateDefaultEnv = "HRK_STATE_DEFAULT"
-
-// OwnState reports whether HRK_STATE_DIR names a state folder the user
-// chose, rather than the default one the kit handed down.
-func OwnState(getenv func(string) string) bool {
-	return getenv("HRK_STATE_DIR") != "" && getenv(StateDefaultEnv) != "1"
 }
 
 func expandHome(path string, getenv func(string) string) string {

@@ -96,7 +96,7 @@ Commands live in `internal/cli`, one file per command or group, registered in `r
 - Agent screens and hook payloads are captured from live runs and kept under `internal/harness/testdata`. Tests read them as they are; a new agent version gets new captures rather than edited ones.
 - Runner tests use the fake herdr in `internal/runner/runner_test.go`, which records every call and answers from per-command handlers.
 - The lifecycle rules a test may assert with `runner.CheckInvariants` are listed in the [state model](state-model.md).
-- Live checks against real agents use a scratch build (`go build -o <scratch>/hrk ./cmd/hrk`) with `HRK_STATE_DIR` and `XDG_CONFIG_HOME` pointed at scratch folders, so the user's task store and `config.yaml` are never read or written. Point `TELEGRAM_STATE_DIR` at an empty scratch folder too, and drop the `telegram:` keys from a copied config: a scratch `HRK_STATE_DIR` only skips the plugin's default folder, so an explicit bot would still be messaged.
+- Live checks against real agents use a scratch build (`go build -o <scratch>/hrk ./cmd/hrk`) with `HRK_STATE_DIR` and `XDG_CONFIG_HOME` pointed at scratch folders, so the user's task store and `config.yaml` are never read or written. Set `HRK_TELEGRAM=off` too: runner panes get herdr's environment, not the scratch `XDG_CONFIG_HOME`, so a scratch runner reads the user's real config, and only this variable, which the kit passes on to every runner, keeps its news off the user's bot.
 
 ## Developing against a running install
 
@@ -104,5 +104,5 @@ The installed kit may be running the user's main session and runners while you w
 
 - Work on a branch in its own worktree; leave the main checkout on `main`.
 - Never install a branch build: no `go install`, no `install.sh`, no copy into `~/.local/bin`, and no `hrk setup` or `hrk upgrade` run from it.
-- Never point a branch build at the real state folder or config; use scratch `HRK_STATE_DIR` and `XDG_CONFIG_HOME`.
+- Never point a branch build at the real state folder or config; use scratch `HRK_STATE_DIR` and `XDG_CONFIG_HOME`, with `HRK_TELEGRAM=off`.
 - A config that names something the installed version does not know stops every `hrk` command, so add it to the real config only after upgrading.

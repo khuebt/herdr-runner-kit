@@ -366,16 +366,15 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (string
 // report and the turn-end hook at the spawner's state, and HRK_ATTEMPT,
 // from the second session on, tells them which session they run in.
 // TELEGRAM_BOT_TOKEN is empty so the Telegram plugin exits before it takes
-// over the main session's poller. A spawner on the default state folder
-// marks HRK_STATE_DIR as that default, so the runner's news still finds
-// the bot through the plugin's default folder.
+// over the main session's poller. HRK_TELEGRAM=off passes on, so the
+// runners of a live check send nothing either.
 func (r *Runner) runnerEnv(t *task.Task) []string {
 	env := []string{
 		"HRK_TASK=" + t.ID, "HRK_STATE_DIR=" + r.Store.Dir(),
 		"TELEGRAM_BOT_TOKEN=", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false",
 	}
-	if !telegram.OwnState(r.Getenv) {
-		env = append(env, telegram.StateDefaultEnv+"=1")
+	if telegram.Off(r.Getenv) {
+		env = append(env, telegram.OffEnv+"=off")
 	}
 	if t.ClaudeConfigDir != "" {
 		env = append(env, "CLAUDE_CONFIG_DIR="+t.ClaudeConfigDir)

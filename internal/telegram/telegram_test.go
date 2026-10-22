@@ -72,33 +72,34 @@ func TestResolvePluginDirOrder(t *testing.T) {
 	}
 }
 
-// A state folder of its own skips only the plugin's implicit default
-// folder: explicit config and $TELEGRAM_STATE_DIR still work, and so does
-// the default the kit hands down to its runners.
-func TestResolveOwnStateSkipsOnlyThePluginDefault(t *testing.T) {
+// HRK_TELEGRAM=off turns Telegram off before any config, plugin folder or
+// TELEGRAM_STATE_DIR is read; without it a custom HRK_STATE_DIR changes
+// nothing.
+func TestResolveHRKTelegramOff(t *testing.T) {
 	home, plugin := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(home, ".claude", "channels", "telegram", ".env"), "TELEGRAM_BOT_TOKEN=home\n")
 	write(t, filepath.Join(home, ".claude", "channels", "telegram", "access.json"), `{"allowFrom":["111"]}`)
 	write(t, filepath.Join(home, ".env.bot"), "TELEGRAM_BOT_TOKEN=envfile\nTELEGRAM_CHAT_ID=42\n")
 	write(t, filepath.Join(plugin, ".env"), "TELEGRAM_BOT_TOKEN=plugin\n")
 	write(t, filepath.Join(plugin, "access.json"), `{"allowFrom":["999"]}`)
-	own := map[string]string{"HOME": home, "HRK_STATE_DIR": filepath.Join(home, "data")}
-	if c, err := Resolve(config.Telegram{}, envOf(own)); !errors.Is(err, ErrNoCredentials) {
-		t.Errorf("own state reached the plugin's default folder: %+v, %v", c, err)
-	}
+	custom := filepath.Join(home, "data", "hrk")
 	for _, tc := range []struct {
 		name string
 		cfg  config.Telegram
 		env  map[string]string
 		want string
 	}{
-		{"envFile", config.Telegram{EnvFile: "~/.env.bot"}, own, "envfile"},
-		{"stateDir", config.Telegram{StateDir: plugin}, own, "plugin"},
-		{"TELEGRAM_STATE_DIR", config.Telegram{}, map[string]string{"HOME": home, "HRK_STATE_DIR": own["HRK_STATE_DIR"], "TELEGRAM_STATE_DIR": plugin}, "plugin"},
-		{"handed-down default", config.Telegram{}, map[string]string{"HOME": home, "HRK_STATE_DIR": filepath.Join(home, ".local", "state", "herdr-runner-kit"), StateDefaultEnv: "1"}, "home"},
+		{"plugin default", config.Telegram{}, map[string]string{"HOME": home, "HRK_STATE_DIR": custom}, "home"},
+		{"envFile", config.Telegram{EnvFile: "~/.env.bot"}, map[string]string{"HOME": home, "HRK_STATE_DIR": custom}, "envfile"},
+		{"stateDir", config.Telegram{StateDir: plugin, ChatID: "7"}, map[string]string{"HOME": home, "HRK_STATE_DIR": custom}, "plugin"},
+		{"TELEGRAM_STATE_DIR", config.Telegram{}, map[string]string{"HOME": home, "HRK_STATE_DIR": custom, "TELEGRAM_STATE_DIR": plugin}, "plugin"},
 	} {
 		if c, err := Resolve(tc.cfg, envOf(tc.env)); err != nil || c.Token != tc.want {
-			t.Errorf("%s: %+v, %v", tc.name, c, err)
+			t.Errorf("%s with a custom HRK_STATE_DIR: %+v, %v", tc.name, c, err)
+		}
+		tc.env[OffEnv] = "off"
+		if c, err := Resolve(tc.cfg, envOf(tc.env)); !errors.Is(err, ErrNoCredentials) || c.Token != "" {
+			t.Errorf("%s with %s=off: %+v, %v", tc.name, OffEnv, c, err)
 		}
 	}
 }

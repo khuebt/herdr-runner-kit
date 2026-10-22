@@ -75,51 +75,55 @@ func TestSendNotification(t *testing.T) {
 	}
 }
 
-// A main session on a scratch state sends nothing through the plugin's
-// default folder, while one on the default state hands its runners a mark
-// that lets their news find the bot there.
-func TestSendNotificationFollowsTheStateFolder(t *testing.T) {
-	for _, own := range []bool{true, false} {
-		r, _, e := newTestRunner(t)
-		var calls atomic.Int32
-		withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {
-			calls.Add(1)
-			_, _ = w.Write([]byte(`{"ok":true}`))
-		})
-		// Only the plugin's default folder knows the bot.
-		r.Config.Telegram.EnvFile = ""
-		home := t.TempDir()
-		dir := filepath.Join(home, ".claude", "channels", "telegram")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+// A launcher with HRK_TELEGRAM=off hands it to its runner, so the runner's
+// news sends nothing even though its config and the plugin's default
+// folder name the user's bot.
+func TestHRKTelegramOffReachesTheRunner(t *testing.T) {
+	r, _, e := newTestRunner(t)
+	var calls atomic.Int32
+	withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	home := t.TempDir()
+	dir := filepath.Join(home, ".claude", "channels", "telegram")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("TELEGRAM_BOT_TOKEN=1:abc\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "access.json"), []byte(`{"allowFrom":["42"]}`), 0o600)
+	r.Config.Telegram.Notify = []string{"failed"}
+	e["HOME"], e["HRK_STATE_DIR"], e[telegram.OffEnv] = home, r.Store.Dir(), "off"
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	// The runner's environment holds only what runnerEnv hands it, next to
+	// herdr's own, which has no HRK_TELEGRAM.
+	runner := env{"HOME": home}
+	for _, kv := range r.runnerEnv(tk) {
+		k, v, _ := strings.Cut(kv, "=")
+		runner[k] = v
+	}
+	if runner[telegram.OffEnv] != "off" {
+		t.Fatalf("runner env = %v", runner)
+	}
+	for _, getenv := range []func(string) string{e.get, runner.get} {
+		r.Getenv = getenv
+		if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: "failed", Summary: "x"}); err != nil {
 			t.Fatal(err)
 		}
-		_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("TELEGRAM_BOT_TOKEN=1:abc\n"), 0o600)
-		_ = os.WriteFile(filepath.Join(dir, "access.json"), []byte(`{"allowFrom":["42"]}`), 0o600)
-		e["HOME"], e["CLAUDE_CONFIG_DIR"] = home, ""
-		if own {
-			e["HRK_STATE_DIR"] = r.Store.Dir()
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("sent %d Telegram messages with %s=off", n, telegram.OffEnv)
+	}
+	// Without it, the runner env does not name it, and the same news is sent.
+	delete(e, telegram.OffEnv)
+	r.Getenv = e.get
+	for _, kv := range r.runnerEnv(tk) {
+		if strings.HasPrefix(kv, telegram.OffEnv+"=") {
+			t.Errorf("runner env has %s without the launcher's", kv)
 		}
-		r.Config.Telegram.Notify = []string{"failed"}
-		tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
-		// The runner's own environment, as its detached news command gets it.
-		runnerEnv := env{}
-		for _, kv := range r.runnerEnv(tk) {
-			k, v, _ := strings.Cut(kv, "=")
-			runnerEnv[k] = v
-		}
-		runnerEnv["HOME"] = home
-		if _, marked := runnerEnv[telegram.StateDefaultEnv]; marked == own {
-			t.Fatalf("own state %v: runner env %v", own, runnerEnv)
-		}
-		for _, getenv := range []func(string) string{e.get, runnerEnv.get} {
-			r.Getenv = getenv
-			if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: "failed", Summary: "x"}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if want := map[bool]int32{true: 0, false: 2}[own]; calls.Load() != want {
-			t.Errorf("own state %v: sent %d messages, want %d", own, calls.Load(), want)
-		}
+	}
+	if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: "failed", Summary: "x"}); err != nil || calls.Load() != 1 {
+		t.Errorf("without %s: err %v, %d messages", telegram.OffEnv, err, calls.Load())
 	}
 }
 

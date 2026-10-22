@@ -20,7 +20,7 @@ telegram:
 
 or let it use the channel plugin's own files: the token from `<dir>/.env` and the chats from `allowFrom` in `<dir>/access.json`, where `<dir>` is `telegram.stateDir`, else `$TELEGRAM_STATE_DIR`, else `${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram`. `telegram.chatId` overrides the chat ids from either source. Without credentials, Telegram is simply off.
 
-With `$HRK_STATE_DIR` set, the last of those, the plugin's default folder, is skipped; `telegram.envFile`, `telegram.stateDir`, `telegram.chatId` and `$TELEGRAM_STATE_DIR` still apply. A live check on a scratch state with a config that names no bot therefore never messages your chat. Runners of a main session on the default state get `HRK_STATE_DEFAULT=1` next to `HRK_STATE_DIR`, so their news still uses the default folder.
+`HRK_TELEGRAM=off` turns Telegram off whatever the config, the plugin folder or `$TELEGRAM_STATE_DIR` say. The kit passes it on to every runner it launches, so their news and the commands they start stay off too. A live check on a scratch state sets it.
 
 Use the same bot for the plugin and the kit.
 
