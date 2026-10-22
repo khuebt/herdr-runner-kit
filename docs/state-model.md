@@ -91,12 +91,12 @@ The launcher's own writes (`launchUpdate`) notice a task that ended while it wor
 | Milestone | planned → in-progress | `StartMilestone` | gates pass, no re-approval pending, none in progress, the one before is done | `milestone start` |
 | Milestone | in-progress → done | `FinishMilestone` | still in progress, close runner done and not stale, tag free, main checkout clean, merge found | `milestone done` |
 | Milestone | done → in-progress | `ReopenMilestone` | `checkReopen`, tag not on origin | `milestone reopen` |
-| Milestone | done → in-progress | `undoDone`, which restores the whole milestone list it read | none | `milestone done` when the records commit fails |
+| Milestone | done → in-progress | `undoDone`, which restores each milestone still as `done` wrote it and keeps one another command changed since | none | `milestone done` when the records commit fails |
 | Done milestone features | duplicates dropped | `healMoved` on every `Load` | none | any command |
 | Gate | open → approved, changes-requested, rejected | `Decide` | `checkNew`, `checkOrder` | `approve`, `changes`, `reject` |
 | Change request | open → now, next, backlog, rejected | `DecideChange` | once only | `cr decide` |
 | Backlog item | open → planned | `ApplyBacklogMoves` | | `milestone chain` |
-| Project changes | restored | `undoGraduate`, which restores the whole change list it read | none | `graduate` when it fails |
+| Project changes | restored | `undoGraduate`, which restores each change still as `graduate` wrote it and keeps one another command changed since | none | `graduate` when it fails |
 
 `milestone start`, `chain`, `done`, `reopen` and `close` hold the project's `milestone` lock for their whole run. `approve`, `cr decide`, `backlog add`, `dep`, `decide`, `project run` and `graduate` do not take it.
 
