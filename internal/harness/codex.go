@@ -20,6 +20,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -463,60 +464,58 @@ type codexConfig struct {
 // `spawn` ran in; spawning there is the user's consent. Codex keys trust on
 // the repository root, ignores trusted ancestors, and ignores a per-run -c
 // override, so the entry must be persisted. It appends one table and never
-// edits existing content. A root the user explicitly marked otherwise is an
-// error, not an override. It returns true when it added the entry.
+// edits existing content: the file is rewritten whole, under a lock on its
+// folder, so runners that start together add one table between them. A
+// root the user explicitly marked otherwise is an error, not an override.
+// It returns true when it added the entry.
 func EnsureCodexTrust(configPath, repoRoot string) (bool, error) {
 	root := filepath.Clean(repoRoot)
 	if !filepath.IsAbs(root) {
 		return false, fmt.Errorf("repository root must be absolute, got %q", repoRoot)
 	}
-	data, err := os.ReadFile(configPath)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, err
-	}
-	var cfg codexConfig
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return false, fmt.Errorf("parse %s: %w", configPath, err)
-	}
-	if entry, ok := cfg.Projects[root]; ok {
-		switch {
-		case entry.TrustLevel != nil && *entry.TrustLevel == "trusted":
-			return false, nil
-		case entry.TrustLevel != nil:
-			return false, fmt.Errorf("codex marks %s as %q in %s; trust it in Codex first", root, *entry.TrustLevel, configPath)
-		default:
-			return false, fmt.Errorf("codex has an entry for %s without trust_level in %s; trust it in Codex first", root, configPath)
-		}
-	}
-
-	block := "\n[projects." + tomlString(root) + "]\ntrust_level = \"trusted\"\n"
-	if len(data) > 0 && data[len(data)-1] != '\n' {
-		block = "\n" + block
-	}
-	// Validate the result before touching the user's file.
-	var check codexConfig
-	if err := toml.Unmarshal(append(append([]byte{}, data...), block...), &check); err != nil {
-		return false, fmt.Errorf("refusing to edit %s: result would not parse: %w", configPath, err)
-	}
-	if e := check.Projects[root]; e.TrustLevel == nil || *e.TrustLevel != "trusted" {
-		return false, fmt.Errorf("refusing to edit %s: trust entry did not parse back", configPath)
-	}
-
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return false, err
 	}
-	f, err := os.OpenFile(configPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	trusted := func(data []byte) bool {
+		var cfg codexConfig
+		if toml.Unmarshal(data, &cfg) != nil {
+			return false
+		}
+		e := cfg.Projects[root]
+		return e.TrustLevel != nil && *e.TrustLevel == "trusted"
+	}
+	added := false
+	err := fsutil.Update(configPath, filepath.Dir(configPath), 0o600, func(data []byte) ([]byte, error) {
+		var cfg codexConfig
+		if err := toml.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", configPath, err)
+		}
+		if entry, ok := cfg.Projects[root]; ok {
+			switch {
+			case entry.TrustLevel != nil && *entry.TrustLevel == "trusted":
+				return nil, nil
+			case entry.TrustLevel != nil:
+				return nil, fmt.Errorf("codex marks %s as %q in %s; trust it in Codex first", root, *entry.TrustLevel, configPath)
+			default:
+				return nil, fmt.Errorf("codex has an entry for %s without trust_level in %s; trust it in Codex first", root, configPath)
+			}
+		}
+		block := "\n[projects." + tomlString(root) + "]\ntrust_level = \"trusted\"\n"
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			block = "\n" + block
+		}
+		// Validate the result before touching the user's file.
+		next := append(append([]byte{}, data...), block...)
+		if !trusted(next) {
+			return nil, fmt.Errorf("refusing to edit %s: the trust entry would not parse back", configPath)
+		}
+		added = true
+		return next, nil
+	}, trusted)
 	if err != nil {
 		return false, err
 	}
-	if _, err := f.WriteString(block); err != nil {
-		_ = f.Close()
-		return false, fmt.Errorf("append trust to %s: %w", configPath, err)
-	}
-	if err := f.Close(); err != nil {
-		return false, err
-	}
-	return true, nil
+	return added, nil
 }
 
 // tomlString encodes s as a TOML basic string. JSON string escapes are a

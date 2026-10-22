@@ -776,18 +776,27 @@ func dropClaudeEntry(t *testing.T, path, runnerPath string) {
 func TestPrepareClaudeTrustRetries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".claude.json")
 	writeFile(t, path, `{"projects": {}}`)
+	// Each runner's first write is dropped once. Writes take turns under
+	// the lock, so the only entry not dropped yet is the newest one. The
+	// race detector does not see the flock, hence the mutex.
 	var mu sync.Mutex
 	dropped := map[string]bool{}
-	claudeTrustWritten = func(configPath, runnerPath string) {
+	fsutil.UpdateWritten = func(configPath string) {
 		mu.Lock()
-		first := !dropped[runnerPath]
-		dropped[runnerPath] = true
-		mu.Unlock()
-		if first {
-			dropClaudeEntry(t, configPath, runnerPath)
+		defer mu.Unlock()
+		root, err := readJSONObject(configPath)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for p := range root["projects"].(map[string]any) {
+			if !dropped[p] {
+				dropped[p] = true
+				dropClaudeEntry(t, configPath, p)
+			}
 		}
 	}
-	t.Cleanup(func() { claudeTrustWritten = func(string, string) {} })
+	t.Cleanup(func() { fsutil.UpdateWritten = func(string) {} })
 	const n = 16
 	var wg sync.WaitGroup
 	for i := range n {
@@ -807,8 +816,8 @@ func TestPrepareClaudeTrustRetries(t *testing.T) {
 	}
 
 	// A file rewritten over the flags every time is an error.
-	claudeTrustWritten = func(configPath, runnerPath string) { dropClaudeEntry(t, configPath, runnerPath) }
-	if _, _, err := PrepareClaudeTrust(path, "/repo", "/wt/lost"); err == nil || !strings.Contains(err.Error(), "were overwritten in "+path+" 3 times") {
+	fsutil.UpdateWritten = func(configPath string) { dropClaudeEntry(t, configPath, "/wt/lost") }
+	if _, _, err := PrepareClaudeTrust(path, "/repo", "/wt/lost"); err == nil || !strings.Contains(err.Error(), path+" was rewritten over the change 3 times") {
 		t.Errorf("always overwritten: %v", err)
 	}
 }
@@ -895,6 +904,44 @@ func TestEnsureCodexTrust(t *testing.T) {
 	}
 	if _, err := EnsureCodexTrust(path, "relative/repo"); err == nil {
 		t.Error("relative root accepted")
+	}
+}
+
+// Codex runners that start together in one repository leave exactly one
+// trust table, and the file still parses.
+func TestEnsureCodexTrustConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeFile(t, path, userCodexConfig)
+	const n = 16
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	added := 0
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := EnsureCodexTrust(path, "/home/u/Work/new-repo")
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				mu.Lock()
+				added++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	data, _ := os.ReadFile(path)
+	var cfg codexConfig
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("result does not parse: %v\n%s", err, data)
+	}
+	if got := strings.Count(string(data), `[projects."/home/u/Work/new-repo"]`); got != 1 || added != 1 {
+		t.Fatalf("%d tables, %d calls added one:\n%s", got, added, data)
+	}
+	if !strings.HasPrefix(string(data), userCodexConfig) {
+		t.Fatal("existing content was changed")
 	}
 }
 
