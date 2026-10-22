@@ -124,7 +124,7 @@ A task stopped before its pane is recorded never gets a tab, an agent or a promp
 
 #### terminal-stays-terminal
 
-A terminal task leaves its status only through `send` reopening a done or failed task. Checked against `Prev`.
+A terminal task leaves its status only through `send` reopening a done or failed task. A reopened task is running, or past running needs a human or starts a fallback; it never waits again. Checked against `Prev`.
 
 #### fields-match-status
 

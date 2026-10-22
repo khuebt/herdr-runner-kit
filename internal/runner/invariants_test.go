@@ -132,6 +132,17 @@ func TestCheckInvariants(t *testing.T) {
 			[]string{"terminal-stays-terminal"},
 		},
 		{"done task reopened by send", prev(invSnap(invTask("t1", task.Running)), invSnap(invTask("t1", task.Done))), nil},
+		{
+			"done task held again", prev(invSnap(invTask("t1", task.Held)), invSnap(invTask("t1", task.Done))),
+			[]string{"terminal-stays-terminal"},
+		},
+		{
+			"failed task queued again", prev(
+				invSnap(invTask("t0", task.Running), invTask("t1", task.Queued, after("t0"))),
+				invSnap(invTask("t0", task.Running), invTask("t1", task.Failed, after("t0")))),
+			[]string{"terminal-stays-terminal"},
+		},
+		{"reopened failed task asks a human", prev(invSnap(invTask("t1", task.NeedsHuman)), invSnap(invTask("t1", task.Failed))), nil},
 
 		// fields-match-status
 		{
@@ -244,10 +255,12 @@ func TestCheckInvariants(t *testing.T) {
 		// milestone-order
 		{"planned milestone before a done one", withRecord(invSnap(closer("t1", "M2")),
 			milestone("M1", project.MilestonePlanned), milestone("M2", project.MilestoneDone)), []string{"milestone-order"}},
+		{"in-progress milestone before a done one", withRecord(invSnap(closer("t1", "M2")),
+			milestone("M1", project.MilestoneInProgress), milestone("M2", project.MilestoneDone)), []string{"milestone-order"}},
 		{
 			"two milestones in progress", withRecord(invSnap(closer("t1", "M1")),
 				milestone("M1", project.MilestoneDone), milestone("M2", project.MilestoneInProgress), milestone("M3", project.MilestoneInProgress)),
-			[]string{"milestone-order"},
+			[]string{"milestone-order", "milestone-order"},
 		},
 		{"unknown milestone status", withRecord(invSnap(), milestone("M1", "")), []string{"milestone-order"}},
 		{"milestones in order", withRecord(invSnap(closer("t1", "M1")),

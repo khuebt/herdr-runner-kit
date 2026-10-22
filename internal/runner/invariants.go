@@ -240,7 +240,8 @@ func stoppedGetsNoAgent(c *check) []Violation {
 }
 
 // terminalStaysTerminal: a terminal task leaves its status only when send
-// reopens a done or failed one.
+// reopens a done or failed one. A reopen makes it running, from where it can
+// need a human or start a fallback, but it never waits again.
 func terminalStaysTerminal(c *check) []Violation {
 	if c.Prev == nil {
 		return nil
@@ -251,7 +252,8 @@ func terminalStaysTerminal(c *check) []Violation {
 		if t == nil || !before.Status.Terminal() || t.Status == before.Status {
 			continue
 		}
-		if !t.Status.Terminal() && (before.Status == task.Done || before.Status == task.Failed) {
+		reopened := t.Status == task.Running || t.Status == task.NeedsHuman || t.Status == task.Starting
+		if reopened && (before.Status == task.Done || before.Status == task.Failed) {
 			continue // reopened by send
 		}
 		out = append(out, taskViolation(t, "went from %s to %s", before.Status, t.Status))
@@ -573,9 +575,9 @@ func milestoneOrder(c *check) []Violation {
 		if len(running) > 1 {
 			bad("milestones %s are all in progress", strings.Join(running, ", "))
 		}
-		for _, m := range ms[:last+1] {
-			if m.Status == project.MilestonePlanned {
-				bad("milestone %s is planned, but %s after it is %s", m.ID, ms[last].ID, ms[last].Status)
+		for _, m := range ms[:max(last, 0)] {
+			if m.Status != project.MilestoneDone {
+				bad("milestone %s is %s, but %s after it is %s", m.ID, m.Status, ms[last].ID, ms[last].Status)
 			}
 		}
 	}
