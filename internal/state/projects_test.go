@@ -204,3 +204,34 @@ func TestReleaseStaleReservation(t *testing.T) {
 		t.Fatalf("a committed project was released: %v %v", ok, err)
 	}
 }
+
+// Forget waits for a holder of a project lock before it removes the lock
+// files, so the holder never keeps a lock on a file a new opener no longer
+// sees.
+func TestForgetProjectWaitsForLockHolders(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.ReserveProject("demo-app", filepath.Join(resolvedTemp(t), "app")); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := s.LockProject("demo-app", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error)
+	go func() { done <- s.ForgetProject("demo-app") }()
+	select {
+	case err := <-done:
+		t.Fatalf("forget did not wait for the checkout holder: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := os.Stat(filepath.Join(s.ProjectDir("demo-app"), "checkout.lock")); err != nil {
+		t.Fatalf("lock file removed under its holder: %v", err)
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.ProjectDir("demo-app")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("project files kept: %v", err)
+	}
+}

@@ -146,7 +146,8 @@ func (s *Store) ReleaseStaleReservation(name string, age time.Duration, abandone
 }
 
 // ForgetProject removes the entry and the project's kit files. The
-// repository itself is never touched.
+// repository itself is never touched. It waits for the holders of the
+// project's milestone, checkout and record locks.
 func (s *Store) ForgetProject(name string) error {
 	if err := CheckProjectName(name); err != nil {
 		return err
@@ -161,6 +162,16 @@ func (s *Store) ForgetProject(name string) error {
 	})
 	if err != nil {
 		return err
+	}
+	// The folder holds the project's lock files, so it goes only while
+	// this holds them, in lock order: no holder is left on a removed file
+	// while the next opener locks a new one.
+	for _, which := range []string{"milestone", "checkout", "record"} {
+		unlock, err := s.LockProject(name, which)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
 	if err := os.RemoveAll(s.ProjectDir(name)); err != nil {
 		return fmt.Errorf("remove project files: %w", err)
