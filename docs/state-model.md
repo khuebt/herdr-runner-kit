@@ -104,6 +104,21 @@ The launcher's own writes (`launchUpdate`) notice a task that ended while it wor
 
 `PlanChain` maps each plan node to the newest task of stage `<M>/<node>`, and compares the `node` that task recorded with the plan. A done or running node keeps its runner, unless the plan changed its title or type: then chain is refused (stop a live runner and chain again; give a done node a new id). A waiting runner is kept only while it matches its node, waits for exactly the runners of its node's parents and has the node's branch; otherwise it is stopped and replaced (`ChainStep.Replace`). A failed or stopped node is spawned again, on `<branch>-r<k>` when its branch is taken (`PickBranch`), based on its old branch only while its parents are done. The branches of kept and live nodes are reserved, so no two nodes share one. The close runner is queued after the final integrate runner with no explicit base (`CloseStep`); like a feature child with a single parent, it takes its parent's branch when it starts.
 
+## Shared files and locks
+
+A file that two processes can rewrite is rewritten under one rule:
+
+1. A read-modify-write holds a lock on something that is never renamed or removed while it is held. It reads the file inside the lock, writes it with `fsutil.WriteFileAtomic` (a temporary file renamed over it, keeping the mode and writing through a symlink to its target), and releases the lock. `fsutil.Update` does all of this.
+2. The lock lives with the owner of the file:
+   - a kit state file has a sidecar `*.lock` in the state folder (`task.lock`, `seq.lock`, `projects.lock`, `main-sessions.lock`, `main-projects-<hash>.lock` and the others);
+   - a file in a folder another program owns (`~/.claude.json` or `$CLAUDE_CONFIG_DIR/.claude.json`, `<claude config>/settings.json`, `<codex home>/config.toml`) is locked by a flock on that folder, so no lock file is left in the user's folders;
+   - a repository file the kit rewrites uses the store lock that already guards it: the plan lock for `plan.md` and phase files, the project's `checkout` lock for handbook renders.
+3. When a program outside the kit also writes the file (Claude Code, Codex), `fsutil.Update` reads it again after the write, inside the lock, and checks that the change landed. If not, it runs the whole attempt again, at most 3 times, and then returns an error that names the file. The locks are advisory, so they order the kit against itself; against Claude Code and Codex the check is the only guard.
+4. Create-if-absent (`config.yaml`, the Telegram `access.json`) uses `fsutil.CreateExclusive`: a finished temporary file is linked to the target, which fails when the target exists. Never stat, then write.
+5. Lock order: for a project, `milestone`, then `checkout`, then `record`; for a plan, the plan lock, then a task's `phase-check.lock`. A task's `task.lock` is never held while another lock is taken, and a folder lock is never nested. `ForgetProject` takes the three project locks in that order before it removes the folder that holds them.
+
+`acceptPhase` writes a phase file's `status:` without the plan lock. `plan run` holds that lock while a spawn settles a done parent through `acceptPhase`, and `planDone` holds it while it calls `acceptPhase`; a flock is not reentrant, so taking it there would hang. The kit only writes `completed` to a phase file, and the write is atomic, so a reader never sees a cut file and two kit writers agree.
+
 ## Invariants
 
 A rule marked *liveness* holds only once the follow-ups are done: it skips a task whose parent finished within the settle window or is in `InFlight` (see [The checker](#the-checker)). A rule marked *needs git* reads the repository, so `CheckInvariants` does not check it.
