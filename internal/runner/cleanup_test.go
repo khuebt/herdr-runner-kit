@@ -718,3 +718,26 @@ func TestCleanupKeepsTheBranchAQueuedChildStartsFrom(t *testing.T) {
 		}
 	}
 }
+
+// A finished runner whose worktree was cleaned up has nothing left to work
+// in, so a message to it is refused rather than reopening the task.
+func TestSendRefusesACleanedTask(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "feat/a")
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.Closed = false; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// Removed outside the kit; the runner's tab is still open.
+	git(t, repo, "worktree", "remove", tk.Worktree.Path)
+	if _, err := r.Cleanable(ctx, Owners{Owner: repo}, false); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Send(ctx, tk.ID, "one more fix")
+	if want := tk.ID + "'s worktree was cleaned up; spawn a new runner"; err == nil || err.Error() != want {
+		t.Fatalf("Send = %v, want %q", err, want)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done {
+		t.Errorf("status = %s, want done", got.Status)
+	}
+}

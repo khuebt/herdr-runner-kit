@@ -24,7 +24,8 @@ const GCAge = 30 * time.Minute
 // done or failed runner is new work, so the task is reopened, but only after
 // the prompt went in: a failed prompt leaves the task finished, and the
 // backstop never mistakes its idle agent for a failure. A stopped task is
-// never reopened: its runner is closing.
+// never reopened: its runner is closing. Nor is one whose worktree was
+// cleaned up: nothing is left to work in.
 func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	t, err := r.liveTask(id)
 	if err != nil {
@@ -32,6 +33,9 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	}
 	if t.Status == task.Stopped {
 		return false, fmt.Errorf("%s is stopped; spawn a new runner", id)
+	}
+	if cleaned(t) {
+		return false, errCleaned(id)
 	}
 	if err := r.errIfLost(ctx, t); err != nil {
 		return false, err
@@ -76,6 +80,8 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 			return errClosing
 		case t.Status == task.Stopped:
 			return errStopped
+		case cleaned(t):
+			return errCleaned(t.ID)
 		}
 		t.Unreported, t.APIErrors = 0, 0
 		if head != "" {
@@ -100,6 +106,13 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	r.emit(t, "sent", firstLine(redact.Secrets(text), 120), "")
 	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
 	return err == nil, nil
+}
+
+// cleaned reports whether cleanup removed t's worktree.
+func cleaned(t *task.Task) bool { return t.Worktree != nil && t.Worktree.Removed }
+
+func errCleaned(id string) error {
+	return fmt.Errorf("%s's worktree was cleaned up; spawn a new runner", id)
 }
 
 // agentWorking reports whether t's agent runs a turn: herdr says so, or

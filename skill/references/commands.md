@@ -11,7 +11,7 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `show <id> [--prompt]` | One task as compact text: status, times, tab, `usage:` of a Claude runner, worktree, `git:` line, summary, decisions, question, outputs, last 5 events. The prompt only with `--prompt`. |
 | `show <id> --json [--events N]` | The task as one JSON object, or `{task, events}` with `--events`. Parse this, never the text view. |
 | `peek <id> [--lines N]` | The runner's visible screen (default 30 lines), secrets hidden. Use it instead of `herdr pane read`. |
-| `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one refuses. |
+| `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one, or one whose worktree was cleaned up, refuses. |
 | `answer <id> --stdin` | Answer a `needs-human` question. The id may name an attempt, such as `t3a2`; one for an attempt that ended is refused. |
 | `answer --from-telegram --stdin` | Route a Telegram reply by its `#id` tag. |
 | `release <id> [--note TEXT]` | Start a `held` task. |
