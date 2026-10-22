@@ -619,10 +619,14 @@ func TestRegisterRefusesASnapshotThatBreaksMilestoneRules(t *testing.T) {
 		ms   []Milestone
 		want string
 	}{
-		{"two in progress", []Milestone{{ID: "M0", Title: "a", Status: MilestoneInProgress}, {ID: "M1", Title: "b", Status: MilestoneInProgress}},
-			"milestones M0 and M1 are both in progress"},
-		{"planned before done", []Milestone{{ID: "M0", Title: "a", Status: MilestonePlanned}, {ID: "M1", Title: "b", Status: MilestoneDone}},
-			"milestone M0 is planned, but M1 after it is done"},
+		{"two in progress", []Milestone{
+			{ID: "M0", Title: "a", Status: MilestoneInProgress},
+			{ID: "M1", Title: "b", Status: MilestoneInProgress},
+		}, "milestones M0 and M1 are both in progress"},
+		{"planned before done", []Milestone{
+			{ID: "M0", Title: "a", Status: MilestonePlanned},
+			{ID: "M1", Title: "b", Status: MilestoneDone},
+		}, "milestone M0 is planned, but M1 after it is done"},
 		{"feature twice", []Milestone{
 			{ID: "M0", Title: "a", Status: MilestoneInProgress, Features: []Feature{{ID: "F1", Title: "x"}}},
 			{ID: "M1", Title: "b", Status: MilestonePlanned, Features: []Feature{{ID: "F1", Title: "x"}}},

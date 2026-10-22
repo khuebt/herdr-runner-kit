@@ -29,7 +29,7 @@ var (
 	indexLockPause   = 300 * time.Millisecond
 )
 
-// CommitHook, when set, runs in every records commit after the record was
+// CommitHook runs, when set, in every records commit after the record was
 // read and before anything is written, and its error fails the commit.
 // Only tests set it, to run another command inside a commit's window.
 var CommitHook func() error
