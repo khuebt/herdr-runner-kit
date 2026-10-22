@@ -820,6 +820,39 @@ func TestStopAtAStartupDialogEndsTheAgentAndTheLauncher(t *testing.T) {
 	checkStore(t, r)
 }
 
+// When herdr sees no agent but something keeps holding the pane after
+// Ctrl+C, stop still closes a tab runner, whose closed tab ends what holds
+// it; a worktree runner's pane outlives the close, so its stop fails.
+func TestStopOfAPaneHeldWithoutAnAgentHerdrSees(t *testing.T) {
+	for _, worktree := range []bool{false, true} {
+		t.Run(map[bool]string{false: "tab", true: "worktree"}[worktree], func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			o := SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)}
+			if worktree {
+				o = SpawnOptions{Kind: "code", Prompt: "x", Cwd: gitRepo(t)}
+			}
+			tk := running(t, r, o)
+			fake.on("agent get", herdrErr("agent_not_found"))
+			fake.on("pane process-info", ok(`{"result":{"process_info":{"shell_pid":100,"foreground_process_group_id":101}}}`))
+			_, err := r.Stop(context.Background(), tk.ID, false)
+			got, _ := r.Store.Get(tk.ID)
+			if fake.count("pane", "send-keys", tk.Herdr.PaneID, "ctrl+c") == 0 {
+				t.Error("no Ctrl+C reached the held pane")
+			}
+			if worktree {
+				if !errors.Is(err, errUnseenAgent) || got.Herdr.Closed {
+					t.Errorf("worktree stop = %v, closed %v", err, got.Herdr.Closed)
+				}
+				return
+			}
+			if err != nil || !got.Herdr.Closed || fake.count("tab", "close") != 1 {
+				t.Errorf("tab stop = %v, closed %v, tab closes %d", err, got.Herdr.Closed, fake.count("tab", "close"))
+			}
+			checkStore(t, r)
+		})
+	}
+}
+
 // A launcher whose stop could not quit the agent on a startup dialog stops
 // waiting on that dialog within one poll, and quits the agent itself.
 func TestLauncherAtAStartupDialogSeesAStopThatLeftTheAgent(t *testing.T) {
