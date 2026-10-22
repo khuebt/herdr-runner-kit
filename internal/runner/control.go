@@ -664,17 +664,30 @@ func (r *Runner) endAgent(ctx context.Context, t *task.Task, idle bool) error {
 	return nil
 }
 
-// quitAgent asks the agent to exit with Ctrl+C pairs, the way a user would.
-// Killing a Codex process directly can wedge the shared Codex daemon, so
-// the agent is never signalled.
+// quitAgent asks the agent to exit with Ctrl+C pairs, the way a user would;
+// on a startup dialog, such as Claude's Bypass Permissions warning, that is
+// the dialog's exit. An agent herdr does not see, because it is still
+// starting or herdr lost track of it, may still hold the pane's terminal:
+// it gets the keys through the pane. Killing a Codex process directly can
+// wedge the shared Codex daemon, so the agent is never signalled.
 func (r *Runner) quitAgent(ctx context.Context, pane string) error {
 	for range 3 {
 		a, err := r.Herdr.AgentGet(ctx, pane)
-		if isGone(err) || (err == nil && a.Kind == "") {
-			return nil
-		}
-		if err != nil {
+		if err != nil && !isGone(err) {
 			return err
+		}
+		if err != nil || a.Kind == "" {
+			if !r.holdsTerminal(ctx, pane) {
+				return nil
+			}
+			if err := r.Herdr.PaneSendKeys(ctx, pane, "ctrl+c", "ctrl+c"); err != nil {
+				if isGone(err) {
+					return nil
+				}
+				return err
+			}
+			r.waitShell(ctx, pane, 3*time.Second)
+			continue
 		}
 		if err := r.Herdr.AgentSendKeys(ctx, pane, "ctrl+c", "ctrl+c"); err != nil && !isGone(err) {
 			return err
@@ -685,6 +698,13 @@ func (r *Runner) quitAgent(ctx context.Context, pane string) error {
 		}
 	}
 	return fmt.Errorf("the agent in %s did not exit after Ctrl+C", pane)
+}
+
+// holdsTerminal reports whether a process other than the shell holds the
+// terminal of pane. A pane herdr cannot describe holds none.
+func (r *Runner) holdsTerminal(ctx context.Context, pane string) bool {
+	info, err := r.Herdr.PaneProcessInfo(ctx, pane)
+	return err == nil && info.ShellPID > 0 && info.ForegroundPGID > 0 && info.ForegroundPGID != info.ShellPID
 }
 
 // isGone reports whether herdr says the agent or pane no longer exists.

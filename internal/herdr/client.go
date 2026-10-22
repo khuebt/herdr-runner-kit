@@ -396,6 +396,12 @@ func (c *Client) AgentSendKeys(ctx context.Context, target string, keys ...strin
 	return c.runJSON(ctx, DefaultTimeout, nil, append([]string{"agent", "send-keys", target}, keys...)...)
 }
 
+// PaneSendKeys sends herdr logical keys to pane, whether or not herdr sees
+// an agent in it.
+func (c *Client) PaneSendKeys(ctx context.Context, pane string, keys ...string) error {
+	return c.runJSON(ctx, DefaultTimeout, nil, append([]string{"pane", "send-keys", pane}, keys...)...)
+}
+
 // AgentFocus switches the UI to the agent's pane.
 func (c *Client) AgentFocus(ctx context.Context, target string) error {
 	return c.runJSON(ctx, DefaultTimeout, nil, "agent", "focus", target)
