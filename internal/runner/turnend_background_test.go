@@ -49,6 +49,33 @@ func TestTurnEndTrustsTheStopInputOverTheModeLine(t *testing.T) {
 	}
 }
 
+// A Claude turn end records whether its hook listed background work still
+// running, for the idle check; one with no list records nothing.
+func TestTurnEndRecordsListedBackgroundWork(t *testing.T) {
+	for name, tc := range map[string]struct {
+		payload string
+		want    *bool
+	}{
+		"running": {harnessFixture(t, "stop-background-running-claude.json"), new(true)},
+		"none":    {harnessFixture(t, "stop-background-none-claude.json"), new(false)},
+		"no list": {`{"hook_event_name":"Stop"}`, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+			withBackground(t, r, tk.ID, true) // from an earlier turn
+			fake.on("pane read", ok("❯ \n"))
+			if _, err := r.TurnEnd(context.Background(), tk.ID, task.Claude, []byte(tc.payload)); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := r.Store.Get(tk.ID)
+			if (got.Background == nil) != (tc.want == nil) || (got.Background != nil && *got.Background != *tc.want) {
+				t.Errorf("background = %v, want %v", got.Background, tc.want)
+			}
+		})
+	}
+}
+
 func TestTurnEndFallsBackToTheModeLine(t *testing.T) {
 	shells := harnessFixture(t, "background-agents-claude-2.txt")
 	early := harnessFixture(t, "background-agents-claude-1.txt")

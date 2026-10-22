@@ -242,6 +242,10 @@ type Task struct {
 	// Unreported counts turns that ended without a report since the last
 	// prompt from the main session: the first is nudged, the second is news.
 	Unreported int `json:"unreported,omitempty"`
+	// Background says whether the agent's last turn ended with background
+	// work of its own still running, as its turn-end hook listed it. It is
+	// nil when the hook listed none, and cleared with Unreported.
+	Background *bool `json:"background,omitempty"`
 	// APIErrors counts turns that ended on a transient API error since the
 	// runner last ended a turn normally, reported, was prompted by the main
 	// session or switched agents: the first is continued, the second is news.

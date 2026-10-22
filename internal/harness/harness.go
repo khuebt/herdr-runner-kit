@@ -97,8 +97,10 @@ type TurnSignal struct {
 	// server. The runner continues it once.
 	APIError string
 	// Background says the agent ended its turn with background work still
-	// running, so it wakes on its own later.
-	Background bool
+	// running, so it wakes on its own later. BackgroundListed says the
+	// hook's input listed that work, rather than the screen showing it.
+	Background       bool
+	BackgroundListed bool
 	// Subagents says background subagents are still running, which wake
 	// the agent with their result: a done it reported is not final yet.
 	Subagents bool

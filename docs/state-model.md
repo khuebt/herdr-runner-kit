@@ -72,11 +72,13 @@ A waiting task leaves only through `Settle`, `release` of a held task, or `stop`
 
 The launcher's own writes (`launchUpdate`) notice a task that ended while it worked, such as one stopped before its pane was recorded. The launch records the tab it opened, types no prompt, and closes the runner through `closeRunner`.
 
-A launcher that waits on a startup dialog the user must answer looks at the task every 5 seconds (`awaitAnswer`, `waitScreenClears`), so it returns within that time of a stop and quits the agent itself. Stop quits the agent with Ctrl+C, which is the exit of such a dialog; an agent herdr does not see, still starting or lost, gets the keys through the pane, up to three times, while a process other than the shell holds the pane's terminal. Either way `stopped-gets-no-agent` holds: no agent outlives a stop.
+A launcher that waits on a startup dialog the user must answer looks at the task every 5 seconds (`awaitAnswer`, `waitScreenClears`), so it returns within that time of a stop and quits the agent itself. Stop quits the agent with Ctrl+C, which is the exit of such a dialog; an agent herdr does not see, still starting or lost, gets the keys through the pane, up to three times, while a process other than the shell holds the pane's terminal. That is a best effort for a tab runner, whose closed tab ends what holds the pane; a worktree runner's stop fails when it does not work. Either way `stopped-gets-no-agent` holds: no agent outlives a stop.
 
 ### Unreported turns
 
-`Unreported` counts the turns since the last report, `send` or `answer` that ended without a report; those reset it, and so does a fallback or handoff. The turn-end hook adds one per such turn, and the progress watcher (`checkIdle`) adds one for an agent idle at its prompt for `stallAfter`, under a check that the count and the running status did not change since it read them. The first step is a nudge; the second is news (`turn-ended-unreported` from a turn end, `stalled` from the watcher), and nothing follows until a reset. The count changes no status.
+`Unreported` counts the turns since the last report, `send` or `answer` that ended without a report; those reset it, and so does a fallback or handoff. The turn-end hook adds one per such turn, and the progress watcher (`checkIdle`) adds one for an agent idle at its prompt for `stallAfter`, under a check that the count and the running status did not change since it read them. The watcher raises it for a nudge only once the nudge was typed. The first step is a nudge; the second is news (`turn-ended-unreported` from a turn end, `stalled` from the watcher), and nothing follows until a reset. The count changes no status.
+
+`Background` holds what the last Claude turn end's hook listed: background work still running or not, nil when the hook had no list. Each turn end the kit handles rewrites it, and it is cleared wherever `Unreported` is reset. Only `checkIdle` reads it, to stretch the idle bound.
 
 ### Other lifecycle fields
 

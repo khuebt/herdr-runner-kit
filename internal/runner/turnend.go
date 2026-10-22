@@ -83,6 +83,9 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if ignore, err := r.otherThread(t, sig.Thread); ignore || err != nil {
 		return "", err
 	}
+	if err := r.recordBackground(t, sig); err != nil {
+		return "", err
+	}
 	if t.APIErrors > 0 {
 		if _, err := r.Store.Update(id, func(t *task.Task) error {
 			t.APIErrors = 0
@@ -199,6 +202,24 @@ func (r *Runner) settleTurn(id string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// recordBackground keeps, for the idle check, whether this turn ended with
+// background work of the agent's own still running, as the hook listed it;
+// a turn end whose hook listed none clears it.
+func (r *Runner) recordBackground(t *task.Task, sig harness.TurnSignal) error {
+	var bg *bool
+	if sig.BackgroundListed {
+		bg = &sig.Background
+	}
+	if (bg == nil) == (t.Background == nil) && (bg == nil || *bg == *t.Background) {
+		return nil
+	}
+	_, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		t.Background = bg
+		return nil
+	})
+	return err
 }
 
 // limitNews tells the main session about a usage limit seen on a runner's

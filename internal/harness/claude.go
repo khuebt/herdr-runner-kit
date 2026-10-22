@@ -97,7 +97,8 @@ func (c claude) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 		return TurnSignal{Ignore: true}, nil
 	}
 	subagents, _ := ClaudeBackgroundEnding(in.Payload)
-	return TurnSignal{Background: c.background(in), Subagents: subagents > 0}, nil
+	background, listed := c.background(in)
+	return TurnSignal{Background: background, BackgroundListed: listed, Subagents: subagents > 0}, nil
 }
 
 // HookTranscript reads the session transcript a hook input names: every
@@ -114,13 +115,13 @@ func (claude) HookTranscript(payload []byte) string {
 // still running, so it wakes on its own later. The Stop hook input lists
 // them; the mode line is read only when the input has no list, because it
 // draws no count for subagents that run no shell, nor for a second or more
-// after they start.
-func (c claude) background(in TurnInput) bool {
+// after they start. listed says the answer came from the input's list.
+func (c claude) background(in TurnInput) (busy, listed bool) {
 	if running, known := ClaudeBackgroundWork(in.Payload); known {
-		return running > 0
+		return running > 0, true
 	}
-	busy, _ := c.WorksInBackground(in.Screen)
-	return busy
+	busy, _ = c.WorksInBackground(in.Screen)
+	return busy, false
 }
 
 // NudgeInHook is true: the Stop hook returns the nudge as a block.
@@ -149,6 +150,11 @@ func (claude) SessionContext(request string) string { return ClaudeSessionContex
 // run. Claude ends its turn then and wakes on its own later.
 var claudeBackgroundCount = regexp.MustCompile(`(?i)\b\d+\s+(background\s+)?(shells?|bash(es)?|tasks?|agents?)\b`)
 
+// claudeAgentsHint matches the agent switcher hint at the end of the mode
+// line ("← 2 agents", or "← for agents"), which Claude draws whether or
+// not anything runs in the background.
+var claudeAgentsHint = regexp.MustCompile(`(?i)←\s*(\d+|for)\s+agents?\b`)
+
 // WakesOnBackground is true: Claude starts a turn when a background shell
 // or agent it left running finishes.
 func (claude) WakesOnBackground() bool { return true }
@@ -161,7 +167,7 @@ func (claude) WorksInBackground(screen Screen) (bool, error) {
 		return false, err
 	}
 	for line := range strings.SplitSeq(text, "\n") {
-		if strings.Contains(line, "⏵") && claudeBackgroundCount.MatchString(line) {
+		if strings.Contains(line, "⏵") && claudeBackgroundCount.MatchString(claudeAgentsHint.ReplaceAllString(line, "")) {
 			return true, nil
 		}
 	}

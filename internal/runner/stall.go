@@ -207,8 +207,8 @@ func (r *Runner) climb(ctx context.Context, t *task.Task, step int, idle time.Du
 // checkIdle handles a running task whose agent sits idle at its prompt, as
 // one that ended its turn to wait for work nothing wakes it from does. Once
 // it has been idle for stallAfter since the task last changed, or three
-// times that while its screen shows background work of its own, it takes
-// the next step of the turn-end ladder, so a turn end the kit missed counts
+// times that while background work of its own still runs, it takes the
+// next step of the turn-end ladder, so a turn end the kit missed counts
 // too: with no unreported turn it is nudged, after one it is stalled news.
 // A runner that already had both is left alone. A held done is a report,
 // and its turn end finishes it.
@@ -220,11 +220,25 @@ func (r *Runner) checkIdle(ctx context.Context, t *task.Task, adapter harness.Ad
 	if idle < bound || t.PendingDone != nil || t.Unreported >= 2 {
 		return
 	}
-	screen := func(lines int) (string, error) { return r.Herdr.PaneRead(ctx, t.Herdr.PaneID, lines) }
-	background, _ := adapter.WorksInBackground(screen)
+	background := r.idleInBackground(ctx, t, adapter)
 	if background {
 		bound *= backgroundIdleFactor
 		if idle < bound {
+			return
+		}
+	}
+	minutes := int(idle.Minutes())
+	what := "without a report"
+	if background {
+		what = "without a report, with background work of its own still running"
+	}
+	if t.Unreported == 0 {
+		text := r.idleNudgeText(adapter.Harness(), minutes)
+		if err := r.typePrompt(ctx, t, t.Herdr.PaneID, text); err != nil {
+			// The ladder stays where it is and tries again after another
+			// stretch, so a later stalled line never claims a nudge.
+			st.IdleSince = now
+			r.emit(t, "nudge-failed", fmt.Sprintf("idle at its prompt for %d min %s; the nudge could not be typed: %v", minutes, what, err), "")
 			return
 		}
 	}
@@ -236,23 +250,24 @@ func (r *Runner) checkIdle(ctx context.Context, t *task.Task, adapter harness.Ad
 		t.Unreported++
 		return nil
 	})
-	if err != nil {
-		return
+	switch {
+	case before == 0:
+		// Typed either way: the runner got the nudge.
+		r.emit(t, "nudged", fmt.Sprintf("idle at its prompt for %d min %s; nudged", minutes, what), "")
+	case err == nil:
+		r.emit(cur, "stalled", fmt.Sprintf("idle at its prompt for %d min %s, after a nudge; the runner is left open", minutes, what), "")
 	}
-	minutes := int(idle.Minutes())
-	what := "without a report"
-	if background {
-		what = "with background work and no report"
+}
+
+// idleInBackground reports whether t's agent waits on background work of
+// its own, which wakes it: as its last turn-end hook listed it, or, when
+// the hook listed none, as its screen shows it.
+func (r *Runner) idleInBackground(ctx context.Context, t *task.Task, adapter harness.Adapter) bool {
+	if t.Background != nil {
+		return *t.Background
 	}
-	if cur.Unreported == 1 {
-		text := r.idleNudgeText(adapter.Harness(), minutes)
-		if err := r.typePrompt(ctx, cur, cur.Herdr.PaneID, text); err != nil {
-			return
-		}
-		r.emit(cur, "nudged", fmt.Sprintf("idle at its prompt for %d min %s; nudged", minutes, what), "")
-		return
-	}
-	r.emit(cur, "stalled", fmt.Sprintf("idle at its prompt for %d min %s after a nudge; the runner is left open", minutes, what), "")
+	busy, _ := adapter.WorksInBackground(func(lines int) (string, error) { return r.Herdr.PaneRead(ctx, t.Herdr.PaneID, lines) })
+	return busy
 }
 
 func (r *Runner) progressPath(id string) string {
