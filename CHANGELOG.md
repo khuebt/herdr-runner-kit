@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.8](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.7...v0.15.8) (2026-10-22)
+
+
+### Bug Fixes
+
+* **runner:** nudge idle runners, stop agents on startup dialogs, and let live checks turn Telegram off ([#104](https://github.com/khuebt/herdr-runner-kit/issues/104)) ([627025d](https://github.com/khuebt/herdr-runner-kit/commit/627025d331e26b24058f75ab955b6d1ccaa754dd))
+
 ## [0.15.7](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.6...v0.15.7) (2026-10-22)
 
 
