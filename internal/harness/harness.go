@@ -97,8 +97,10 @@ type TurnSignal struct {
 	// server. The runner continues it once.
 	APIError string
 	// Background says the agent ended its turn with background work still
-	// running, so it wakes on its own later.
-	Background bool
+	// running, so it wakes on its own later. BackgroundListed says the
+	// hook's input listed that work, rather than the screen showing it.
+	Background       bool
+	BackgroundListed bool
 	// Subagents says background subagents are still running, which wake
 	// the agent with their result: a done it reported is not final yet.
 	Subagents bool
@@ -235,6 +237,10 @@ type Adapter interface {
 	// WorksInBackground reports whether the agent's screen shows background
 	// work still running. It returns screen's error when it cannot tell.
 	WorksInBackground(screen Screen) (bool, error)
+	// WakesOnBackground reports whether the agent starts a turn of its own
+	// when background work it left running finishes, so it may end its
+	// turn to wait for that work.
+	WakesOnBackground() bool
 	// DoneAtTurnEnd reports whether a done report waits for the end of the
 	// turn it came in, because the agent may keep working after it: the
 	// kit holds the done and makes it final at the turn end.

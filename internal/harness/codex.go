@@ -388,6 +388,10 @@ func (codex) SessionContext(string) string { return "" }
 // WorksInBackground is false: Codex draws no background count.
 func (codex) WorksInBackground(Screen) (bool, error) { return false, nil }
 
+// WakesOnBackground is false: Codex does not wake when a subagent or a
+// background command ends.
+func (codex) WakesOnBackground() bool { return false }
+
 // DoneAtTurnEnd is true: a Codex runner reports inside its turn and may go
 // on to commit, or to read a message sent into the running turn, before the
 // turn ends. codex-cli 0.162.1 adds a prompt typed while it works to the

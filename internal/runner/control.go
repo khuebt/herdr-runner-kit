@@ -83,7 +83,7 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 		case cleaned(t):
 			return errCleaned(t.ID)
 		}
-		t.Unreported, t.APIErrors = 0, 0
+		t.Unreported, t.APIErrors, t.Background = 0, 0, nil
 		if head != "" {
 			t.RoundHead = head
 		}
@@ -153,7 +153,7 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		return false, err
 	}
 	nt, changed, err := r.Store.Transition(id, task.Running, []task.Status{task.NeedsHuman}, func(t *task.Task) {
-		t.Question, t.Unreported, t.APIErrors = "", 0, 0
+		t.Question, t.Unreported, t.APIErrors, t.Background = "", 0, 0, nil
 		if head != "" {
 			t.RoundHead = head
 		}
@@ -650,7 +650,7 @@ func (r *Runner) endAgent(ctx context.Context, t *task.Task, idle bool) error {
 		return fmt.Errorf("%w: its agent is busy", errReopened)
 	}
 	procs, check := r.snapshotProcs(ctx, t)
-	if err := r.quitAgent(ctx, t.Herdr.PaneID); err != nil {
+	if err := r.quitAgent(ctx, t.Herdr.PaneID); err != nil && (t.Worktree != nil || !errors.Is(err, errUnseenAgent)) {
 		return err
 	}
 	if t.Worktree == nil {
@@ -664,18 +664,35 @@ func (r *Runner) endAgent(ctx context.Context, t *task.Task, idle bool) error {
 	return nil
 }
 
-// quitAgent asks the agent to exit with Ctrl+C pairs, the way a user would.
-// Killing a Codex process directly can wedge the shared Codex daemon, so
-// the agent is never signalled.
+// quitAgent asks the agent to exit with Ctrl+C pairs, the way a user would;
+// on a startup dialog, such as Claude's Bypass Permissions warning, that is
+// the dialog's exit. An agent herdr does not see, because it is still
+// starting or herdr lost track of it, may still hold the pane's terminal:
+// it gets the keys through the pane, as a best effort that fails with
+// errUnseenAgent. Killing a Codex process directly can wedge the shared
+// Codex daemon, so the agent is never signalled.
 func (r *Runner) quitAgent(ctx context.Context, pane string) error {
+	unseen := false
 	for range 3 {
 		a, err := r.Herdr.AgentGet(ctx, pane)
-		if isGone(err) || (err == nil && a.Kind == "") {
-			return nil
-		}
-		if err != nil {
+		if err != nil && !isGone(err) {
 			return err
 		}
+		if err != nil || a.Kind == "" {
+			if !r.holdsTerminal(ctx, pane) {
+				return nil
+			}
+			if err := r.Herdr.PaneSendKeys(ctx, pane, "ctrl+c", "ctrl+c"); err != nil {
+				if isGone(err) {
+					return nil
+				}
+				return err
+			}
+			r.waitShell(ctx, pane, 3*time.Second)
+			unseen = true
+			continue
+		}
+		unseen = false
 		if err := r.Herdr.AgentSendKeys(ctx, pane, "ctrl+c", "ctrl+c"); err != nil && !isGone(err) {
 			return err
 		}
@@ -684,7 +701,22 @@ func (r *Runner) quitAgent(ctx context.Context, pane string) error {
 			return nil
 		}
 	}
+	if unseen {
+		return fmt.Errorf("%w: a process other than the shell still holds %s after Ctrl+C", errUnseenAgent, pane)
+	}
 	return fmt.Errorf("the agent in %s did not exit after Ctrl+C", pane)
+}
+
+// errUnseenAgent means Ctrl+C did not free a pane in which herdr sees no
+// agent. Closing the pane's tab ends whatever holds it, so only a worktree
+// pane, which outlives the close, treats it as a failure.
+var errUnseenAgent = errors.New("herdr sees no agent")
+
+// holdsTerminal reports whether a process other than the shell holds the
+// terminal of pane. A pane herdr cannot describe holds none.
+func (r *Runner) holdsTerminal(ctx context.Context, pane string) bool {
+	info, err := r.Herdr.PaneProcessInfo(ctx, pane)
+	return err == nil && info.ShellPID > 0 && info.ForegroundPGID > 0 && info.ForegroundPGID != info.ShellPID
 }
 
 // isGone reports whether herdr says the agent or pane no longer exists.

@@ -75,6 +75,58 @@ func TestSendNotification(t *testing.T) {
 	}
 }
 
+// A launcher with HRK_TELEGRAM=off hands it to its runner, so the runner's
+// news sends nothing even though its config and the plugin's default
+// folder name the user's bot.
+func TestHRKTelegramOffReachesTheRunner(t *testing.T) {
+	r, _, e := newTestRunner(t)
+	var calls atomic.Int32
+	withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	home := t.TempDir()
+	dir := filepath.Join(home, ".claude", "channels", "telegram")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("TELEGRAM_BOT_TOKEN=1:abc\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "access.json"), []byte(`{"allowFrom":["42"]}`), 0o600)
+	r.Config.Telegram.Notify = []string{"failed"}
+	e["HOME"], e["HRK_STATE_DIR"], e[telegram.OffEnv] = home, r.Store.Dir(), "off"
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	// The runner's environment holds only what runnerEnv hands it, next to
+	// herdr's own, which has no HRK_TELEGRAM.
+	runner := env{"HOME": home}
+	for _, kv := range r.runnerEnv(tk) {
+		k, v, _ := strings.Cut(kv, "=")
+		runner[k] = v
+	}
+	if runner[telegram.OffEnv] != "off" {
+		t.Fatalf("runner env = %v", runner)
+	}
+	for _, getenv := range []func(string) string{e.get, runner.get} {
+		r.Getenv = getenv
+		if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: "failed", Summary: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("sent %d Telegram messages with %s=off", n, telegram.OffEnv)
+	}
+	// Without it, the runner env does not name it, and the same news is sent.
+	delete(e, telegram.OffEnv)
+	r.Getenv = e.get
+	for _, kv := range r.runnerEnv(tk) {
+		if strings.HasPrefix(kv, telegram.OffEnv+"=") {
+			t.Errorf("runner env has %s without the launcher's", kv)
+		}
+	}
+	if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: "failed", Summary: "x"}); err != nil || calls.Load() != 1 {
+		t.Errorf("without %s: err %v, %d messages", telegram.OffEnv, err, calls.Load())
+	}
+}
+
 func TestSendNotificationFailureIsRecorded(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {

@@ -17,6 +17,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
+	"github.com/khuebt/herdr-runner-kit/internal/telegram"
 )
 
 const (
@@ -365,11 +366,15 @@ func (r *Runner) writeRunnerFiles(t *task.Task, adapter harness.Adapter) (string
 // report and the turn-end hook at the spawner's state, and HRK_ATTEMPT,
 // from the second session on, tells them which session they run in.
 // TELEGRAM_BOT_TOKEN is empty so the Telegram plugin exits before it takes
-// over the main session's poller.
+// over the main session's poller. HRK_TELEGRAM=off passes on, so the
+// runners of a live check send nothing either.
 func (r *Runner) runnerEnv(t *task.Task) []string {
 	env := []string{
 		"HRK_TASK=" + t.ID, "HRK_STATE_DIR=" + r.Store.Dir(),
 		"TELEGRAM_BOT_TOKEN=", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false",
+	}
+	if telegram.Off(r.Getenv) {
+		env = append(env, telegram.OffEnv+"=off")
 	}
 	if t.ClaudeConfigDir != "" {
 		env = append(env, "CLAUDE_CONFIG_DIR="+t.ClaudeConfigDir)
@@ -701,10 +706,8 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d 
 		return r.launchEnded(t.ID)
 	}
 	r.emit(nt, "needs-human", dialog, q)
-	_, err = r.Herdr.AgentWait(ctx, pane, dialogAnswerTimeout, "idle", "done")
-	// A stop meanwhile quits the agent, which ends the wait.
-	if endErr := r.launchEnded(t.ID); endErr != nil {
-		return endErr
+	if err = r.awaitAnswer(ctx, t.ID, pane, deadline); errors.Is(err, errEnded) {
+		return err
 	}
 	switch {
 	case herdr.HasCode(err, herdr.CodeAgentNotRunning):
@@ -713,7 +716,7 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d 
 		return fmt.Errorf("no answer to the %s dialog: %w", dialog, err)
 	}
 	if d.IdleWhileShown {
-		if err := r.waitScreenClears(ctx, pane, d, deadline); err != nil {
+		if err := r.waitScreenClears(ctx, t.ID, pane, d, deadline); err != nil {
 			return cmp.Or(r.launchEnded(t.ID), err)
 		}
 	}
@@ -725,6 +728,26 @@ func (r *Runner) waitForHuman(ctx context.Context, t *task.Task, pane string, d 
 		return r.launchEnded(t.ID)
 	}
 	return err
+}
+
+// stopPollEvery is how often a launcher that waits on a startup dialog
+// looks whether its task was stopped.
+const stopPollEvery = 5 * time.Second
+
+// awaitAnswer waits until the agent in pane turns idle once the user
+// answered its startup dialog, up to deadline. It returns errEnded within
+// stopPollEvery of a stop or a failure, so a launcher never waits out the
+// dialog of a stopped task, even when the stop could not quit its agent.
+func (r *Runner) awaitAnswer(ctx context.Context, id, pane string, deadline time.Time) error {
+	for {
+		_, err := r.Herdr.AgentWait(ctx, pane, max(min(stopPollEvery, time.Until(deadline)), time.Millisecond), "idle", "done")
+		if endErr := r.launchEnded(id); endErr != nil {
+			return endErr
+		}
+		if !herdr.HasCode(err, herdr.CodeTimeout) || ctx.Err() != nil || !time.Now().Before(deadline) {
+			return err
+		}
+	}
 }
 
 // launchEnded returns errEnded once task id has been stopped or failed, for
@@ -741,12 +764,16 @@ func (r *Runner) launchEnded(id string) error {
 const dialogPollEvery = time.Second
 
 // waitScreenClears reads the screen until dialog d is gone from it, up to
-// deadline. A read error counts as gone: the next dialog round reads again.
-func (r *Runner) waitScreenClears(ctx context.Context, pane string, d harness.Dialog, deadline time.Time) error {
+// deadline, or until task id ends. A read error counts as gone: the next
+// dialog round reads again.
+func (r *Runner) waitScreenClears(ctx context.Context, id, pane string, d harness.Dialog, deadline time.Time) error {
 	for range int(dialogAnswerTimeout / dialogPollEvery) {
 		screen, err := r.Herdr.PaneRead(ctx, pane, 40)
 		if err != nil || !harness.Shows(screen, d) {
 			return nil
+		}
+		if err := r.launchEnded(id); err != nil {
+			return err
 		}
 		if _, err := r.Herdr.AgentGet(ctx, pane); isGone(err) {
 			return fmt.Errorf("the agent exited at the %s dialog", d.Name)

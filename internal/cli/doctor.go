@@ -562,7 +562,11 @@ func checkTelegramCreds() (checkResult, string) {
 	}
 	creds, err := telegram.Resolve(cfg.Telegram, os.Getenv)
 	if errors.Is(err, telegram.ErrNoCredentials) {
-		return warn("Telegram is off: "+err.Error(), "set telegram.envFile, or set up the Telegram plugin; see docs/telegram.md"), ""
+		fix := "set telegram.envFile, or set up the Telegram plugin; see docs/telegram.md"
+		if telegram.Off(os.Getenv) {
+			fix = "unset " + telegram.OffEnv + " to turn it on"
+		}
+		return warn("Telegram is off: "+err.Error(), fix), ""
 	}
 	if err != nil {
 		return fail(err.Error(), "see docs/telegram.md"), ""

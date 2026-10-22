@@ -68,7 +68,7 @@ func TestPiTurnWithoutReportIsNudgedInThePane(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The nudge is typed: the extension's hook takes no reply.
-		if p := lastCall(fake, "agent", "prompt"); p == nil || p[2] != tk.Herdr.PaneID || p[3] != r.nudgeText() || block != p[3] {
+		if p := lastCall(fake, "agent", "prompt"); p == nil || p[2] != tk.Herdr.PaneID || p[3] != r.nudgeText(task.Pi) || block != p[3] {
 			t.Errorf("%s: prompt = %q, block %q", h, p, block)
 		}
 		if ev := lastEvent(t, r); ev.Type != "nudged" {

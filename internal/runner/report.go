@@ -140,13 +140,13 @@ func (r *Runner) report(id string, o ReportOptions, finish int, judged *task.Pen
 		}
 		if held = hold && t.Status == task.Running; held {
 			t.PendingDone = &task.PendingDone{Summary: o.Summary, Decisions: o.Decisions, Outputs: o.Outputs, Since: time.Now().UTC()}
-			t.Unreported, t.APIErrors = 0, 0
+			t.Unreported, t.APIErrors, t.Background = 0, 0, nil
 			return nil
 		}
 		answered = t.Status == task.NeedsHuman && t.Question != "" && !InputLocked(t)
 		t.Status = o.Status
 		t.Summary, t.Outputs, t.Question, t.Decisions = o.Summary, o.Outputs, question, o.Decisions
-		t.Unreported, t.APIErrors = 0, 0
+		t.Unreported, t.APIErrors, t.Background = 0, 0, nil
 		t.PendingDone = nil // a later report replaces a held done
 		t.Git = git         // a failed snapshot clears an older one rather than show it as current
 		if o.Status == task.Failed {

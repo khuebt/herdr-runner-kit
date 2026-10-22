@@ -102,6 +102,22 @@ func TestSelfResolvingPrompt(t *testing.T) {
 	}
 }
 
+// Claude's mode line counts background shells and agents, but its agent
+// switcher hint, drawn all the time, is no background work.
+func TestClaudeModeLineIgnoresTheAgentsHint(t *testing.T) {
+	for line, want := range map[string]bool{
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents":   false,
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents": false,
+		"  ⏵⏵ auto mode on · 1 shell · ← 2 agents":                       true,
+		"  ⏵⏵ bypass permissions on · 2 shells · ← for agents":           true,
+	} {
+		got, err := claude{}.WorksInBackground(func(int) (string, error) { return "❯ \n" + line + "\n", nil })
+		if err != nil || got != want {
+			t.Errorf("%q: %v, %v", line, got, err)
+		}
+	}
+}
+
 func TestClaudeBackgroundWork(t *testing.T) {
 	for name, want := range map[string]int{"stop-background-running-claude.json": 2, "stop-background-none-claude.json": 0} {
 		if n, known := ClaudeBackgroundWork([]byte(readFixture(t, name))); !known || n != want {

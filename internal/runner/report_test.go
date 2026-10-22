@@ -758,7 +758,134 @@ func TestStopDuringLaunchTypesNoPrompt(t *testing.T) {
 	}
 }
 
-// A stop that completes while herdr starts a worktree runner's agent finds
+// A stop that lands while a worktree runner's agent waits on a startup
+// dialog the user has to answer, such as Claude's Bypass Permissions
+// warning, ends that agent even when herdr no longer sees it in the pane,
+// and the launcher returns at once instead of waiting out the dialog.
+func TestStopAtAStartupDialogEndsTheAgentAndTheLauncher(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: gitRepo(t)})
+	var mu sync.Mutex
+	alive, stopped := true, false
+	isAlive := func() bool { mu.Lock(); defer mu.Unlock(); return alive }
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("pane read", ok("Quick safety check: Is this a project you created or one you trust?\n❯ 1. Yes, I trust this folder\n"))
+	// herdr lost the agent: only the pane's terminal shows it is there.
+	fake.on("agent get", herdrErr("agent_not_found"))
+	fake.on("pane process-info", func([]string) (string, error) {
+		if isAlive() {
+			return `{"result":{"process_info":{"shell_pid":100,"foreground_process_group_id":101}}}`, nil
+		}
+		return `{"result":{"process_info":{"shell_pid":100,"foreground_process_group_id":100}}}`, nil
+	})
+	fake.on("pane send-keys", func(args []string) (string, error) {
+		if slices.Contains(args, "ctrl+c") {
+			mu.Lock()
+			alive = false
+			mu.Unlock()
+		}
+		return "{}", nil
+	})
+	fake.on("agent wait", func(args []string) (string, error) {
+		if !slices.Contains(args, "idle") {
+			return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+		}
+		if i := slices.Index(args, "--timeout"); args[i+1] != "5000" {
+			t.Errorf("the dialog wait polls every %s ms, want 5000", args[i+1])
+		}
+		mu.Lock()
+		first := !stopped
+		stopped = true
+		mu.Unlock()
+		if first {
+			if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+				t.Error(err)
+			}
+		}
+		return "", herdrError(herdr.CodeTimeout)
+	})
+	if err := r.Launch(context.Background(), tk.ID); !errors.Is(err, errEnded) {
+		t.Fatalf("launch = %v, want it ended by the stop", err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Stopped || !got.Herdr.Closed {
+		t.Fatalf("task = %s, herdr %+v", got.Status, got.Herdr)
+	}
+	if isAlive() {
+		t.Error("the agent on the startup dialog outlived the stop")
+	}
+	if fake.count("agent", "prompt") != 0 {
+		t.Errorf("prompts %d", fake.count("agent", "prompt"))
+	}
+	checkStore(t, r)
+}
+
+// When herdr sees no agent but something keeps holding the pane after
+// Ctrl+C, stop still closes a tab runner, whose closed tab ends what holds
+// it; a worktree runner's pane outlives the close, so its stop fails.
+func TestStopOfAPaneHeldWithoutAnAgentHerdrSees(t *testing.T) {
+	for _, worktree := range []bool{false, true} {
+		t.Run(map[bool]string{false: "tab", true: "worktree"}[worktree], func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			o := SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)}
+			if worktree {
+				o = SpawnOptions{Kind: "code", Prompt: "x", Cwd: gitRepo(t)}
+			}
+			tk := running(t, r, o)
+			fake.on("agent get", herdrErr("agent_not_found"))
+			fake.on("pane process-info", ok(`{"result":{"process_info":{"shell_pid":100,"foreground_process_group_id":101}}}`))
+			_, err := r.Stop(context.Background(), tk.ID, false)
+			got, _ := r.Store.Get(tk.ID)
+			if fake.count("pane", "send-keys", tk.Herdr.PaneID, "ctrl+c") == 0 {
+				t.Error("no Ctrl+C reached the held pane")
+			}
+			if worktree {
+				if !errors.Is(err, errUnseenAgent) || got.Herdr.Closed {
+					t.Errorf("worktree stop = %v, closed %v", err, got.Herdr.Closed)
+				}
+				return
+			}
+			if err != nil || !got.Herdr.Closed || fake.count("tab", "close") != 1 {
+				t.Errorf("tab stop = %v, closed %v, tab closes %d", err, got.Herdr.Closed, fake.count("tab", "close"))
+			}
+			checkStore(t, r)
+		})
+	}
+}
+
+// A launcher whose stop could not quit the agent on a startup dialog stops
+// waiting on that dialog within one poll, and quits the agent itself.
+func TestLauncherAtAStartupDialogSeesAStopThatLeftTheAgent(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	fake.on("agent start", herdrErr(herdr.CodeAgentNotReady))
+	fake.on("pane read", ok("Quick safety check: Is this a project you created or one you trust?\n❯ 1. Yes, I trust this folder\n"))
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"blocked"}}}`))
+	waits := 0
+	fake.on("agent wait", func(args []string) (string, error) {
+		if !slices.Contains(args, "idle") {
+			return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+		}
+		waits++
+		if waits == 2 {
+			// The user stopped the task; its agent did not quit.
+			if _, _, err := r.Store.SetStatus(tk.ID, task.Stopped); err != nil {
+				t.Error(err)
+			}
+		}
+		if waits > 2 {
+			t.Error("the launcher still waits on the dialog of a stopped task")
+		}
+		return "", herdrError(herdr.CodeTimeout)
+	})
+	if err := r.Launch(context.Background(), tk.ID); !errors.Is(err, errEnded) {
+		t.Fatalf("launch = %v, want it ended by the stop", err)
+	}
+	if fake.count("agent", "send-keys") == 0 {
+		t.Error("the launcher left the agent on the dialog")
+	}
+}
+
 // no agent yet and marks the runner closed; the agent that starts after it
 // must still be quit, since the worktree's pane stays open.
 func TestStopDuringWorktreeAgentStartQuitsTheAgent(t *testing.T) {

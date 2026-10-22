@@ -32,8 +32,12 @@ type Creds struct {
 // the token from <dir>/.env and the chats from <dir>/access.json allowFrom,
 // where <dir> is telegram.stateDir, $TELEGRAM_STATE_DIR, or
 // ${CLAUDE_CONFIG_DIR:-~/.claude}/channels/telegram. telegram.chatId
-// overrides the chat ids from either source.
+// overrides the chat ids from either source. HRK_TELEGRAM=off turns
+// Telegram off before anything is read, as a live check sets it.
 func Resolve(cfg config.Telegram, getenv func(string) string) (Creds, error) {
+	if Off(getenv) {
+		return Creds{}, fmt.Errorf("%w: %s=off", ErrNoCredentials, OffEnv)
+	}
 	var c Creds
 	if cfg.EnvFile != "" {
 		path := expandHome(cfg.EnvFile, getenv)
@@ -68,6 +72,14 @@ func Resolve(cfg config.Telegram, getenv func(string) string) (Creds, error) {
 	}
 	return c, nil
 }
+
+// OffEnv names the variable that turns Telegram off when set to "off". The
+// kit hands it down to every runner, so a scratch live check and its
+// runners never reach the user's bot, whatever config they read.
+const OffEnv = "HRK_TELEGRAM"
+
+// Off reports whether OffEnv turns Telegram off.
+func Off(getenv func(string) string) bool { return getenv(OffEnv) == "off" }
 
 func pluginDir(cfg config.Telegram, getenv func(string) string) string {
 	if cfg.StateDir != "" {

@@ -83,6 +83,9 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	if ignore, err := r.otherThread(t, sig.Thread); ignore || err != nil {
 		return "", err
 	}
+	if err := r.recordBackground(t, sig); err != nil {
+		return "", err
+	}
 	if t.APIErrors > 0 {
 		if _, err := r.Store.Update(id, func(t *task.Task) error {
 			t.APIErrors = 0
@@ -140,7 +143,7 @@ func (r *Runner) TurnEnd(ctx context.Context, id string, h task.Harness, payload
 	}
 	switch t.Unreported {
 	case 1:
-		nudge := r.nudgeText()
+		nudge := r.nudgeText(h)
 		if r.handoffPending(t) {
 			nudge = r.handoffRequest(t)
 		}
@@ -201,6 +204,24 @@ func (r *Runner) settleTurn(id string) (bool, error) {
 	return true, nil
 }
 
+// recordBackground keeps, for the idle check, whether this turn ended with
+// background work of the agent's own still running, as the hook listed it;
+// a turn end whose hook listed none clears it.
+func (r *Runner) recordBackground(t *task.Task, sig harness.TurnSignal) error {
+	var bg *bool
+	if sig.BackgroundListed {
+		bg = &sig.Background
+	}
+	if (bg == nil) == (t.Background == nil) && (bg == nil || *bg == *t.Background) {
+		return nil
+	}
+	_, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		t.Background = bg
+		return nil
+	})
+	return err
+}
+
 // limitNews tells the main session about a usage limit seen on a runner's
 // screen that no fallback agent can take over.
 const limitNews = "the runner appears to be at its usage limit, and no quotaFallback agent is left to switch to"
@@ -235,11 +256,29 @@ func (r *Runner) screen(ctx context.Context, t *task.Task) harness.Screen {
 	}
 }
 
-func (r *Runner) nudgeText() string {
-	return fmt.Sprintf("You ended your turn without reporting to the main session. "+
-		"If background shells or agents are still running, end your turn now without reporting: "+
-		"you are woken when they finish. Never start sleep or heartbeat commands to stay awake. "+
-		"Otherwise report: if the task is finished, run `%[1]s report done --summary \"...\"`; "+
+// nudgeText is the reminder a runner of harness h gets after a turn that
+// ended without a report.
+func (r *Runner) nudgeText(h task.Harness) string {
+	return "You ended your turn without reporting to the main session. " + r.reportReminder(h)
+}
+
+// idleNudgeText is the reminder a runner of harness h gets after sitting
+// idle at its prompt for minutes without a report.
+func (r *Runner) idleNudgeText(h task.Harness, minutes int) string {
+	return fmt.Sprintf("You have been idle at your prompt for %d minutes without reporting to the main session. ", minutes) + r.reportReminder(h)
+}
+
+// reportReminder says how a runner of harness h waits for background work,
+// which depends on whether the agent wakes when it ends, and how to report.
+func (r *Runner) reportReminder(h task.Harness) string {
+	wait := "Nothing wakes you when background commands or subagents finish: if any are still running, " +
+		"wait for them in this same turn (wait on your subagents, and wait for or poll your background commands), then report. " +
+		"Never end your turn to wait. "
+	if a, err := harness.For(h); err == nil && a.WakesOnBackground() {
+		wait = "If background shells or agents are still running, end your turn now without reporting: " +
+			"you are woken when they finish. Never start sleep or heartbeat commands to stay awake. "
+	}
+	return fmt.Sprintf(wait+"Otherwise report: if the task is finished, run `%[1]s report done --summary \"...\"`; "+
 		"if you need a decision, run `%[1]s report needs-human --question \"...\"`; "+
 		"if it failed, run `%[1]s report failed --summary \"...\"`.", r.Bin)
 }

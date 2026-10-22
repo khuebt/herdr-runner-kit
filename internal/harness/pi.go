@@ -269,6 +269,7 @@ func (pi) HookTranscript([]byte) string                            { return "" }
 func (pi) HookReply(string) string                                 { return "" }
 func (pi) SessionContext(string) string                            { return "" }
 func (pi) WorksInBackground(Screen) (bool, error)                  { return false, nil }
+func (pi) WakesOnBackground() bool                                 { return false }
 
 // DoneAtTurnEnd is false: the runner extension reports the turn end only
 // after the run settles. Turn it on once a live run shows pi or omp working
