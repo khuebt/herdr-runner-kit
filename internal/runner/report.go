@@ -563,8 +563,9 @@ var errParentBranchGone = errors.New("parent branch is gone")
 // prompt. base is the worktree branch of the only parent that has one, the
 // default starting point for a child worktree that builds on its code.
 // Once cleanup deleted that branch as merged, base is the default branch,
-// which holds its work; deleted unmerged, base is still the branch and the
-// error wraps errParentBranchGone, for a child that would start from it.
+// as soon as that holds its work. Until then, and deleted unmerged, base is
+// still the branch and the error wraps errParentBranchGone, for a child
+// that would start from it.
 func (r *Runner) parentInputs(ctx context.Context, after []string) (inputs, base string, err error) {
 	var lines []string
 	var branches []string
@@ -606,6 +607,9 @@ func (r *Runner) parentInputs(ctx context.Context, after []string) (inputs, base
 		def, err := project.DefaultBranch(ctx, owner.RepoRoot)
 		if err != nil {
 			return inputs, base, err
+		}
+		if !holdsWork(ctx, owner.RepoRoot, def, w.MergedTips()) {
+			return inputs, base, fmt.Errorf("%w: parent branch %s of %s was merged and deleted, and %s does not hold its work yet; update %s first", errParentBranchGone, base, owner.ID, def, def)
 		}
 		base = def
 	}

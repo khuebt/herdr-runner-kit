@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -506,5 +507,28 @@ func TestCleanupKeepsABranchAnotherWorktreeIsRebasing(t *testing.T) {
 	}
 	if !BranchExists(ctx, repo, "feat/a") {
 		t.Error("deleted a branch another worktree is rebasing")
+	}
+}
+
+// Cleanup counts a branch merged once its squash lands on origin's main. A
+// child of it starts from the local main only once that holds the work.
+func TestChildOfACleanedParentWaitsForTheLocalDefaultBranch(t *testing.T) {
+	ctx := context.Background()
+	r, fake, _ := newTestRunner(t)
+	parent, repo := worktreeTask(t, r, "feat/a")
+	herdrOwnsWorktree(fake, repo, parent.Worktree.Path)
+	squashMerge(t, repo, "feat/a")
+	if _, err := r.Cleanup(ctx, []CleanupItem{cleanable(t, r, repo)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(parent.ID); !got.Worktree.BranchDeleted {
+		t.Fatal("cleanup kept the merged branch")
+	}
+	if _, base, err := r.parentInputs(ctx, []string{parent.ID}); !errors.Is(err, errParentBranchGone) {
+		t.Fatalf("a child starts from %q, which lacks the parent's work: %v", base, err)
+	}
+	git(t, repo, "merge", "-q", "--ff-only", "origin/main")
+	if _, base, err := r.parentInputs(ctx, []string{parent.ID}); err != nil || base != "main" {
+		t.Fatalf("after main was updated: base %q, %v", base, err)
 	}
 }
