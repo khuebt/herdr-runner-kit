@@ -420,7 +420,7 @@ func TestParentInputsNameTheReviewReport(t *testing.T) {
 	if err := r.Store.Create(rv); err != nil {
 		t.Fatal(err)
 	}
-	inputs, _, err := r.parentInputs([]string{rv.ID})
+	inputs, _, err := r.parentInputs(context.Background(), []string{rv.ID})
 	if err != nil {
 		t.Fatal(err)
 	}

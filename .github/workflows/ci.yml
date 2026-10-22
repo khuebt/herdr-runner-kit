@@ -59,3 +59,6 @@ jobs:
         with:
           go-version-file: go.mod
       - run: sh scripts/test-install.sh
+      # Folder flocks guard the user's Claude and Codex config; check them on macOS too.
+      - if: runner.os == 'macOS'
+        run: go test ./internal/fsutil/ ./internal/state/

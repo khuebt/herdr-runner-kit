@@ -31,7 +31,7 @@ func fullRecord() Record {
 	rec.Gates.Pack = Gate{At: at, Waived: true}
 	rec.Reapproval = Reapproval{Needed: true, Reason: "scope grew"}
 	rec.Milestones = []Milestone{{
-		ID: "M1", Title: "Reading lists", Status: "active", Planned: at, Started: at, Branch: "release/M1",
+		ID: "M1", Title: "Reading lists", Status: MilestoneInProgress, Planned: at, Started: at, Branch: "release/M1",
 		Features: []Feature{{ID: "F1", Title: "Add a list"}, {ID: "F2", Title: "Share a list", DependsOn: []string{"F1"}}},
 	}}
 	rec.Changes = []Change{{

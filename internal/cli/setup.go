@@ -16,6 +16,7 @@ import (
 
 	"github.com/khuebt/herdr-runner-kit/internal/buildinfo"
 	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/telegram"
@@ -116,13 +117,12 @@ func newSetupCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := os.Stat(cfgPath); errors.Is(err, fs.ErrNotExist) {
-				if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-					return err
-				}
-				if err := os.WriteFile(cfgPath, []byte(defaultConfig), 0o644); err != nil {
-					return err
-				}
+			if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+				return err
+			}
+			if created, err := fsutil.CreateExclusive(cfgPath, []byte(defaultConfig), 0o644); err != nil {
+				return err
+			} else if created {
 				note("created %s", cfgPath)
 			}
 			cfg, err := config.Load(cfgPath)
@@ -237,9 +237,6 @@ func allowTelegramChat(claudeConfig string, tg config.Telegram) (string, error) 
 	}
 	dir := filepath.Join(claudeConfig, "channels", "telegram")
 	path := filepath.Join(dir, "access.json")
-	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
 	data, err := json.MarshalIndent(map[string]any{
 		"dmPolicy": "allowlist", "allowFrom": creds.ChatIDs, "groups": map[string]any{}, "pending": map[string]any{},
 	}, "", "  ")
@@ -249,7 +246,10 @@ func allowTelegramChat(claudeConfig string, tg config.Telegram) (string, error) 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	return path, os.WriteFile(path, append(data, '\n'), 0o600)
+	if created, err := fsutil.CreateExclusive(path, append(data, '\n'), 0o600); !created {
+		return "", err
+	}
+	return path, nil
 }
 
 func newUninstallCommand() *cobra.Command {

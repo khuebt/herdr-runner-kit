@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/planrun"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -155,6 +156,10 @@ func (r *Runner) acceptPhase(ctx context.Context, t *task.Task) {
 		return
 	}
 	r.emit(t, "phase-accepted", phaseEvidence(t.Phase, check), "")
+	// Not under the plan lock: plan run holds it while a spawn settles a
+	// parent through here, and so does planDone, and a flock is not
+	// reentrant. The kit only ever writes completed to a phase file, and
+	// SetStatus replaces it whole, so two writers agree.
 	if plan, err := planrun.Read(t.Plan); err == nil {
 		if ph, ok := plan.Phase(t.Phase); ok {
 			if err := planrun.SetStatus(ph.File, "completed"); err != nil {
@@ -491,7 +496,7 @@ func (r *Runner) planDone(ctx context.Context, t *task.Task) error {
 	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(marker, []byte(key+"\n"), 0o600)
+	return fsutil.WriteFileAtomic(marker, []byte(key+"\n"), 0o600)
 }
 
 // planHelpers returns the review and fixup tasks of a plan, oldest first.

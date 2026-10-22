@@ -172,49 +172,72 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 	if err != nil {
 		return nil, err
 	}
-	base := o.Base
-	if len(t.After) > 0 && len(pending) == 0 {
-		var parentBase string
-		if t.Inputs, parentBase, err = r.parentInputs(t.After); err != nil {
-			return nil, err
+	// Cleanup deletes a branch under this lock once no waiting task starts
+	// from it, so the base read here still exists when the task is written.
+	var taken string
+	if err := func() error {
+		unlock, err := r.Store.Lock(branchBaseLock)
+		if err != nil {
+			return err
 		}
-		if base == "" {
-			base = parentBase
+		defer unlock()
+		base := o.Base
+		if len(t.After) > 0 && len(pending) == 0 {
+			var parentBase string
+			t.Inputs, parentBase, err = r.parentInputs(ctx, t.After)
+			if errors.Is(err, errParentBranchGone) && (base != "" || !t.UseWorktree) {
+				err = nil // the child does not start from that branch
+			}
+			if err != nil {
+				return err
+			}
+			if base == "" {
+				base = parentBase
+			}
 		}
-	}
-	// The owner's first wait must see this task's events. A project task's
-	// news reaches the caller's wait too, so its cursor starts here as well.
-	for _, owner := range []string{t.Owner, caller} {
-		if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
-			return nil, err
+		// The owner's first wait must see this task's events. A project
+		// task's news reaches the caller's wait too, so its cursor starts
+		// here as well.
+		for _, owner := range []string{t.Owner, caller} {
+			if err := r.Store.InitCursor(state.CursorName(owner)); err != nil {
+				return err
+			}
 		}
-	}
-	if err := r.Store.Create(t); err != nil {
+		// The first write holds the worktree, so a parent's follow-up that
+		// finds the task always sees where it runs.
+		return r.Store.CreateWith(t, func(t *task.Task) {
+			if !t.UseWorktree {
+				return
+			}
+			branch := o.Branch
+			if branch == "" {
+				branch = BranchName(r.Config.WorktreeBranchPrefix, t.ID, cmp.Or(o.BranchTitle, t.Title))
+			}
+			t.Worktree = &task.Worktree{Branch: branch, Base: base, BranchCreated: new(false)}
+			if BranchExists(ctx, t.RepoRoot, branch) {
+				taken = branch
+				t.Status, t.Error, t.FinishedAt = task.Failed, fmt.Sprintf("branch %s already exists", branch), time.Now().UTC()
+			}
+		})
+	}(); err != nil {
 		return nil, err
 	}
-	if t.UseWorktree {
-		branch := o.Branch
-		if branch == "" {
-			branch = BranchName(r.Config.WorktreeBranchPrefix, t.ID, cmp.Or(o.BranchTitle, t.Title))
-		}
-		if BranchExists(ctx, t.RepoRoot, branch) {
-			r.fail(t.ID, fmt.Sprintf("branch %s already exists", branch))
-			return nil, fmt.Errorf("branch %s already exists in %s", branch, t.RepoRoot)
-		}
-		if t, err = r.Store.Update(t.ID, func(t *task.Task) error {
-			t.Worktree = &task.Worktree{Branch: branch, Base: base, BranchCreated: new(false)}
-			return nil
-		}); err != nil {
-			return nil, err
-		}
+	if taken != "" {
+		r.emit(t, "failed", t.Error, "")
+		return nil, fmt.Errorf("branch %s already exists in %s", taken, t.RepoRoot)
 	}
 
 	switch {
 	case len(pending) > 0:
 		r.emit(t, "queued", "waits for "+strings.Join(pending, ", "), "")
-		return t, nil
+		// A parent that finished since pendingParents looked may have
+		// listed its waiting tasks before this one existed, so settle it
+		// here too. Both moves are guarded: whichever comes second changes
+		// nothing, and the sweep retries an error.
+		_ = r.Settle(ctx, t.ID)
+		return r.Store.Get(t.ID)
 	case t.Gate == task.GateHuman:
-		t, _, err = r.Store.SetStatus(t.ID, task.Held)
+		t, _, err = r.Store.SetStatus(t.ID, task.Held, task.Queued)
 		if err == nil {
 			r.emit(t, "held", task.HeldSummary(t), "")
 		}
@@ -232,6 +255,12 @@ func (r *Runner) StartLaunch(id string) (*task.Task, error) {
 	if !changed {
 		return t, fmt.Errorf("%s is %s, not ready to launch", id, t.Status)
 	}
+	return r.startLauncher(id)
+}
+
+// startLauncher hands a task that just moved to starting to a detached
+// launcher.
+func (r *Runner) startLauncher(id string) (*task.Task, error) {
 	pid, err := r.StartLauncher(id)
 	if err != nil {
 		r.fail(id, "start launcher: "+err.Error())
@@ -520,15 +549,16 @@ func (r *Runner) emit(t *task.Task, typ, summary, question string) {
 	}
 }
 
-// fail marks a task failed with reason and emits the failed event. It
-// returns the failed task, and false when the task was already failed or
-// could not be read.
+// fail marks a task failed with reason, emits the failed event and settles
+// what waits on it. It returns the failed task, and false when the task was
+// already finished or could not be read.
 func (r *Runner) fail(id, reason string) (*task.Task, bool) {
 	t, changed, err := r.Store.Transition(id, task.Failed, nil, func(t *task.Task) { t.Error = reason })
 	if err != nil || !changed {
 		return nil, false
 	}
 	r.emit(t, "failed", reason, "")
+	r.ended(t)
 	return t, true
 }
 

@@ -212,6 +212,41 @@ func (r *Record) Validate() error {
 	if r.Gates.Spec.Waived {
 		return errors.New("the spec gate cannot be waived")
 	}
+	return checkMilestoneList(r.Milestones)
+}
+
+// checkMilestoneList checks the milestone rules a record must keep: each
+// status is planned, in progress or done, at most one is in progress,
+// every milestone before one in progress or done is done, and a feature
+// id is in one milestone at most.
+func checkMilestoneList(ms []Milestone) error {
+	last, running := -1, ""
+	where := map[string]string{}
+	for i, m := range ms {
+		switch m.Status {
+		case MilestoneInProgress:
+			if running != "" {
+				return fmt.Errorf("milestones %s and %s are both in progress", running, m.ID)
+			}
+			running, last = m.ID, i
+		case MilestoneDone:
+			last = i
+		case MilestonePlanned:
+		default:
+			return fmt.Errorf("milestone %s has status %q: want %s, %s or %s", m.ID, m.Status, MilestonePlanned, MilestoneInProgress, MilestoneDone)
+		}
+		for _, f := range m.Features {
+			if first, ok := where[f.ID]; ok && first != m.ID {
+				return fmt.Errorf("feature %s is in milestones %s and %s", f.ID, first, m.ID)
+			}
+			where[f.ID] = m.ID
+		}
+	}
+	for _, m := range ms[:max(last, 0)] {
+		if m.Status != MilestoneDone {
+			return fmt.Errorf("milestone %s is %s, but %s after it is %s", m.ID, m.Status, ms[last].ID, ms[last].Status)
+		}
+	}
 	return nil
 }
 
@@ -251,6 +286,7 @@ func ParseSnapshot(data []byte) (Record, error) {
 	if err := dec.Decode(&rec); err != nil {
 		return Record{}, fmt.Errorf("parse project snapshot: %w", err)
 	}
+	healMoved(rec.Milestones) // as Load does, for a snapshot an older kit rendered
 	if err := rec.Validate(); err != nil {
 		return Record{}, err
 	}
@@ -412,4 +448,47 @@ func write(s *state.Store, rec Record) error {
 		return fmt.Errorf("write project record: %w", err)
 	}
 	return nil
+}
+
+// same reports whether a and b record the same values. It compares their
+// JSON, since a time read back from the record is not == to the one written.
+func same(a, b any) bool {
+	ja, errA := json.Marshal(a)
+	jb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && bytes.Equal(ja, jb)
+}
+
+// undoOwn takes back a failed command's write to a list of the record: cur
+// is the list now, wrote what the command left it as, before what it was.
+// An item still as the command wrote it goes back to before, or goes away
+// when the command added it; an item the command removed comes back where
+// it was. An item another command changed or added since is kept as it is,
+// and the ids of the changed ones are returned.
+func undoOwn[T any](cur, before, wrote []T, id func(T) string) (out []T, kept []string) {
+	find := func(list []T, key string) (T, bool) {
+		i := slices.IndexFunc(list, func(x T) bool { return id(x) == key })
+		if i < 0 {
+			var zero T
+			return zero, false
+		}
+		return list[i], true
+	}
+	for _, x := range cur {
+		w, ours := find(wrote, id(x))
+		switch b, existed := find(before, id(x)); {
+		case !ours:
+			out = append(out, x) // another command added it
+		case !same(x, w):
+			out, kept = append(out, x), append(kept, id(x))
+		case existed:
+			out = append(out, b)
+		}
+	}
+	for i, b := range before {
+		_, ours := find(wrote, id(b))
+		if _, there := find(out, id(b)); !ours && !there {
+			out = slices.Insert(out, min(i, len(out)), b)
+		}
+	}
+	return out, kept
 }

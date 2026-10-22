@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
@@ -618,70 +617,39 @@ func PrepareClaudeTrust(configPath, origin, runnerPath string) (set []string, sk
 	if _, err := os.Stat(configPath); errors.Is(err, fs.ErrNotExist) {
 		return nil, TrustSkipNoConfig, nil
 	}
-	// Claude rewrites this file without the lock, so confirm the flags
-	// landed and merge them in again when they did not.
-	for range claudeTrustAttempts {
-		var landed bool
-		if set, landed, err = lockedClaudeTrust(configPath, origin, runnerPath, set); err != nil {
-			return nil, "", err
+	// Claude rewrites this file without the lock, so the flags set by every
+	// attempt are checked after the write, and merged in again when gone.
+	err = fsutil.Update(configPath, filepath.Dir(configPath), 0o600, func(data []byte) ([]byte, error) {
+		next, added, err := mergeClaudeTrust(configPath, data, origin, runnerPath)
+		for _, flag := range added {
+			if !slices.Contains(set, flag) {
+				set = append(set, flag)
+			}
 		}
-		if len(set) == 0 {
-			return nil, TrustSkipAlreadyTrusted, nil
-		}
-		if landed {
-			return set, "", nil
-		}
-	}
-	return nil, "", fmt.Errorf("trust flags for %s were overwritten in %s %d times", runnerPath, configPath, claudeTrustAttempts)
-}
-
-// claudeTrustAttempts bounds how often PrepareClaudeTrust merges the flags
-// in again after Claude rewrote the file over them.
-const claudeTrustAttempts = 3
-
-// claudeTrustWritten runs between the write of the flags and their check;
-// tests rewrite the file there the way Claude may.
-var claudeTrustWritten = func(_, _ string) {}
-
-// lockedClaudeTrust merges the flags runnerPath lacks into configPath and
-// checks that they and set, the flags earlier attempts set, are there. It
-// holds the lock for the whole attempt, so runners that start together
-// take turns. It returns set with the flags it added.
-func lockedClaudeTrust(configPath, origin, runnerPath string, set []string) ([]string, bool, error) {
-	unlock, err := lockConfig(configPath)
+		return next, err
+	}, func(data []byte) bool {
+		root, err := parseJSONObject(configPath, data)
+		return err == nil && trustIn(root, runnerPath, set)
+	})
 	if err != nil {
-		return nil, false, err
-	}
-	defer unlock()
-	added, err := mergeClaudeTrust(configPath, origin, runnerPath)
-	if err != nil {
-		return nil, false, err
-	}
-	for _, flag := range added {
-		if !slices.Contains(set, flag) {
-			set = append(set, flag)
-		}
+		return nil, "", fmt.Errorf("trust flags for %s: %w", runnerPath, err)
 	}
 	if len(set) == 0 {
-		return nil, true, nil
+		return nil, TrustSkipAlreadyTrusted, nil
 	}
-	if len(added) > 0 {
-		claudeTrustWritten(configPath, runnerPath)
-	}
-	ok, err := ClaudeTrustPresent(configPath, runnerPath, set)
-	return set, ok, err
+	return set, "", nil
 }
 
-// mergeClaudeTrust writes the trust flags runnerPath lacks into configPath
-// and returns them.
-func mergeClaudeTrust(configPath, origin, runnerPath string) ([]string, error) {
-	info, err := os.Stat(configPath)
-	if err != nil {
-		return nil, err
+// mergeClaudeTrust adds the trust flags runnerPath lacks to the config
+// data and returns the new data, or nil when none is missing, and the flags
+// it added.
+func mergeClaudeTrust(configPath string, data []byte, origin, runnerPath string) ([]byte, []string, error) {
+	if data == nil {
+		return nil, nil, fmt.Errorf("%s: %w", configPath, fs.ErrNotExist) // never created by the kit
 	}
-	root, err := readJSONObject(configPath)
+	root, err := parseJSONObject(configPath, data)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	projects, _ := root["projects"].(map[string]any)
 	src, _ := projects[filepath.Clean(origin)].(map[string]any)
@@ -701,41 +669,15 @@ func mergeClaudeTrust(configPath, origin, runnerPath string) ([]string, error) {
 		}
 	}
 	if len(added) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	projects[filepath.Clean(runnerPath)] = dst
 
-	data, err := json.MarshalIndent(root, "", "  ")
+	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := fsutil.WriteFileAtomic(configPath, append(data, '\n'), info.Mode().Perm()); err != nil {
-		return nil, fmt.Errorf("write %s: %w", configPath, err)
-	}
-	return added, nil
-}
-
-// lockConfig takes an exclusive flock on the folder of the config file at
-// path and returns the function that releases it. Writes replace the file
-// itself, so a lock on it would let a runner that opened the new file in
-// while the holder still works; the folder stays, and no lock file is left
-// next to the user's config.
-func lockConfig(path string) (func(), error) {
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
-	for {
-		err = syscall.Flock(int(dir.Fd()), syscall.LOCK_EX)
-		if err != syscall.EINTR {
-			break
-		}
-	}
-	if err != nil {
-		_ = dir.Close()
-		return nil, fmt.Errorf("lock %s: %w", filepath.Dir(path), err)
-	}
-	return func() { _ = dir.Close() }, nil // closing the folder drops the flock
+	return append(out, '\n'), added, nil
 }
 
 // ClaudeTrusted returns the first of paths that configPath marks trusted,
@@ -761,14 +703,19 @@ func ClaudeTrustPresent(configPath, path string, flags []string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return trustIn(root, path, flags), nil
+}
+
+// trustIn reports whether every flag is true for path in a parsed config.
+func trustIn(root map[string]any, path string, flags []string) bool {
 	projects, _ := root["projects"].(map[string]any)
 	entry, _ := projects[filepath.Clean(path)].(map[string]any)
 	for _, flag := range flags {
 		if entry[flag] != true {
-			return false, nil
+			return false
 		}
 	}
-	return true, nil
+	return true
 }
 
 // readJSONObject decodes with UseNumber so large integers survive a rewrite.
@@ -777,6 +724,12 @@ func readJSONObject(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseJSONObject(path, data)
+}
+
+// parseJSONObject decodes the JSON object read from path, keeping numbers
+// as written, and makes sure it has a projects object.
+func parseJSONObject(path string, data []byte) (map[string]any, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var root map[string]any

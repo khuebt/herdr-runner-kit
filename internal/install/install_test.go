@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 )
 
 func actions(changes []Change) string {
@@ -227,6 +230,58 @@ func TestHookSharesGroupWithUserHooks(t *testing.T) {
 	data, _ = os.ReadFile(path)
 	if !strings.Contains(string(data), `"say done"`) || strings.Contains(string(data), hookTag) {
 		t.Fatalf("remove must keep the user's hook:\n%s", data)
+	}
+}
+
+// A setup that runs beside Claude rewriting settings.json writes the hook
+// again when Claude's write drops it, and setups that run together each
+// keep the other's change.
+func TestHookSurvivesARewrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(userSettings), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	once := true
+	fsutil.UpdateWritten = func(p string) {
+		if once {
+			once = false
+			if err := fsutil.WriteFileAtomic(p, []byte(userSettings), 0o640); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(func() { fsutil.UpdateWritten = func(string) {} })
+	if a, err := AddHook(path, "/bin/hrk"); a != "created" || err != nil {
+		t.Fatalf("install = %s %v", a, err)
+	}
+	if cmd, err := HookFor(path); err != nil || cmd != HookCommand("/bin/hrk") {
+		t.Fatalf("hook after a rewrite = %q, %v", cmd, err)
+	}
+
+	// A user key written by another process under the same lock survives
+	// the hook's write.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if _, err := RemoveHook(path); err != nil {
+			t.Error(err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		err := fsutil.Update(path, dir, 0o600, func(old []byte) ([]byte, error) {
+			return []byte(strings.Replace(string(old), "{", `{"added": 1,`, 1)), nil
+		}, nil)
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+	wg.Wait()
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"added"`) || strings.Contains(string(data), hookTag) {
+		t.Fatalf("lost an update:\n%s", data)
 	}
 }
 

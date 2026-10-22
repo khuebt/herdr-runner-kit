@@ -181,17 +181,18 @@ func Graduate(ctx context.Context, s *state.Store, p state.Project, o GraduateOp
 		}
 	}
 	if out, err := gitLocked(ctx, p.Path, "rm", "-r", "-q", "--", DiscoveryDir); err != nil {
-		return g, undoGraduate(ctx, s, p, export, nil, Decision{}, fmt.Errorf("git rm: %s", firstLine(out, err)))
+		return g, undoGraduate(ctx, s, p, export, recordWrite{}, fmt.Errorf("git rm: %s", firstLine(out, err)))
 	}
 	decision := Decision{At: stamp(o.Now), Text: fmt.Sprintf(
 		"graduated: %s/ left the tree; its committed files stay in git history, archived at tag %s", DiscoveryDir, plan.Tag)}
-	var before []Change
+	var before, wrote []Change
+	graduated := &Graduated{At: stamp(o.Now), Tag: plan.Tag, Export: plan.Export}
 	if _, err := update(s, p.Name, func(r *Record) error {
 		if r.Graduated != nil {
 			return fmt.Errorf("%s graduated already", p.Name)
 		}
 		before = slices.Clone(r.Changes)
-		r.Graduated = &Graduated{At: stamp(o.Now), Tag: plan.Tag, Export: plan.Export}
+		r.Graduated = graduated
 		for i, c := range r.Changes {
 			if to, ok := plan.Moved[c.ID]; ok {
 				r.Changes[i].Path = to
@@ -199,16 +200,17 @@ func Graduate(ctx context.Context, s *state.Store, p state.Project, o GraduateOp
 		}
 		r.Decisions = append(r.Decisions, decision)
 		r.Pending++
+		wrote = slices.Clone(r.Changes)
 		return nil
 	}); err != nil {
-		return g, undoGraduate(ctx, s, p, export, nil, Decision{}, err)
+		return g, undoGraduate(ctx, s, p, export, recordWrite{}, err)
 	}
 	sha, err := commitRendered(ctx, s, p, "docs(product): graduate and archive the discovery folder", RenderedPaths, DiscoveryDir)
 	if sha == "" {
 		if err == nil {
 			err = errors.New("git committed nothing")
 		}
-		return g, undoGraduate(ctx, s, p, export, before, decision, err)
+		return g, undoGraduate(ctx, s, p, export, recordWrite{before, wrote, graduated, decision}, err)
 	}
 	g.Commit = sha
 	args := []string{"tag", "-a", plan.Tag, "-m", "Discovery artifacts of " + p.Name + " before graduation", sha + "^"}
@@ -254,10 +256,20 @@ func (e exportCopy) remove() error {
 	return nil
 }
 
+// recordWrite is what a graduation wrote to the record: the change list
+// before and after it moved their paths, the graduation and its decision.
+type recordWrite struct {
+	before, wrote []Change
+	graduated     *Graduated
+	decision      Decision
+}
+
 // undoGraduate restores the discovery folder, the rendered files, the
-// export folder as it was and, when before is set, the record, after a
-// graduation failed before its commit.
-func undoGraduate(ctx context.Context, s *state.Store, p state.Project, export exportCopy, before []Change, decision Decision, cause error) error {
+// export folder as it was and, when the graduation wrote the record, the
+// record, after a graduation failed before its commit. It takes back only
+// what the graduation wrote: a change request another command added or
+// changed since is kept as it is and named.
+func undoGraduate(ctx context.Context, s *state.Store, p state.Project, export exportCopy, w recordWrite, cause error) error {
 	reason := cause.Error()
 	var ce *commitError
 	if errors.As(cause, &ce) {
@@ -274,17 +286,22 @@ func undoGraduate(ctx context.Context, s *state.Store, p state.Project, export e
 	if err := export.remove(); err != nil {
 		errs = append(errs, err.Error())
 	}
-	if decision != (Decision{}) {
+	var kept []string
+	if w.graduated != nil {
 		if _, err := update(s, p.Name, func(r *Record) error {
-			r.Graduated, r.Changes = nil, before
-			if k := len(r.Decisions) - 1; k >= 0 && r.Decisions[k] == decision {
-				r.Decisions = r.Decisions[:k]
+			if same(r.Graduated, w.graduated) {
+				r.Graduated = nil
 			}
+			r.Changes, kept = undoOwn(r.Changes, w.before, w.wrote, func(c Change) string { return c.ID })
+			r.Decisions = dropLast(r.Decisions, w.decision)
 			r.Pending = max(r.Pending-1, 0)
 			return nil
 		}); err != nil {
 			errs = append(errs, "the kit's record still says graduated: "+err.Error())
 		}
+	}
+	if len(kept) > 0 {
+		msg += fmt.Sprintf("; change request(s) %s changed meanwhile and are kept as they are", strings.Join(kept, ", "))
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s; undoing it failed too: %s", msg, strings.Join(errs, "; "))

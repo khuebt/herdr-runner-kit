@@ -2,14 +2,18 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
+	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -552,5 +556,274 @@ func TestReportInALockedTabIsNoTabAnswer(t *testing.T) {
 	want := []string{"spawned", "needs-human", "done"}
 	if got := events(t, r, tk.ID); !slices.Equal(got, want) {
 		t.Errorf("events = %v, want %v", got, want)
+	}
+}
+
+func TestSettleDecidesAWaitingTaskOnce(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	dir := plainDir(t)
+	var launched []string
+	r.StartLauncher = func(id string) (int, error) { launched = append(launched, id); return 7, nil }
+	p := running(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+	q := running(t, r, SpawnOptions{Prompt: "b", Cwd: dir})
+	child := spawnQueued(t, r, p.ID)
+	doomed := spawnQueued(t, r, q.ID)
+	grandchild := spawnQueued(t, r, doomed)
+	launched = nil
+	// The parent is done, and its follow-up never ran.
+	finishTask(t, r, p.ID, task.Done, "did a")
+	for range 2 {
+		if err := r.Settle(context.Background(), child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := r.Store.Get(child); got.Status != task.Starting || got.LauncherPID != 7 || !strings.Contains(got.Inputs, "did a") {
+		t.Errorf("child = %s pid %d inputs %q", got.Status, got.LauncherPID, got.Inputs)
+	}
+	if !slices.Equal(launched, []string{child}) {
+		t.Errorf("launched = %v, want the child once", launched)
+	}
+	finishTask(t, r, q.ID, task.Stopped, "")
+	if err := r.Settle(context.Background(), doomed); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{doomed: "parent " + q.ID + " stopped", grandchild: "parent " + doomed + " failed"} {
+		if got, _ := r.Store.Get(id); got.Status != task.Failed || got.Error != want {
+			t.Errorf("%s = %s (%s), want failed (%s)", id, got.Status, got.Error, want)
+		}
+	}
+}
+
+func TestLaunchFailureFailsWaitingChildren(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	dir := plainDir(t)
+	p := spawnStarting(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+	c := spawnQueued(t, r, p.ID)
+	held := spawnStarting(t, r, SpawnOptions{Prompt: "c", Cwd: dir, After: []string{c}, Gate: task.GateHuman})
+	fake.on("tab create", herdrErr("workspace_not_found"))
+	if err := r.Launch(context.Background(), p.ID); err == nil {
+		t.Fatal("launch succeeded")
+	}
+	for id, want := range map[string]string{c: "parent " + p.ID + " failed", held.ID: "parent " + c + " failed"} {
+		if got, _ := r.Store.Get(id); got.Status != task.Failed || got.Error != want {
+			t.Errorf("%s = %s (%s), want failed (%s)", id, got.Status, got.Error, want)
+		}
+	}
+	checkStore(t, r)
+}
+
+func TestLauncherThatWillNotStartFailsWaitingChildren(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	dir := plainDir(t)
+	p := spawnStarting(t, r, SpawnOptions{Prompt: "a", Cwd: dir, Gate: task.GateHuman})
+	c := spawnQueued(t, r, p.ID)
+	r.StartLauncher = func(string) (int, error) { return 0, errors.New("no fork") }
+	if _, err := r.Release(p.ID, ""); err == nil {
+		t.Fatal("release succeeded")
+	}
+	if got, _ := r.Store.Get(c); got.Status != task.Failed || got.Error != "parent "+p.ID+" failed" {
+		t.Errorf("child = %s (%s)", got.Status, got.Error)
+	}
+	checkStore(t, r)
+}
+
+func TestLostFollowUpIsRecoveredBySweep(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	dir := plainDir(t)
+	var launched []string
+	r.StartLauncher = func(id string) (int, error) { launched = append(launched, id); return 7, nil }
+	ok := running(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+	bad := running(t, r, SpawnOptions{Prompt: "b", Cwd: dir})
+	next, doomed := spawnQueued(t, r, ok.ID), spawnQueued(t, r, bad.ID)
+	launched = nil
+	// StartAfter does nothing here: both follow-ups are lost.
+	if _, err := r.Report(ok.ID, ReportOptions{Status: task.Done, Summary: "did a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(bad.ID, ReportOptions{Status: task.Failed, Summary: "broke"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SettleWaiting(context.Background(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(next); got.Status != task.Queued || len(launched) > 0 {
+		t.Fatalf("the sweep did not wait for the follow-up: %s, launched %v", got.Status, launched)
+	}
+	if err := r.SettleWaiting(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(next); got.Status != task.Starting || !slices.Equal(launched, []string{next}) {
+		t.Errorf("next = %s, launched %v", got.Status, launched)
+	}
+	if got, _ := r.Store.Get(doomed); got.Status != task.Failed || got.Error != "parent "+bad.ID+" failed" {
+		t.Errorf("doomed = %s (%s)", got.Status, got.Error)
+	}
+	checkStore(t, r)
+}
+
+func TestFollowUpStartsWhenTheEventWriteFails(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var follow []string
+	r.StartAfter = func(id string) error { follow = append(follow, id); return nil }
+	tk := running(t, r, SpawnOptions{Prompt: "a", Cwd: plainDir(t)})
+	log := r.Store.EventsPath()
+	if err := os.Remove(log); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(log, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Report(tk.ID, ReportOptions{Status: task.Done, Summary: "did a"}); err == nil || !strings.Contains(err.Error(), "write event") {
+		t.Fatalf("report = %v", err)
+	}
+	if !slices.Equal(follow, []string{tk.ID}) {
+		t.Errorf("follow-ups = %v", follow)
+	}
+}
+
+func TestSpawnOnATakenBranchRecordsItsWorktree(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	if out, err := exec.Command("git", "-C", repo, "branch", "feat/x").CombinedOutput(); err != nil {
+		t.Fatal(err, string(out))
+	}
+	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, Branch: "feat/x"}); err == nil {
+		t.Fatal("spawn on a taken branch succeeded")
+	}
+	got, err := r.Store.Get("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.Failed || got.Worktree == nil || got.Worktree.Branch != "feat/x" || got.Worktree.OwnsBranch() {
+		t.Errorf("task = %s, worktree %+v", got.Status, got.Worktree)
+	}
+	checkStore(t, r)
+}
+
+// A parent that finishes while spawn creates its child lists its waiting
+// tasks before the child exists; the child must not stay queued.
+func TestSpawnAfterParentFinishedStarts(t *testing.T) {
+	ctx := context.Background()
+	for i := range 20 {
+		r, _, _ := newTestRunner(t)
+		dir := plainDir(t)
+		p := running(t, r, SpawnOptions{Prompt: "a", Cwd: dir})
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			time.Sleep(time.Duration(i) * time.Millisecond)
+			if _, err := r.Report(p.ID, ReportOptions{Status: task.Done, Summary: "did a"}); err != nil {
+				t.Error(err)
+			}
+			if err := r.After(ctx, p.ID); err != nil {
+				t.Error(err)
+			}
+		})
+		c, err := r.Spawn(ctx, SpawnOptions{Prompt: "b", Cwd: dir, After: []string{p.ID}})
+		wg.Wait()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := r.Store.Get(c.ID); got.Status == task.Queued {
+			t.Fatalf("run %d: the child stayed queued behind its done parent", i)
+		}
+	}
+}
+
+// A stop that lands while the launcher works, before or after the pane is
+// recorded, gets no prompt typed and leaves no runner open.
+func TestStopDuringLaunchTypesNoPrompt(t *testing.T) {
+	for _, during := range []string{"tab create", "agent start"} {
+		t.Run(during, func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			tk := spawnStarting(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+			h := fake.handlers[during]
+			fake.on(during, func(args []string) (string, error) {
+				if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+					t.Error(err)
+				}
+				return h(args)
+			})
+			if err := r.Launch(context.Background(), tk.ID); err == nil {
+				t.Error("the launch of a stopped task succeeded")
+			}
+			got, _ := r.Store.Get(tk.ID)
+			if got.Status != task.Stopped || got.Herdr.PaneID == "" || !got.Herdr.Closed {
+				t.Errorf("task = %s, herdr %+v", got.Status, got.Herdr)
+			}
+			if fake.count("agent", "prompt") != 0 || fake.count("tab", "close") != 1 {
+				t.Errorf("prompts %d, tab closes %d", fake.count("agent", "prompt"), fake.count("tab", "close"))
+			}
+			checkStore(t, r)
+		})
+	}
+}
+
+// A stop that completes while herdr starts a worktree runner's agent finds
+// no agent yet and marks the runner closed; the agent that starts after it
+// must still be quit, since the worktree's pane stays open.
+func TestStopDuringWorktreeAgentStartQuitsTheAgent(t *testing.T) {
+	// The agent comes up ready, or on a startup dialog that waits for the
+	// user: a stopped task waits on neither.
+	for _, onDialog := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ready", true: "dialog"}[onDialog], func(t *testing.T) {
+			r, fake, _ := newTestRunner(t)
+			tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: gitRepo(t)})
+			var mu sync.Mutex
+			alive := false
+			isAlive := func() bool { mu.Lock(); defer mu.Unlock(); return alive }
+			start := fake.handlers["agent start"]
+			fake.on("agent start", func(args []string) (string, error) {
+				if _, err := r.Stop(context.Background(), tk.ID, false); err != nil {
+					t.Error(err)
+				}
+				mu.Lock()
+				alive = true
+				mu.Unlock()
+				if onDialog {
+					return "", herdrError(herdr.CodeAgentNotReady)
+				}
+				return start(args)
+			})
+			if onDialog {
+				fake.on("pane read", ok("Quick safety check: Is this a project you created or one you trust?\n❯ 1. Yes, I trust this folder\n"))
+			}
+			fake.on("agent get", func([]string) (string, error) {
+				if !isAlive() {
+					return "", herdrError("agent_not_found")
+				}
+				return `{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}`, nil
+			})
+			fake.on("agent send-keys", func(args []string) (string, error) {
+				if slices.Contains(args, "ctrl+c") {
+					mu.Lock()
+					alive = false
+					mu.Unlock()
+				}
+				return "{}", nil
+			})
+			fake.on("agent wait", func(args []string) (string, error) {
+				if !isAlive() {
+					return "", herdrError("agent_not_found")
+				}
+				if slices.Contains(args, "idle") {
+					t.Error("the stopped task waits for the user to answer its startup dialog")
+				}
+				return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+			})
+			if err := r.Launch(context.Background(), tk.ID); err == nil {
+				t.Error("the launch of a stopped task succeeded")
+			}
+			got, _ := r.Store.Get(tk.ID)
+			if got.Status != task.Stopped || got.Worktree == nil || !got.Herdr.Closed {
+				t.Fatalf("task = %s, herdr %+v", got.Status, got.Herdr)
+			}
+			if isAlive() {
+				t.Error("the agent started after the stop is still running in the worktree's pane")
+			}
+			if fake.count("agent", "prompt") != 0 {
+				t.Errorf("prompts %d", fake.count("agent", "prompt"))
+			}
+			checkStore(t, r)
+		})
 	}
 }

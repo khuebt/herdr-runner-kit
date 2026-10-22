@@ -673,3 +673,122 @@ func TestRemoveUnstartedLeavesAStartedTaskAlone(t *testing.T) {
 		})
 	}
 }
+
+// A child spawned after the check that found its parent merged still
+// starts from the parent's branch: cleanup reads the waiting tasks again
+// before it deletes the branch.
+func TestCleanupKeepsTheBranchAChildSpawnedSinceTheCheckStartsFrom(t *testing.T) {
+	ctx := context.Background()
+	r, fake, _ := newTestRunner(t)
+	parent, repo := worktreeTask(t, r, "feat/a")
+	herdrOwnsWorktree(fake, repo, parent.Worktree.Path)
+	squashMerge(t, repo, "feat/a")
+	it := cleanable(t, r, repo)
+	if it.Verdict != Merged {
+		t.Fatalf("item = %s %s", it.Verdict, it.Detail)
+	}
+	child, err := r.Spawn(ctx, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, After: []string{parent.ID}, Gate: task.GateHuman})
+	if err != nil || child.Status != task.Held || child.Worktree.Base != "feat/a" {
+		t.Fatalf("child = %+v, %v", child, err)
+	}
+	if _, err := r.Cleanup(ctx, []CleanupItem{it}); err != nil {
+		t.Fatal(err)
+	}
+	if !BranchExists(ctx, repo, "feat/a") {
+		t.Fatal("cleanup deleted the branch the held child starts from")
+	}
+	if got, _ := r.Store.Get(parent.ID); got.Worktree.BranchDeleted {
+		t.Error("the kept branch is recorded deleted")
+	}
+}
+
+// A child that has not started yet starts from its parent's branch, or
+// from the base it names, so cleanup keeps that branch, merged or not,
+// until the child has its worktree.
+func TestCleanupKeepsTheBranchAQueuedChildStartsFrom(t *testing.T) {
+	ctx := context.Background()
+	for _, held := range []bool{false, true} {
+		r, fake, _ := newTestRunner(t)
+		parent, repo := worktreeTask(t, r, "feat/a")
+		herdrOwnsWorktree(fake, repo, parent.Worktree.Path)
+		squashMerge(t, repo, "feat/a")
+		child := &task.Task{
+			Kind: "code", Agent: "codex", Prompt: "x", Cwd: repo, Owner: repo, RepoRoot: repo,
+			UseWorktree: true, After: []string{parent.ID}, Gate: task.GateAuto, Status: task.Queued,
+			Worktree: &task.Worktree{Branch: "feat/b", BranchCreated: new(false)},
+		}
+		if held {
+			// Held for release after its parent finished, with the base set.
+			child.Status, child.Gate, child.Worktree.Base = task.Held, task.GateHuman, "feat/a"
+		}
+		if err := r.Store.Create(child); err != nil {
+			t.Fatal(err)
+		}
+		it := cleanable(t, r, repo)
+		if it.Verdict != Kept || it.Detail != child.ID+" starts from it" {
+			t.Fatalf("held=%v: item = %s %s", held, it.Verdict, it.Detail)
+		}
+		if cleaned, err := r.Cleanup(ctx, []CleanupItem{it}); err != nil || len(cleaned) != 0 {
+			t.Fatalf("held=%v: Cleanup = %v, %v", held, cleaned, err)
+		}
+		if !BranchExists(ctx, repo, "feat/a") || !isDir(parent.Worktree.Path) {
+			t.Fatalf("held=%v: the branch or worktree the child starts from is gone", held)
+		}
+		// Once the child has its worktree, the parent's branch is free.
+		if _, err := r.Store.Update(child.ID, func(t *task.Task) error {
+			t.Status, t.Worktree.Path = task.Running, filepath.Join(t.Cwd, "wt-b")
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if it := cleanable(t, r, repo); it.Verdict != Merged {
+			t.Errorf("held=%v: after the child started: %s %s", held, it.Verdict, it.Detail)
+		}
+	}
+}
+
+// A finished runner whose worktree was cleaned up has nothing left to work
+// in, so a message to it is refused rather than reopening the task.
+func TestSendRefusesACleanedTask(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "feat/a")
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.Herdr.Closed = false; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// Removed outside the kit; the runner's tab is still open.
+	git(t, repo, "worktree", "remove", tk.Worktree.Path)
+	if _, err := r.Cleanable(ctx, Owners{Owner: repo}, false); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Send(ctx, tk.ID, "one more fix")
+	if want := tk.ID + "'s worktree was cleaned up; spawn a new runner"; err == nil || err.Error() != want {
+		t.Fatalf("Send = %v, want %q", err, want)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done {
+		t.Errorf("status = %s, want done", got.Status)
+	}
+}
+
+// A merged commit is recorded only once its ref holds it, so gc never
+// prunes a commit the record counts on.
+func TestCleanupRecordsAMergedTipOnlyWithItsRef(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := newTestRunner(t)
+	tk, repo := worktreeTask(t, r, "feat/a")
+	squashMerge(t, repo, "feat/a")
+	// A ref below the task's merged ref keeps git from creating it.
+	git(t, repo, "update-ref", task.MergedTipRef(tk.ID)+"/x", "HEAD")
+	if it := cleanable(t, r, repo); it.Verdict != Merged {
+		t.Fatalf("verdict = %s %s", it.Verdict, it.Detail)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Worktree.MergedTip != "" {
+		t.Fatalf("recorded %s without its ref", got.Worktree.MergedTip)
+	}
+	git(t, repo, "update-ref", "-d", task.MergedTipRef(tk.ID)+"/x")
+	cleanable(t, r, repo)
+	got, _ := r.Store.Get(tk.ID)
+	if tip := gitOut(ctx, repo, "rev-parse", task.MergedTipRef(tk.ID)); got.Worktree.MergedTip == "" || tip != got.Worktree.MergedTip {
+		t.Errorf("tip %q, ref %q", got.Worktree.MergedTip, tip)
+	}
+}

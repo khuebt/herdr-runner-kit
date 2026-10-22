@@ -95,173 +95,151 @@ func AddHook(settingsPath, bin string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	action := "created"
-	var stripErr error
-	err = editStopHooks(settingsPath, func(groups []json.RawMessage) []json.RawMessage {
+	var action string
+	err = editStopHooks(settingsPath, func(groups []json.RawMessage) ([]json.RawMessage, error) {
 		others, ours, err := stripOurs(groups)
 		if err != nil {
-			stripErr = err
-			return nil
+			return nil, err
 		}
 		// Claude and other tools rewrite settings.json and reorder keys, so
 		// the parsed hook is compared, not its bytes.
-		if len(ours) == 1 && ours[0] == want {
+		switch {
+		case len(ours) == 1 && ours[0] == want:
 			action = "unchanged"
-			return nil
-		}
-		if len(ours) > 0 {
+			return nil, nil
+		case len(ours) > 0:
 			action = "updated"
+		default:
+			action = "created"
 		}
-		return append(others, group)
+		return append(others, group), nil
+	}, func(groups []json.RawMessage) bool {
+		_, ours, err := stripOurs(groups)
+		return err == nil && len(ours) == 1 && ours[0] == want
 	})
-	if err == nil {
-		err = stripErr
-	}
 	return action, err
 }
 
 // RemoveHook deletes the auto re-arm hook. It reports whether there was one.
 func RemoveHook(settingsPath string) (bool, error) {
+	if _, err := os.Stat(settingsPath); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	removed := false
-	var stripErr error
-	err := editStopHooks(settingsPath, func(groups []json.RawMessage) []json.RawMessage {
+	err := editStopHooks(settingsPath, func(groups []json.RawMessage) ([]json.RawMessage, error) {
 		others, ours, err := stripOurs(groups)
 		if err != nil || len(ours) == 0 {
-			stripErr = err
-			return nil
+			return nil, err
 		}
 		removed = true
 		if others == nil {
 			others = []json.RawMessage{}
 		}
-		return others
+		return others, nil
+	}, func(groups []json.RawMessage) bool {
+		_, ours, err := stripOurs(groups)
+		return err == nil && len(ours) == 0
 	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err == nil {
-		err = stripErr
-	}
 	return removed, err
 }
 
 // HookFor returns the command of the installed auto re-arm hook, if any.
 func HookFor(settingsPath string) (string, error) {
-	var found string
-	err := editStopHooks(settingsPath, func(groups []json.RawMessage) []json.RawMessage {
-		if _, ours, err := stripOurs(groups); err == nil {
-			for _, h := range ours {
-				if h.AsyncRewake {
-					found = h.Command
-				}
-			}
-		}
-		return nil
-	})
+	data, err := os.ReadFile(settingsPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
-	return found, err
+	if err != nil {
+		return "", err
+	}
+	_, _, groups, err := parseStopHooks(settingsPath, data)
+	if err != nil {
+		return "", err
+	}
+	var found string
+	if _, ours, err := stripOurs(groups); err == nil {
+		for _, h := range ours {
+			if h.AsyncRewake {
+				found = h.Command
+			}
+		}
+	}
+	return found, nil
+}
+
+// parseStopHooks parses the data of a settings file into its root object,
+// its hooks object and the hooks.Stop groups. Empty data is an empty
+// object.
+func parseStopHooks(settingsPath string, data []byte) (root, hooks *object, groups []json.RawMessage, err error) {
+	root, hooks = &object{}, &object{}
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err := json.Unmarshal(data, root); err != nil {
+			return nil, nil, nil, fmt.Errorf("parse %s: %w", settingsPath, err)
+		}
+	}
+	if raw, ok := root.get("hooks"); ok {
+		if err := json.Unmarshal(raw, hooks); err != nil {
+			return nil, nil, nil, fmt.Errorf("parse %s: hooks: %w", settingsPath, err)
+		}
+	}
+	if raw, ok := hooks.get("Stop"); ok {
+		if err := json.Unmarshal(raw, &groups); err != nil {
+			return nil, nil, nil, fmt.Errorf("parse %s: hooks.Stop: %w", settingsPath, err)
+		}
+	}
+	return root, hooks, groups, nil
 }
 
 // editStopHooks hands the hooks.Stop groups of a settings file to fn. A nil
 // result leaves the file untouched; an empty one removes the Stop key, and
-// the hooks key when nothing else is left in it. The settings file is
+// the hooks key when nothing else is left in it. Claude rewrites the file
+// without the kit's lock on its folder, so landed checks the groups after
+// the write, and a rewrite over them runs fn again. The settings file is
 // followed through symlinks, so a dotfiles link stays a link.
-func editStopHooks(settingsPath string, fn func([]json.RawMessage) []json.RawMessage) error {
-	path, err := linkTarget(settingsPath)
-	if err != nil {
+func editStopHooks(settingsPath string, fn func([]json.RawMessage) ([]json.RawMessage, error), landed func([]json.RawMessage) bool) error {
+	dir := filepath.Dir(settingsPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	mode := os.FileMode(0o600)
-	root := &object{}
-	data, readErr := os.ReadFile(path)
-	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
-		return readErr
-	}
-	if readErr == nil {
-		if info, err := os.Stat(path); err == nil {
-			mode = info.Mode().Perm()
+	return fsutil.Update(settingsPath, dir, 0o600, func(data []byte) ([]byte, error) {
+		root, hooks, groups, err := parseStopHooks(settingsPath, data)
+		if err != nil {
+			return nil, err
 		}
-		if len(bytes.TrimSpace(data)) > 0 {
-			if err := json.Unmarshal(data, root); err != nil {
-				return fmt.Errorf("parse %s: %w", settingsPath, err)
+		next, err := fn(groups)
+		if next == nil || err != nil {
+			return nil, err
+		}
+		if len(next) == 0 {
+			hooks.remove("Stop")
+		} else {
+			raw, err := marshal(next)
+			if err != nil {
+				return nil, err
 			}
+			hooks.set("Stop", raw)
 		}
-	}
-
-	hooks := &object{}
-	if raw, ok := root.get("hooks"); ok {
-		if err := json.Unmarshal(raw, hooks); err != nil {
-			return fmt.Errorf("parse %s: hooks: %w", settingsPath, err)
+		if len(hooks.keys) == 0 {
+			root.remove("hooks")
+		} else {
+			raw, err := marshal(hooks)
+			if err != nil {
+				return nil, err
+			}
+			root.set("hooks", raw)
 		}
-	}
-	var groups []json.RawMessage
-	if raw, ok := hooks.get("Stop"); ok {
-		if err := json.Unmarshal(raw, &groups); err != nil {
-			return fmt.Errorf("parse %s: hooks.Stop: %w", settingsPath, err)
+		var out bytes.Buffer
+		enc := json.NewEncoder(&out)
+		enc.SetEscapeHTML(false)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(root); err != nil {
+			return nil, err
 		}
-	}
-	next := fn(groups)
-	if next == nil {
-		return readErr // nil, or fs.ErrNotExist for a missing file
-	}
-	if len(next) == 0 {
-		hooks.remove("Stop")
-	} else {
-		raw, err := marshal(next)
-		if err != nil {
-			return err
-		}
-		hooks.set("Stop", raw)
-	}
-	if len(hooks.keys) == 0 {
-		root.remove("hooks")
-	} else {
-		raw, err := marshal(hooks)
-		if err != nil {
-			return err
-		}
-		root.set("hooks", raw)
-	}
-
-	var out bytes.Buffer
-	enc := json.NewEncoder(&out)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(root); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return fsutil.WriteFileAtomic(path, out.Bytes(), mode)
-}
-
-// linkTarget follows symlinks, including one whose target does not exist
-// yet, so writing never replaces a dotfiles link with a plain file.
-func linkTarget(path string) (string, error) {
-	for range 40 {
-		info, err := os.Lstat(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			return path, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			return path, nil
-		}
-		dest, err := os.Readlink(path)
-		if err != nil {
-			return "", err
-		}
-		if !filepath.IsAbs(dest) {
-			dest = filepath.Join(filepath.Dir(path), dest)
-		}
-		path = dest
-	}
-	return "", fmt.Errorf("%s: too many symlinks", path)
+		return out.Bytes(), nil
+	}, func(data []byte) bool {
+		_, _, groups, err := parseStopHooks(settingsPath, data)
+		return err == nil && landed(groups)
+	})
 }
 
 // marshal is json.Marshal without HTML escaping, so "&&" and ">" in the

@@ -139,7 +139,7 @@ func StartMilestone(ctx context.Context, s *state.Store, p state.Project, id str
 		m := &rec.Milestones[i]
 		switch m.Status {
 		case MilestoneDone:
-			return fmt.Errorf("milestone %s is done", id)
+			return fmt.Errorf("milestone %s is done; reopen it first with hrk project milestone reopen %s --reason WHY", id, id)
 		case MilestoneInProgress:
 			switch {
 			case first == nil:
@@ -304,7 +304,11 @@ func CheckChainable(rec Record, name, id string, tasks []*task.Task) error {
 	if id == ScaffoldMilestone {
 		return fmt.Errorf("milestone %s has no plan to chain: its scaffold runner starts with hrk project milestone start %s", id, id)
 	}
-	if st := rec.Milestones[i].Status; st != MilestoneInProgress {
+	switch st := rec.Milestones[i].Status; st {
+	case MilestoneInProgress:
+	case MilestoneDone:
+		return fmt.Errorf("milestone %s is done; reopen it first with hrk project milestone reopen %s --reason WHY", id, id)
+	default:
 		return fmt.Errorf("milestone %s is %s; start it first with hrk project milestone start %s", id, orDash(st), id)
 	}
 	plan := latestTask(tasks, name, FirstStage(id))
@@ -359,18 +363,28 @@ type ChainStep struct {
 	// Done is the node's task when it already finished; it is not spawned
 	// again and its id still feeds its children's --after.
 	Done *task.Task
-	// Live is the node's task while it is unfinished: queued, held, or
-	// running. It is left alone and its id feeds its children's --after.
+	// Live is the node's task while it is unfinished and still matches its
+	// node: running, or waiting for the newest runners of the node's
+	// parents. It is left alone and its id feeds its children's --after.
 	Live *task.Task
+	// Replace is the node's waiting task that no longer matches its node:
+	// the plan changed the node, or a parent runs again. chain stops it,
+	// which fails what waits on it, and spawns the step in its place.
+	Replace *task.Task
 	// Added is set on the final integrate node the kit added.
 	Added bool
 	// Branch is the worktree branch of a node to spawn.
 	Branch string
-	// Base is the node's explicit base branch, or "" when it bases on its
-	// single parent's branch.
+	// Base is the node's explicit base branch, or "" when it starts from
+	// its single parent's branch, which the task takes when it starts.
 	Base string
 	// Note says why Branch is not the name the step wanted, or is "".
 	Note string
+}
+
+// TaskNode is the node record of a runner spawned for st.
+func (st ChainStep) TaskNode() *task.Node {
+	return &task.Node{ID: st.Node.ID, Type: st.Node.Type, Title: st.Node.Title, DependsOn: slices.Clone(st.Node.DependsOn)}
 }
 
 // ChainInput is what PlanChain needs to lay out a milestone's chain.
@@ -383,6 +397,10 @@ type ChainInput struct {
 	DefaultBranch string
 	// Slug shortens a title for a branch name.
 	Slug func(text string, maxLen int) string
+	// Title is the task title of a runner of stage for a node titled
+	// title. A runner spawned before tasks recorded their node is matched
+	// to its node by it.
+	Title func(stage, title string) string
 	// BranchTaken returns the local branch that takes a branch name, or
 	// "" when the name is free; see BranchTaken.
 	BranchTaken func(branch string) string
@@ -396,11 +414,16 @@ type ChainInput struct {
 // every leaf is added when the plan does not end in one. Nodes come in
 // topological order, in plan order where it leaves a choice, and the close
 // runner follows the final integrate node. A node whose latest task is done
-// or unfinished is kept, so only failed or stopped nodes and nodes never
-// spawned run again. A node to run again whose earlier task created its
-// branch gets that branch with a -r<k> suffix, based on the old one; any
-// other existing branch is refused, so nothing is spawned. An unfinished
-// task of the milestone that is not a kept node's latest is refused too.
+// or running is kept, and so is a waiting one that still matches its node
+// and waits for the newest runners of the node's parents; a waiting one
+// that does not is replaced. Failed or stopped nodes and nodes never
+// spawned run again. A done or running runner whose node the plan has
+// since changed is refused, as is an unfinished task of the milestone that
+// is not a kept or replaced node's latest. A node to run again whose
+// earlier task created its branch gets that branch with a -r<k> suffix,
+// based on the old one while its parents are done; any other existing
+// branch is refused, so nothing is spawned. No two nodes, kept or not, use
+// one branch.
 func PlanChain(in ChainInput) ([]ChainStep, error) {
 	steps, err := planChain(in)
 	if err != nil {
@@ -408,8 +431,10 @@ func PlanChain(in ChainInput) ([]ChainStep, error) {
 	}
 	kept := map[string]bool{}
 	for _, st := range steps {
-		if st.Live != nil {
-			kept[st.Live.ID] = true
+		for _, t := range []*task.Task{st.Live, st.Replace} {
+			if t != nil {
+				kept[t.ID] = true
+			}
 		}
 	}
 	prefix := in.Milestone + "/"
@@ -426,15 +451,10 @@ func planChain(in ChainInput) ([]ChainStep, error) {
 	if err != nil {
 		return nil, err
 	}
-	steps := make([]ChainStep, 0, len(nodes))
-	planned := map[string]string{}
+	steps := make([]ChainStep, 0, len(nodes)+1)
+	byNode := map[string]ChainStep{}
 	for _, n := range nodes {
 		st := ChainStep{Node: n.BlockNode, Stage: NodeStage(in.Milestone, n.ID), Added: n.added}
-		own := stageTasks(in.Tasks, in.Project, st.Stage)
-		if keepStep(&st, own) {
-			steps = append(steps, st)
-			continue
-		}
 		want := n.Branch
 		switch {
 		case want == "" && n.Type == NodeIntegrate:
@@ -448,36 +468,94 @@ func planChain(in ChainInput) ([]ChainStep, error) {
 		if !validBranch(want) {
 			return nil, fmt.Errorf("node %s: %q is not a valid branch name", n.ID, want)
 		}
-		if other, dup := planned[want]; dup {
-			return nil, fmt.Errorf("nodes %s and %s both use branch %s", other, n.ID, want)
-		}
-		if len(n.DependsOn) == 0 || n.Type == NodeIntegrate {
-			st.Base = in.DefaultBranch
-		}
-		branch, base, note, err := PickBranch(want, own, in.BranchTaken)
+		own := stageTasks(in.Tasks, in.Project, st.Stage)
+		after, parentsDone := parentRunners(n.DependsOn, byNode)
+		kept, err := keepStep(&st, own, want, after, in.Title)
 		if err != nil {
-			return nil, fmt.Errorf("node %s: %w", n.ID, err)
+			return nil, err
 		}
-		st.Branch, st.Note = branch, note
-		if base != "" {
-			st.Base = base
+		if !kept {
+			if len(n.DependsOn) == 0 || n.Type == NodeIntegrate {
+				st.Base = in.DefaultBranch
+			}
+			branch, base, note, err := PickBranch(want, own, in.BranchTaken)
+			if err != nil {
+				return nil, fmt.Errorf("node %s: %w", n.ID, err)
+			}
+			st.Branch, st.Note = branch, note
+			// A node run again continues on its earlier branch only when it
+			// starts at once: a node that waits for a parent's new runner
+			// starts from that runner's work.
+			if base != "" && parentsDone {
+				st.Base = base
+			}
 		}
-		planned[want], planned[branch] = n.ID, n.ID
 		steps = append(steps, st)
+		byNode[n.ID] = st
 	}
 	final := steps[len(steps)-1]
 	cl := ChainStep{Node: closeNode(in.Milestone, final.Node.ID), Stage: CloseStage(in.Milestone)}
-	if keepStep(&cl, stageTasks(in.Tasks, in.Project, cl.Stage)) {
-		return append(steps, cl), nil
-	}
-	cl, err = CloseStep(in.Project, in.Milestone, final.Node.ID, stepBranch(final), in.Merged, in.Tasks, in.BranchTaken)
+	own := stageTasks(in.Tasks, in.Project, cl.Stage)
+	after, _ := parentRunners(cl.Node.DependsOn, byNode)
+	kept, err := keepStep(&cl, own, ReleaseBranch(in.Milestone), after, nil)
 	if err != nil {
 		return nil, err
 	}
-	if other, dup := planned[cl.Branch]; dup {
-		return nil, fmt.Errorf("node %s uses branch %s, which the close runner of %s takes; set another branch in the plan", other, cl.Branch, in.Milestone)
+	if !kept {
+		replace := cl.Replace
+		if cl, err = CloseStep(in.Project, in.Milestone, final.Node.ID, in.Merged, in.Tasks, in.BranchTaken); err != nil {
+			return nil, err
+		}
+		cl.Replace = replace
 	}
-	return append(steps, cl), nil
+	steps = append(steps, cl)
+	return steps, checkBranches(steps)
+}
+
+// parentRunners returns the ids of the runners the steps of parents have,
+// in order, and whether every one is done; ok is false when one of them
+// is spawned, so it has no runner yet.
+func parentRunners(parents []string, byNode map[string]ChainStep) (ids []string, done bool) {
+	done = true
+	for _, p := range parents {
+		st := byNode[p]
+		switch {
+		case st.Done != nil:
+			ids = append(ids, st.Done.ID)
+		case st.Live != nil:
+			ids, done = append(ids, st.Live.ID), false
+		default:
+			return nil, false
+		}
+	}
+	return ids, done
+}
+
+// checkBranches refuses two steps that use one branch: the branch of a
+// kept step's runner, and the branch a spawned step gets, each with the
+// name it was made from.
+func checkBranches(steps []ChainStep) error {
+	by := map[string]string{}
+	for _, st := range steps {
+		b := st.Branch
+		if st.Done != nil || st.Live != nil {
+			b = stepBranch(st)
+		}
+		if b == "" {
+			continue
+		}
+		for _, name := range []string{b, strings.TrimSuffix(b, rerunSuffix.FindString(b))} {
+			other, dup := by[name]
+			switch {
+			case dup && other != st.Node.ID && st.Node.Type == nodeClose:
+				return fmt.Errorf("node %s uses branch %s, which the close runner of %s takes; set another branch in the plan", other, name, strings.TrimSuffix(st.Stage, "/"+stepClose))
+			case dup && other != st.Node.ID:
+				return fmt.Errorf("nodes %s and %s both use branch %s", other, st.Node.ID, name)
+			}
+			by[name] = st.Node.ID
+		}
+	}
+	return nil
 }
 
 // IntegrateBranch is the default branch of integrate node id.
@@ -494,21 +572,56 @@ func stageTasks(tasks []*task.Task, name, stage string) []*task.Task {
 	return own
 }
 
-// keepStep sets st.Done or st.Live from the latest of own, the stage's
-// tasks oldest first, and reports whether st is kept rather than spawned.
-func keepStep(st *ChainStep, own []*task.Task) bool {
+// keepStep sets st.Done, st.Live or st.Replace from the latest of own, the
+// stage's tasks oldest first, and reports whether st is kept rather than
+// spawned. want is the branch the node's runners take, with a -r<k> suffix
+// on a rerun, and after the runners of the node's parents, or nil when a
+// parent is spawned. A done or running runner whose node the plan changed
+// is refused. A waiting one is kept only while it matches its node, waits
+// for exactly the parents' runners (a runner in the main checkout also
+// waits for the others there, after them) and has the node's branch;
+// otherwise it is to be replaced. title is ChainInput.Title; nil matches a
+// runner that recorded no node, as the close runner, which the kit lays
+// out itself, always does.
+func keepStep(st *ChainStep, own []*task.Task, want string, after []string, title func(stage, title string) string) (bool, error) {
 	if len(own) == 0 {
-		return false
+		return false, nil
 	}
-	switch latest := own[len(own)-1]; {
+	latest := own[len(own)-1]
+	changed := ""
+	switch n := latest.Node; {
+	case n != nil && n.Type != st.Node.Type:
+		changed = fmt.Sprintf("its type from %s to %s", n.Type, st.Node.Type)
+	case n != nil && n.Title != st.Node.Title:
+		changed = fmt.Sprintf("its title from %q to %q", n.Title, st.Node.Title)
+	case n == nil && title != nil && latest.Title != title(st.Stage, st.Node.Title):
+		changed = fmt.Sprintf("its title to %q", st.Node.Title)
+	}
+	switch {
+	case latest.Status == task.Done && changed != "":
+		return false, fmt.Errorf("the plan changed node %s (%s) after its runner %s finished: give the changed node a new id", st.Node.ID, changed, latest.ID)
 	case latest.Status == task.Done:
 		st.Done = latest
+	case latest.Status == task.Queued || latest.Status == task.Held:
+		branch := ""
+		if latest.Worktree != nil {
+			branch = strings.TrimSuffix(latest.Worktree.Branch, rerunSuffix.FindString(latest.Worktree.Branch))
+		}
+		waits := len(latest.After) >= len(after) && slices.Equal(latest.After[:len(after)], after) &&
+			(latest.Worktree == nil || len(latest.After) == len(after))
+		if changed != "" || after == nil && len(st.Node.DependsOn) > 0 || !waits || latest.Worktree != nil && branch != want {
+			st.Replace = latest
+			return false, nil
+		}
+		st.Live = latest
+	case !latest.Status.Terminal() && changed != "":
+		return false, fmt.Errorf("%s of %s is %s, but the plan changed node %s (%s): stop %s and chain again", latest.ID, st.Stage, latest.Status, st.Node.ID, changed, latest.ID)
 	case !latest.Status.Terminal():
 		st.Live = latest
 	default:
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 // stepBranch is the branch a chain step works on: the branch of its done

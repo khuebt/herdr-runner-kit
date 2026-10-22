@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1434,7 +1433,7 @@ func startMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		// The scaffold milestone has no plan: its close runner follows the
 		// scaffold runner straight away.
 		if closer := latestStageTask(tasks, p.Name, project.CloseStage(id)); closer == nil || (closer.Status.Terminal() && closer.Status != task.Done) {
-			step, err := project.CloseStep(p.Name, id, "scaffold", so.Branch, m.Branch, tasks, branchTaken(ctx, p.Path))
+			step, err := project.CloseStep(p.Name, id, "scaffold", m.Branch, tasks, branchTaken(ctx, p.Path))
 			if err != nil {
 				return fmt.Errorf("%s started, but its close runner cannot: %w", t.ID, err)
 			}
@@ -1493,7 +1492,11 @@ func spawnClose(ctx context.Context, r *runner.Runner, p state.Project, rec proj
 		Project: p.Name, Agent: o.Agent, ClaudeConfig: o.ClaudeConfig, Language: o.Language,
 		TaskStage: step.Stage, Warn: o.Warn, After: after, Branch: step.Branch, Base: step.Base,
 	}
-	return spawnStage(ctx, r, so, p, stage, h, data, p.Name+" "+step.Stage+": "+stage.Title)
+	t, err := spawnStage(ctx, r, so, p, stage, h, data, p.Name+" "+step.Stage+": "+stage.Title)
+	if err == nil {
+		recordNode(r, t, step)
+	}
+	return t, err
 }
 
 func newMilestoneChainCommand() *cobra.Command {
@@ -1506,13 +1509,16 @@ func newMilestoneChainCommand() *cobra.Command {
 			"and an integrate node any number; a final integrate node over every leaf is added when " +
 			"the plan does not end in one, and a close runner after it. Runners are spawned in " +
 			"dependency order with --after their parents: root features and integrate nodes start from " +
-			"the default branch, a feature with a parent from its parent's branch, and the close runner " +
-			"from the final integrate node's branch. Integrate nodes work on integrate/<M>-<id>, the " +
+			"the default branch, and a feature with a parent and the close runner from their parent's " +
+			"branch when they start. Integrate nodes work on integrate/<M>-<id>, the " +
 			"close runner on release/<M>. Backlog items the plan takes are marked planned. Run it " +
 			"again after a runner failed, even while others still run: done and unfinished nodes are " +
-			"kept, failed and stopped nodes run again, and a queued node waits for its parent's new " +
-			"runner. A failed node whose runner created its branch continues on <branch>-r<k> from " +
-			"that branch, and any other existing branch is refused before anything is spawned.",
+			"kept, failed and stopped nodes run again, and a queued runner whose node, parents or branch " +
+			"changed is stopped and replaced. A running or done runner whose node's title or type " +
+			"changed is refused: stop a running one and chain again, give a done node a new id. A " +
+			"failed node whose runner created its branch continues on <branch>-r<k>, from that branch " +
+			"when its parents are done, and any other existing branch is refused before anything is " +
+			"spawned. A done milestone must be reopened first.",
 		Example: `  hrk project milestone chain M1`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1527,7 +1533,18 @@ func newMilestoneChainCommand() *cobra.Command {
 
 // chainMilestone spawns the runners of milestone id's plan in dependency
 // order. Every check runs before the first spawn.
-func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) error {
+func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p state.Project, id string, o milestoneRun) (err error) {
+	defer func() {
+		if err == nil && o.Warn != nil {
+			// The milestone's tasks and the project record, as chain left them.
+			warnState(ctx, r, o.Warn, false, func(v runner.Violation, t *task.Task) bool {
+				if t == nil {
+					return v.Task == "" && v.Project == p.Name
+				}
+				return t.Project == p.Name && strings.HasPrefix(t.Stage, id+"/")
+			})
+		}
+	}()
 	rec, err := project.Load(r.Store, p.Name)
 	if err != nil {
 		return err
@@ -1556,8 +1573,8 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	}
 	steps, err := project.PlanChain(project.ChainInput{
 		Project: p.Name, Milestone: id, Plan: plan, Tasks: tasks, DefaultBranch: def, Slug: runner.Slug,
-		BranchTaken: branchTaken(ctx, p.Path),
-		Merged:      rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })].Branch,
+		Title: func(stage, title string) string { return nodeTitle(p, stage, title) }, BranchTaken: branchTaken(ctx, p.Path),
+		Merged: rec.Milestones[slices.IndexFunc(rec.Milestones, func(m project.Milestone) bool { return m.ID == id })].Branch,
 	})
 	if err != nil {
 		return err
@@ -1595,12 +1612,26 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		if st.Live != nil {
 			byNode[st.Node.ID] = st.Live
 			live++
-			line, err := relinkQueued(r, st, byNode, def)
-			if err != nil {
-				return fmt.Errorf("relink %s: %w; the %d runner(s) above were spawned", st.Stage, err, spawned)
+			line := fmt.Sprintf("kept %s: %s is %s", st.Stage, st.Live.ID, st.Live.Status)
+			if st.Live.Status == task.Queued {
+				// Its parents may all be done with the follow-up that starts
+				// it lost; settling starts it then, and else changes nothing.
+				if err := r.Settle(ctx, st.Live.ID); err != nil {
+					return fmt.Errorf("settle %s: %w; the %d runner(s) above were spawned", st.Live.ID, err, spawned)
+				}
+				if t, err := r.Store.Get(st.Live.ID); err == nil && t.Status != task.Queued {
+					line += ", now " + string(t.Status)
+				}
 			}
 			fmt.Fprintln(out, line)
 			continue
+		}
+		if q := st.Replace; q != nil {
+			// A waiting runner has done no work and made no branch. Stopping
+			// it fails what waits on it, which this run replaces too.
+			if _, err := r.Stop(ctx, q.ID, false); err != nil {
+				return fmt.Errorf("replace %s: stop %s: %w; the %d runner(s) above were spawned", st.Stage, q.ID, err, spawned)
+			}
 		}
 		if st.Added {
 			fmt.Fprintf(out, "added %s: the plan does not end in one integrate node, so one integrates %s\n",
@@ -1623,16 +1654,19 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 		if r.Config.Kinds[stage.Kind].Worktree {
 			so.Branch, so.Base = st.Branch, st.Base
 		}
-		title := p.Name + " " + st.Stage + ": " + runner.TitleFrom(st.Node.Title)
-		t, err := spawnStage(ctx, r, so, p, stage, harnesses[stage.Name], data, title)
+		t, err := spawnStage(ctx, r, so, p, stage, harnesses[stage.Name], data, nodeTitle(p, st.Stage, st.Node.Title))
 		if err != nil {
-			if spawned > 0 {
+			if spawned > 0 || st.Replace != nil {
 				return fmt.Errorf("spawn %s: %w; the %d runner(s) above were spawned: run the chain again for the rest", st.Stage, err, spawned)
 			}
 			return fmt.Errorf("spawn %s: %w", st.Stage, err)
 		}
+		recordNode(r, t, st)
 		byNode[st.Node.ID] = t
 		spawned++
+		if st.Replace != nil {
+			fmt.Fprintf(out, "replaced %s: %s → %s\n", st.Stage, st.Replace.ID, t.ID)
+		}
 		fmt.Fprintln(out, spawnLine(t))
 	}
 	switch {
@@ -1647,80 +1681,22 @@ func chainMilestone(ctx context.Context, out io.Writer, r *runner.Runner, p stat
 	return nil
 }
 
-// relinkQueued points the queued task of step st, which may still wait for
-// an earlier runner of a parent that runs again, at the parents' runners in
-// byNode, and returns the line chain prints for st. When it was to start
-// from the branch of its single parent's runner, it starts from the new
-// runner's branch, or from def when the plan left it no parent. When its
-// parents are all done, or it has none, no parent's finish starts it any
-// more, so chain starts it now.
-func relinkQueued(r *runner.Runner, st project.ChainStep, byNode map[string]*task.Task, def string) (string, error) {
-	q := st.Live
-	var after []string
-	for _, parent := range st.Node.DependsOn {
-		after = append(after, byNode[parent].ID)
+// nodeTitle is the task title of a runner of project p's chain stage for a
+// node titled title.
+func nodeTitle(p state.Project, stage, title string) string {
+	return p.Name + " " + stage + ": " + runner.TitleFrom(title)
+}
+
+// recordNode records on t, a runner chain just spawned, the node of step
+// st as the plan holds it now, so the next chain sees a node the plan
+// changed. A runner that misses it is matched by its title.
+func recordNode(r *runner.Runner, t *task.Task, st project.ChainStep) {
+	if nt, err := r.Store.Update(t.ID, func(t *task.Task) error {
+		t.Node = st.TaskNode()
+		return nil
+	}); err == nil {
+		*t = *nt
 	}
-	line := fmt.Sprintf("kept %s: %s is %s", st.Stage, q.ID, q.Status)
-	if q.Status != task.Queued {
-		return line, nil
-	}
-	if !slices.Equal(q.After, after) {
-		base := ""
-		if q.Worktree != nil && len(after) <= 1 {
-			fromOld := false
-			if len(q.After) == 1 && q.Worktree.Base != "" {
-				old, err := r.Store.Get(q.After[0])
-				if err != nil {
-					return "", err
-				}
-				fromOld = old.Worktree != nil && old.Worktree.Branch == q.Worktree.Base
-			}
-			switch {
-			case len(after) == 1 && fromOld && byNode[st.Node.DependsOn[0]].Worktree != nil:
-				base = byNode[st.Node.DependsOn[0]].Worktree.Branch
-			case len(after) == 0 && (fromOld || q.Worktree.Base == ""):
-				base = def
-			}
-		}
-		if _, err := r.Store.Update(q.ID, func(t *task.Task) error {
-			if t.Status != task.Queued {
-				return fmt.Errorf("%s is %s, not queued", t.ID, t.Status)
-			}
-			t.After = after
-			if base != "" {
-				t.Worktree.Base = base
-			}
-			return nil
-		}); err != nil {
-			return "", err
-		}
-		line = fmt.Sprintf("kept %s: %s is queued, now after %s", st.Stage, q.ID, cmp.Or(strings.Join(after, ", "), "no task"))
-		if base != "" {
-			line += ", from " + base
-		}
-	}
-	// A parent may have finished since the chain read the tasks, before the
-	// child waited for it, so the store decides.
-	for _, id := range after {
-		p, err := r.Store.Get(id)
-		if err != nil {
-			return "", err
-		}
-		if p.Status != task.Done {
-			return line, nil
-		}
-	}
-	if len(after) == 0 {
-		// ponytail: chain nodes have no human gate, so nothing here holds one.
-		if _, err := r.StartLaunch(q.ID); err != nil {
-			return "", err
-		}
-		return line + "; it waits for no task, so it starts", nil
-	}
-	if err := r.StartAfter(after[len(after)-1]); err != nil {
-		return "", err
-	}
-	return line + "; its parents are done, so it starts", nil
 }
 
 func newMilestoneDoneCommand() *cobra.Command {

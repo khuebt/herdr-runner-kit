@@ -379,7 +379,7 @@ func TestChainOrderBasesAndFinalIntegrate(t *testing.T) {
 		"F5@feat/M1-F5-settings-page<main",
 		"F4@feat/M1-F4-reports<",
 		"integrate@integrate/M1-integrate<main",
-		"close@release/M1<integrate/M1-integrate",
+		"close@release/M1<",
 	}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("steps =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -453,7 +453,7 @@ func TestChainRunAgain(t *testing.T) {
 	if steps[3].Branch != "integrate/M1-I1" || steps[3].Base != "main" {
 		t.Errorf("I1 = %+v", steps[3])
 	}
-	if steps[4].Branch != "release/M1" || steps[4].Base != "integrate/M1-I1" {
+	if steps[4].Branch != "release/M1" || steps[4].Base != "" {
 		t.Errorf("close = %+v", steps[4])
 	}
 
@@ -462,13 +462,14 @@ func TestChainRunAgain(t *testing.T) {
 		!strings.Contains(err.Error(), "node I1: branch integrate/M1-I1 already exists and no earlier runner") {
 		t.Fatalf("foreign branch: %v", err)
 	}
-	// An unfinished node is kept while a failed one is laid out again.
-	f3.Status = task.Queued
+	// A queued node whose parent runs again is replaced, so it waits for
+	// the parent's new runner.
+	f3.Status, f3.After = task.Queued, []string{f2.ID}
 	steps, err = PlanChain(chainInput(nodes, tasks, "feat/M1-F1-list", "feat/M1-F2-share"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if steps[1].Live != nil || steps[1].Branch != "feat/M1-F2-share-r1" || steps[2].Live != f3 || steps[2].Branch != "" {
+	if steps[1].Live != nil || steps[1].Branch != "feat/M1-F2-share-r1" || steps[2].Replace != f3 || steps[2].Live != nil || steps[2].Branch != "feat/M1-F3-export" {
 		t.Errorf("failed F2 next to queued F3 = %+v, %+v", steps[1], steps[2])
 	}
 	// An unfinished task that is no kept node's latest is refused.
@@ -607,5 +608,141 @@ func TestMilestoneDataFencesUntrustedText(t *testing.T) {
 	}
 	if first, _, _ := strings.Cut(got, "\n"); strings.Contains(first, "Lists") || !strings.Contains(got, d.MilestoneTitle) {
 		t.Errorf("close prompt shows the title outside its fence:\n%s", got)
+	}
+}
+
+// Register takes the record from the committed snapshot only when its
+// milestones keep the record's rules.
+func TestRegisterRefusesASnapshotThatBreaksMilestoneRules(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		ms   []Milestone
+		want string
+	}{
+		{"two in progress", []Milestone{
+			{ID: "M0", Title: "a", Status: MilestoneInProgress},
+			{ID: "M1", Title: "b", Status: MilestoneInProgress},
+		}, "milestones M0 and M1 are both in progress"},
+		{"planned before done", []Milestone{
+			{ID: "M0", Title: "a", Status: MilestonePlanned},
+			{ID: "M1", Title: "b", Status: MilestoneDone},
+		}, "milestone M0 is planned, but M1 after it is done"},
+		{"feature twice", []Milestone{
+			{ID: "M0", Title: "a", Status: MilestoneInProgress, Features: []Feature{{ID: "F1", Title: "x"}}},
+			{ID: "M1", Title: "b", Status: MilestonePlanned, Features: []Feature{{ID: "F1", Title: "x"}}},
+		}, "feature F1 is in milestones M0 and M1"},
+		{"unknown status", []Milestone{{ID: "M0", Title: "a", Status: "active"}}, `milestone M0 has status "active"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := newRepo(t)
+			rec := NewRecord("demo-app")
+			rec.Milestones = c.ms
+			data, err := Render(rec, SnapshotPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, dir, SnapshotPath, string(data))
+			run(t, dir, "add", SnapshotPath)
+			run(t, dir, "commit", "-q", "-m", "docs(project): snapshot")
+			if _, _, err := Register(context.Background(), openStore(t), dir, "", ""); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("register = %v, want %q", err, c.want)
+			}
+		})
+	}
+}
+
+// chainTask is a runner of node n of M1, spawned when n was as given.
+func chainTask(id string, n BlockNode, status task.Status, branch string, after ...string) *task.Task {
+	created := status != task.Queued
+	return &task.Task{
+		ID: id, Project: "demo-app", Stage: "M1/" + n.ID, Status: status, After: after,
+		Node:     &task.Node{ID: n.ID, Type: n.Type, Title: n.Title, DependsOn: n.DependsOn},
+		Worktree: &task.Worktree{Branch: branch, BranchCreated: &created},
+	}
+}
+
+func TestChainKeepsAQueuedRunnerOnlyWhileItMatchesItsNode(t *testing.T) {
+	f1 := BlockNode{ID: "F1", Type: NodeFeature, Title: "List"}
+	f2 := BlockNode{ID: "F2", Type: NodeFeature, Title: "Share", DependsOn: []string{"F1"}}
+	r1 := chainTask("t2", f1, task.Running, "feat/M1-F1-list")
+	q2 := chainTask("t3", f2, task.Queued, "feat/M1-F2-share", "t2")
+	tasks := []*task.Task{{ID: "t1", Project: "demo-app", Stage: "M1/plan", Status: task.Done}, r1, q2}
+	for _, c := range []struct {
+		name    string
+		plan    []BlockNode
+		replace bool
+	}{
+		{"unchanged", []BlockNode{f1, f2}, false},
+		{"renamed", []BlockNode{f1, {ID: "F2", Type: NodeFeature, Title: "Share a list", DependsOn: []string{"F1"}}}, true},
+		{"another type", []BlockNode{f1, {ID: "F2", Type: NodeIntegrate, Title: "Share", DependsOn: []string{"F1"}}}, true},
+		{"no parent now", []BlockNode{f1, {ID: "F2", Type: NodeFeature, Title: "Share"}}, true},
+		{"another branch", []BlockNode{f1, {ID: "F2", Type: NodeFeature, Title: "Share", DependsOn: []string{"F1"}, Branch: "share"}}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			steps, err := PlanChain(chainInput(c.plan, tasks))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if steps[0].Live != r1 || (steps[1].Replace == q2) != c.replace || (steps[1].Live == q2) == c.replace {
+				t.Errorf("steps = %+v, %+v", steps[0], steps[1])
+			}
+		})
+	}
+	// A runner spawned before tasks recorded their node is matched by its
+	// title.
+	old := *q2
+	old.Node, old.Title = nil, "demo-app M1/F2: Share"
+	in := chainInput([]BlockNode{f1, {ID: "F2", Type: NodeFeature, Title: "Share a list", DependsOn: []string{"F1"}}}, []*task.Task{tasks[0], r1, &old})
+	in.Title = func(stage, title string) string { return "demo-app " + stage + ": " + title }
+	if steps, err := PlanChain(in); err != nil || steps[1].Replace != &old {
+		t.Errorf("an old runner of a renamed node = %+v, %v", steps, err)
+	}
+}
+
+func TestChainRefusesARunnerWhoseNodeChanged(t *testing.T) {
+	f1 := BlockNode{ID: "F1", Type: NodeFeature, Title: "List"}
+	renamed := BlockNode{ID: "F1", Type: NodeFeature, Title: "Lists"}
+	plan := &task.Task{ID: "t1", Project: "demo-app", Stage: "M1/plan", Status: task.Done}
+	if _, err := PlanChain(chainInput([]BlockNode{renamed}, []*task.Task{plan, chainTask("t2", f1, task.Running, "feat/M1-F1-list")})); err == nil ||
+		!strings.Contains(err.Error(), `t2 of M1/F1 is running, but the plan changed node F1 (its title from "List" to "Lists"): stop t2 and chain again`) {
+		t.Fatalf("running: %v", err)
+	}
+	if _, err := PlanChain(chainInput([]BlockNode{renamed}, []*task.Task{plan, chainTask("t2", f1, task.Done, "feat/M1-F1-list")})); err == nil ||
+		!strings.Contains(err.Error(), "the plan changed node F1 (its title from \"List\" to \"Lists\") after its runner t2 finished: give the changed node a new id") {
+		t.Fatalf("done: %v", err)
+	}
+	// A plan node that takes the id of the final integrate node the kit
+	// added is another node.
+	added := BlockNode{ID: "integrate", Type: NodeIntegrate, Title: "Integrate every feature", DependsOn: []string{"F1"}}
+	tasks := []*task.Task{plan, chainTask("t2", f1, task.Done, "feat/M1-F1-list"), chainTask("t3", added, task.Done, "integrate/M1-integrate", "t2")}
+	nodes := []BlockNode{f1, {ID: "integrate", Type: NodeIntegrate, Title: "Merge the lists", DependsOn: []string{"F1"}}}
+	if _, err := PlanChain(chainInput(nodes, tasks)); err == nil || !strings.Contains(err.Error(), "the plan changed node integrate") {
+		t.Fatalf("plan node named integrate: %v", err)
+	}
+}
+
+func TestChainReservesTheBranchesOfKeptNodes(t *testing.T) {
+	f1 := BlockNode{ID: "F1", Type: NodeFeature, Title: "List", Branch: "lists"}
+	plan := &task.Task{ID: "t1", Project: "demo-app", Stage: "M1/plan", Status: task.Done}
+	tasks := []*task.Task{plan, chainTask("t2", f1, task.Queued, "lists")}
+	nodes := []BlockNode{{ID: "F0", Type: NodeFeature, Title: "Core", Branch: "lists"}, f1}
+	if _, err := PlanChain(chainInput(nodes, tasks)); err == nil || !strings.Contains(err.Error(), "nodes F0 and F1 both use branch lists") {
+		t.Fatalf("a new node on a kept node's branch: %v", err)
+	}
+}
+
+// A node run again continues on its earlier branch only when its parents
+// are done; one that waits for a parent's new runner starts from it.
+func TestChainRerunWaitingForAParentStartsFromIt(t *testing.T) {
+	f1 := BlockNode{ID: "F1", Type: NodeFeature, Title: "List"}
+	f2 := BlockNode{ID: "F2", Type: NodeFeature, Title: "Share", DependsOn: []string{"F1"}}
+	plan := &task.Task{ID: "t1", Project: "demo-app", Stage: "M1/plan", Status: task.Done}
+	tasks := []*task.Task{plan, chainTask("t2", f1, task.Failed, "feat/M1-F1-list"), chainTask("t3", f2, task.Failed, "feat/M1-F2-share", "t2")}
+	steps, err := PlanChain(chainInput([]BlockNode{f1, f2}, tasks, "feat/M1-F1-list", "feat/M1-F2-share"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[0].Base != "feat/M1-F1-list" || steps[1].Branch != "feat/M1-F2-share-r1" || steps[1].Base != "" {
+		t.Errorf("F1 = %+v\nF2 = %+v", steps[0], steps[1])
 	}
 }

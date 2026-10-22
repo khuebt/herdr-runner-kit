@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -506,5 +507,42 @@ func TestCleanupKeepsABranchAnotherWorktreeIsRebasing(t *testing.T) {
 	}
 	if !BranchExists(ctx, repo, "feat/a") {
 		t.Error("deleted a branch another worktree is rebasing")
+	}
+}
+
+// Cleanup counts a branch merged once its squash lands on origin's main. A
+// child of it starts from the local main only once that holds the work.
+func TestChildOfACleanedParentWaitsForTheLocalDefaultBranch(t *testing.T) {
+	for _, remote := range []string{"origin", "upstream"} {
+		t.Run(remote, func(t *testing.T) { childWaitsForTheLocalDefaultBranch(t, remote) })
+	}
+}
+
+// childWaitsForTheLocalDefaultBranch cleans a squash-merged parent, then
+// names the repository's remote remote: under any name but origin, the
+// kit no longer sees where the merge happened, and only the parent's
+// recorded tip tells whether main holds its work.
+func childWaitsForTheLocalDefaultBranch(t *testing.T, remote string) {
+	ctx := context.Background()
+	r, fake, _ := newTestRunner(t)
+	parent, repo := worktreeTask(t, r, "feat/a")
+	herdrOwnsWorktree(fake, repo, parent.Worktree.Path)
+	squashMerge(t, repo, "feat/a")
+	if _, err := r.Cleanup(ctx, []CleanupItem{cleanable(t, r, repo)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(parent.ID); !got.Worktree.BranchDeleted {
+		t.Fatal("cleanup kept the merged branch")
+	}
+	if remote != "origin" {
+		git(t, repo, "remote", "rename", "origin", remote)
+	}
+	o := SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, After: []string{parent.ID}, Gate: task.GateHuman}
+	if _, err := r.Spawn(ctx, o); !errors.Is(err, errParentBranchGone) {
+		t.Fatalf("a child starts from main, which lacks the parent's work: %v", err)
+	}
+	git(t, repo, "merge", "-q", "--ff-only", remote+"/main")
+	if child, err := r.Spawn(ctx, o); err != nil || child.Worktree.Base != "main" {
+		t.Fatalf("after main was updated: %v", err)
 	}
 }

@@ -11,7 +11,7 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `show <id> [--prompt]` | One task as compact text: status, times, tab, `usage:` of a Claude runner, worktree, `git:` line, summary, decisions, question, outputs, last 5 events. The prompt only with `--prompt`. |
 | `show <id> --json [--events N]` | The task as one JSON object, or `{task, events}` with `--events`. Parse this, never the text view. |
 | `peek <id> [--lines N]` | The runner's visible screen (default 30 lines), secrets hidden. Use it instead of `herdr pane read`. |
-| `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one refuses. |
+| `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one, or one whose worktree was cleaned up, refuses. |
 | `answer <id> --stdin` | Answer a `needs-human` question. The id may name an attempt, such as `t3a2`; one for an attempt that ended is refused. |
 | `answer --from-telegram --stdin` | Route a Telegram reply by its `#id` tag. |
 | `release <id> [--note TEXT]` | Start a `held` task. |
@@ -19,7 +19,7 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `stop <id>... [--remove-worktree]` | Quit runners and close their tabs, several ids in one call. Branches are always kept. A main-checkout task gets a note naming untracked files it may have left. |
 | `gc [--kept]` | Close runners of tasks that finished 30 minutes ago or more, and kept ones past the config's `keepFor` (4h). `--kept` also closes kept runners past `--older-than`. |
 | `keep <id> [--off]` | Keep a finished runner's tab open for `keepFor` (4h by default) instead of letting `gc` close it after 30 minutes. `--off` lets `gc` close it again. |
-| `cleanup [id]... [--yes]` | List finished worktrees and branches left behind, yours and every project's: merged (squash and rebase merges included), unmerged or dirty. `--yes` removes the merged ones. |
+| `cleanup [id]... [--yes]` | List finished worktrees and branches left behind, yours and every project's: merged (squash and rebase merges included), unmerged, dirty, or kept (a kept runner, or a branch a task that has not started yet will start from: `<id> starts from it`). `--yes` removes the merged ones. |
 | `events [--since 1h] [--task ID] [--timings]` | The event log, or measured latencies. |
 | `events --learning [--task ID] [--project NAME]` | Use it when the user asks how much steering tasks took. Per task: agents, attempts (starts plus reopening sends), nudges, sends, answers, agent switches, duration, ACTIVE (time in working rounds), STALLED, IDLE-KEPT (a kept tab open after the finish), time waited on a human after the spawn, and UNITS of token usage. |
 | `usage [id...] [--since 24h] [--owner DIR \| --all] [--by task\|owner] [--main] [--json]` | Use it when the user asks what tasks or the main session cost in tokens. Per task: calls, MAX-CTX, subagents and UNITS (input 1, cache read 0.1, 5-minute cache write 1.25, 1-hour write 2, output 5; not money), and a total. Claude runners only; others show `-`. `--main` adds main sessions. |
@@ -54,7 +54,7 @@ Each of your calls re-reads your whole context, about 200k tokens in a long sess
 | `project dep set <Dn> --status needed\|requested\|ready` | Change its status; `ready` lists the held tasks that wait for it. |
 | `project share <stitch\|lavish-hosted> <on\|off>` | The user's opt-in to share work outside this machine. |
 | `project milestone start <M>` | M0: the scaffold runner, then its close runner. Later milestones: the plan runner. |
-| `project milestone chain <M>` | Spawn the feature, integrate and close runners from the committed plan. Run it again after a failed runner, even while others run; done and unfinished nodes are kept, and queued children wait for the new runner. |
+| `project milestone chain <M>` | Spawn the feature, integrate and close runners from the committed plan. A `state check: <rule>: …` warning after it, or after `cleanup --yes`, means a kit bug: relay the line to the user as is; the command still succeeded. Run it again after a failed runner, even while others run; done and unfinished nodes are kept, and a queued runner whose node or parents changed is replaced (`replaced <stage>: <old> → <new>`). A live runner whose node changed: stop it and chain again; a done one: give the node a new id. A done milestone: reopen it first. |
 | `project milestone done <M> [--merged-commit SHA]` | After the user merged `release/<M>` and pulled: commit the records and tag the release locally. The notes it finds must be the close branch's, not a release merged before a reopen. |
 | `project milestone reopen <M> --reason WHY` | Put a done milestone back in progress and delete its local tag. |
 | `project milestone close <M>` | A new close runner on `release/<M>-r<k>` after a reopen or a failed close. |
@@ -84,7 +84,7 @@ At the start of a session that touches a project, and when the user asks "where 
 
 ### Discovery stages
 
-`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held, except a `pack` chained with `--after`: it waits so the user can review the earlier stages first. Ask the user, then `release` it. Before UX or prototype work, run `hrk doctor --tools` and tell the user which optional tools are missing.
+`project status` names the next step; follow it. The stages are `intake`, `spec`, then, after the spec is approved, `ux`, `design` (after `ux` for a UI project), `architecture`, `roadmap` (after `architecture`) and `pack` (after `roadmap` and `design`). Chain them with `--after`, and pass the user's notes with `--stdin`. A stage other than a gate is a report the user may veto; it is never held, except a `pack` chained with `--after`: it waits so the user can review the earlier stages first. Ask the user, then `release` it. Before UX or prototype work, run `hrk doctor --tools` and tell the user which optional tools are missing. A `warn state: <rule>: …` line of `doctor` names broken kit state with its `fix:`; relay it, and never repair state files by hand.
 
 The `ux` and `design` runners first sample the one or two main screens and ask one direction round through `needs-human`: layout, navigation and density for `ux`; for `design`, pick, combine or another round of at least two visual directions. Relay the sample paths and every option in one message, suggest viewing the samples with Lavish when it is installed, and pass the user's choice with `answer`. The round is a question, not a gate. Notes that ask to skip the round, or give a design system to follow, skip it.
 
@@ -111,7 +111,7 @@ Two gates stop the project: the spec and the stakeholder pack. Only the user pas
 
 1. M0: brief the reference repository, the stack and the user's proposals, then `project milestone start M0`. It is refused until the pack is approved or waived, and while a scope change waits for a new pack approval.
 2. M1 and later: `project milestone start M<n>` spawns the plan runner. Its `done` line lists `decided: …`, the open questions it answered with the recommended option: relay them first and give the user a turn to veto; `send` a change. Then `project milestone chain M<n>`. A chain refused for an open question without an answer: ask those questions in one round and `send` the answers to the plan runner.
-3. A feature runner failed: `send` it the failure, or run `chain` again, without waiting for the other runners; done and unfinished nodes are kept.
+3. A feature runner failed: `send` it the failure, or run `chain` again, without waiting for the other runners; done and unfinished nodes are kept and stale queued runners are replaced. A child whose parent branch was deleted before its merge fails with `parent branch <b> is gone`: rerun the parent through `chain`.
 4. The close runner's `done` names `release/M<n>`. The user pushes it and merges it through a pull request; never merge or push for them.
 5. When the user says it is merged: `project milestone done M<n>`, and relay the tag and the release notes. The tag is local; the output prints the push command for the user. After a squash or rebase merge, add `--merged-commit <sha>`.
 6. A done milestone needs fixes: `project milestone reopen M<n> --reason WHY`, fix on the branch the release came from, then `project milestone close M<n>` for a new release branch, and the same merge and `done`. The close runner's stage rules only allow `handbook/`, so a code change after it goes through a new `fix` runner on the release branch (`--kind fix`), no new flag. A `code`, `flow` or `fix` task spawned with `--project` may change code; `spawn` prints which write rule it got. A failed close runner: `project milestone close M<n>` too.
@@ -178,7 +178,7 @@ Picking an agent: the brief names each runner's harness, model and effort with o
 
 ## Task statuses
 
-`queued` (waiting for parents) → `held` (human gate) → `starting` → `running` → `done`, `needs-human`, `failed` or `stopped`. A `needs-human` task returns to `running` after `answer`.
+`queued` (waiting for parents) → `held` (human gate) → `starting` → `running` → `done`, `needs-human`, `failed` or `stopped`. A `needs-human` task returns to `running` after `answer`. A parent that fails or stops, however it fails, fails its waiting children with `parent <id> failed` or `parent <id> stopped`.
 
 ## News that wait reports
 

@@ -369,3 +369,68 @@ func mustList(t *testing.T, r *Runner) []*task.Task {
 	}
 	return all
 }
+
+func TestStoppedFinalReviewReportsPlanDone(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var follow []string
+	r.StartAfter = func(id string) error { follow = append(follow, id); return nil }
+	review, fixup := finalReviewFixture(t, r, writeReport(t, "Verdict: fix\n"))
+	if _, err := r.Stop(context.Background(), review.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(fixup.ID); got.Status != task.Failed {
+		t.Fatalf("fixup = %s", got.Status)
+	}
+	// Stop hands the plan check to the follow-up, which a report starts too.
+	for _, id := range follow {
+		if err := r.After(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if done := planDoneSummaries(t, r); len(done) != 1 || !strings.Contains(done[0], ", review stopped, fixup "+fixup.ID+" failed") {
+		t.Fatalf("plan-done = %q, follow-ups %v", done, follow)
+	}
+	checkStore(t, r)
+}
+
+func TestLostFollowUpOfTheLastPhaseIsRecoveredBySweep(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	phase, _ := planTask(t, r, repo, srcPhase)
+	// Done, and its follow-up never ran.
+	if _, err := r.Store.Update(phase.ID, func(t *task.Task) error { t.FinishedAt = time.Now(); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SettleWaiting(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if done := planDoneSummaries(t, r); len(done) != 1 {
+		t.Fatalf("plan-done = %q", done)
+	}
+	if err := r.SettleWaiting(context.Background(), 0); err != nil || len(planDoneSummaries(t, r)) != 1 {
+		t.Errorf("a second sweep emitted plan-done again: %v", err)
+	}
+	checkStore(t, r)
+}
+
+func TestSkippedFixupStartsWhatWaitsOnIt(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var follow []string
+	r.StartAfter = func(id string) error { follow = append(follow, id); return nil }
+	review, fixup := finalReviewFixture(t, r, writeReport(t, "Verdict: pass\n"))
+	next := spawnQueued(t, r, fixup.ID)
+	finishTask(t, r, review.ID, task.Done, "Verdict: pass, 0 verified findings")
+	if err := r.After(context.Background(), review.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(follow, []string{fixup.ID}) {
+		t.Fatalf("follow-ups = %v, want the skipped fixup's", follow)
+	}
+	if err := r.After(context.Background(), fixup.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(next); got.Status == task.Queued {
+		t.Errorf("the task after the skipped fixup stayed queued")
+	}
+	checkStore(t, r)
+}

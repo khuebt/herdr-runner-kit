@@ -29,6 +29,11 @@ var (
 	indexLockPause   = 300 * time.Millisecond
 )
 
+// CommitHook runs, when set, in every records commit after the record was
+// read and before anything is written, and its error fails the commit.
+// Only tests set it, to run another command inside a commit's window.
+var CommitHook func() error
+
 // Commit renders the project's record into its repository and commits the
 // rendered files, and nothing else, as one commit. paths picks some of
 // RenderedPaths; none means all of them. It returns the new commit, or ""
@@ -74,6 +79,11 @@ func commitRendered(ctx context.Context, s *state.Store, p state.Project, messag
 	rec, err := Load(s, name)
 	if err != nil {
 		return "", err
+	}
+	if CommitHook != nil {
+		if err := CommitHook(); err != nil {
+			return "", err
+		}
 	}
 	for _, rel := range paths {
 		data, err := Render(rec, rel)

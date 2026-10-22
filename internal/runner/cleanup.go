@@ -25,7 +25,9 @@ const (
 	Merged   = "merged"
 	Unmerged = "unmerged"
 	Dirty    = "dirty"
-	// Kept means the runner is kept open; keep --off comes first.
+	// Kept means the worktree and branch stay although merged: the runner
+	// is kept open, and keep --off comes first, or a task that has no
+	// worktree yet starts from the branch.
 	Kept = "kept"
 )
 
@@ -151,19 +153,66 @@ func (r *Runner) Cleanable(ctx context.Context, owners Owners, fetch bool) ([]Cl
 			// The branch still counts as merged once later commits on the
 			// default branch change the same lines and its squash merge no
 			// longer applies cleanly.
-			r.recordMergedTips(ctx, it.Task, it.checked())
+			if err := r.recordMergedTips(ctx, it.Task, it.checked()); err != nil {
+				fmt.Fprintf(os.Stderr, "hrk: %s: %v\n", it.Task.ID, err)
+			}
+		}
+	}
+	spared := startsFrom(tasks)
+	for i := range items {
+		it := &items[i]
+		if id := spared[[2]string{it.Task.RepoRoot, it.Task.Worktree.Branch}]; it.Verdict == Merged && it.Branch && id != "" {
+			it.Verdict, it.Detail = Kept, id+" starts from it"
 		}
 	}
 	return items, nil
 }
 
+// branchBaseLock orders spawn's choice of a task's base against cleanup's
+// deletion of that branch.
+const branchBaseLock = "branch-base"
+
+// startsFrom maps each repository and branch that an unfinished task with
+// no worktree yet will start from to that task: its base, or else the
+// branch of its single parent with one, as parentInputs picks it.
+func startsFrom(tasks []*task.Task) map[[2]string]string {
+	byID := make(map[string]*task.Task, len(tasks))
+	for _, t := range tasks {
+		byID[t.ID] = t
+	}
+	out := map[[2]string]string{}
+	for _, t := range tasks {
+		if t.Status.Terminal() || t.Worktree == nil || t.Worktree.Path != "" {
+			continue
+		}
+		from := t.Worktree.Base
+		if from == "" {
+			var branches []string
+			for _, id := range t.After {
+				if p := byID[id]; p != nil && p.Worktree != nil && p.Worktree.Branch != "" {
+					branches = append(branches, p.Worktree.Branch)
+				}
+			}
+			if len(branches) == 1 {
+				from = branches[0]
+			}
+		}
+		if from != "" {
+			out[[2]string{t.RepoRoot, from}] = t.ID
+		}
+	}
+	return out
+}
+
 // recordMergedTips records tips, commits the check found merged, on task t,
 // keeping every tip recorded before that is not an ancestor of them. Refs
 // under refs/hrk/merged keep each recorded tip from being pruned once no
-// branch holds it.
-func (r *Runner) recordMergedTips(ctx context.Context, t *task.Task, tips []string) {
+// branch holds it. They are written first, and a failed one leaves the
+// record as it was: a ref without the record only pins a commit, while a
+// record without its ref can lose the commit to gc.
+func (r *Runner) recordMergedTips(ctx context.Context, t *task.Task, tips []string) error {
 	errSame := errors.New("unchanged")
-	nt, err := r.Store.Update(t.ID, func(t *task.Task) error {
+	_, err := r.Store.Update(t.ID, func(t *task.Task) error {
 		changed := false
 		for _, tip := range tips {
 			if t.Worktree != nil && t.Worktree.AddMergedTip(tip, func(a, b string) bool { return isAncestor(ctx, t.RepoRoot, a, b) }) {
@@ -173,14 +222,17 @@ func (r *Runner) recordMergedTips(ctx context.Context, t *task.Task, tips []stri
 		if !changed {
 			return errSame
 		}
+		for _, ref := range t.Worktree.MergedTipRefs(t.ID) {
+			if out, err := exec.CommandContext(ctx, "git", "-C", t.RepoRoot, "update-ref", ref[0], ref[1]).CombinedOutput(); err != nil {
+				return fmt.Errorf("record merged commit %s: %s", ref[1], strings.TrimSpace(string(out)))
+			}
+		}
 		return nil
 	})
-	if err != nil {
-		return
+	if errors.Is(err, errSame) {
+		return nil
 	}
-	for _, ref := range nt.Worktree.MergedTipRefs(nt.ID) {
-		gitOut(ctx, nt.RepoRoot, "update-ref", ref[0], ref[1])
-	}
+	return err
 }
 
 // tipKey scopes merged tips to one owner and repository.
@@ -366,15 +418,31 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 			return fmt.Errorf("remove worktree: %w", err)
 		}
 	}
-	branchGone := false
+	// Spawn writes a task's base under this lock, and the deletion is
+	// recorded before it is released: a task spawned since the check either
+	// shows here, or reads the branch as deleted.
+	unlock, err := r.Store.Lock(branchBaseLock)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	branchGone, startsFromIt := false, ""
 	if it.Branch {
-		var err error
-		if branchGone, err = deleteMergedBranch(ctx, t.RepoRoot, t.Worktree.Branch, it.base, it.tips, it.branchAt); err != nil {
+		tasks, err := r.Store.List()
+		if err != nil {
 			return err
 		}
+		startsFromIt = startsFrom(tasks)[[2]string{t.RepoRoot, t.Worktree.Branch}]
+		if startsFromIt == "" {
+			if branchGone, err = deleteMergedBranch(ctx, t.RepoRoot, t.Worktree.Branch, it.base, it.tips, it.branchAt); err != nil {
+				return err
+			}
+		}
 	}
-	r.recordMergedTips(ctx, t, it.checked())
-	t, err := r.Store.Update(t.ID, func(t *task.Task) error {
+	if err := r.recordMergedTips(ctx, t, it.checked()); err != nil {
+		fmt.Fprintf(os.Stderr, "hrk: %s: %v\n", t.ID, err)
+	}
+	t, err = r.Store.Update(t.ID, func(t *task.Task) error {
 		t.Worktree.Removed = true
 		t.Worktree.BranchDeleted = t.Worktree.BranchDeleted || branchGone
 		return nil
@@ -383,7 +451,10 @@ func (r *Runner) cleanOne(ctx context.Context, it CleanupItem) error {
 		return err
 	}
 	summary := "removed worktree and branch " + t.Worktree.Branch
-	if !branchGone {
+	switch {
+	case startsFromIt != "":
+		summary = "removed the worktree; kept branch " + t.Worktree.Branch + ", which " + startsFromIt + " starts from"
+	case !branchGone:
 		summary = "removed the worktree; kept branch " + t.Worktree.Branch
 	}
 	r.emit(t, "cleaned", summary, "")
@@ -666,6 +737,16 @@ func mergedOrUnder(ctx context.Context, dir, ref, base string, tips []string) (o
 		return true, true, true
 	}
 	return false, false, false
+}
+
+// holdsWork reports whether branch has the work of tips, commits found
+// merged: each one is merged into it. A local default branch not yet
+// updated from the remote, where the merge happened, fails this.
+func holdsWork(ctx context.Context, root, branch string, tips []string) bool {
+	return len(tips) > 0 && !slices.ContainsFunc(tips, func(tip string) bool {
+		ok, _ := merged(ctx, root, tip, branch)
+		return !ok
+	})
 }
 
 // underAny reports whether ref is one of tips or an ancestor of one.

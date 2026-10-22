@@ -254,6 +254,11 @@ func (s *Store) MainProjectsSince(owner string) []MainProject {
 // owner. A project already attached keeps its time; the others are
 // attached now.
 func (s *Store) SetMainProjects(owner string, names []string) error {
+	unlock, err := s.Lock("main-projects-" + CursorName(owner))
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	old := s.MainProjectsSince(owner)
 	var b strings.Builder
 	for _, name := range names {

@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -479,7 +480,7 @@ func TestReopenThenCloseAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parent != fix || step.Stage != "M0/close" || step.Branch != "release/M0-r1" || step.Base != "feat/M0-scaffold-r1" || NodeTemplate(step.Node) != "close" {
+	if parent != fix || step.Stage != "M0/close" || step.Branch != "release/M0-r1" || step.Base != "" || NodeTemplate(step.Node) != "close" {
 		t.Errorf("close again = %+v after %v", step, parent.ID)
 	}
 
@@ -657,7 +658,7 @@ func TestReleaseBranchAvoidsNameClashes(t *testing.T) {
 			t.Errorf("BranchTaken(%s) = %q, want %q", b, got, want)
 		}
 	}
-	step, err := CloseStep("demo-app", "M1", "I1", "integrate/M1-I1", "", nil, taken)
+	step, err := CloseStep("demo-app", "M1", "I1", "", nil, taken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,5 +698,64 @@ func TestDoneKeepsATipCleanupRecordedBefore(t *testing.T) {
 	}
 	if ref := run(t, p.Path, "rev-parse", task.MergedTipRef(tasks[1].ID)+"-"+side); ref != side {
 		t.Errorf("older tip ref = %s, want %s", ref, side)
+	}
+}
+
+// A done whose records commit fails puts its milestone back in progress,
+// and keeps what another command, which takes no milestone lock, wrote to
+// the record while the commit ran.
+func TestFailedDoneKeepsWhatAnotherCommandChanged(t *testing.T) {
+	s, p, tasks := closingProject(t, "")
+	run(t, p.Path, "merge", "-q", "--no-ff", "--no-edit", "release/M0")
+	other := Decision{At: finishedAt, Text: "pack v2 approved"}
+	CommitHook = func() error {
+		CommitHook = nil
+		if _, err := Update(s, "demo-app", func(r *Record) error {
+			r.Milestones[1].Title = "Shared lists"
+			r.Decisions = append(r.Decisions, other)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("the hook failed")
+	}
+	t.Cleanup(func() { CommitHook = nil })
+	_, err := finish(s, p, tasks, "")
+	if err == nil || !strings.Contains(err.Error(), "M0 stays in progress") || !strings.Contains(err.Error(), "milestone(s) M1 changed meanwhile and are kept") {
+		t.Fatalf("done = %v", err)
+	}
+	rec := load(t, s)
+	if m := rec.Milestones[0]; m.Status != MilestoneInProgress || m.Tag != "" || len(m.Released) != 0 {
+		t.Errorf("M0 = %+v", m)
+	}
+	if rec.Milestones[1].Title != "Shared lists" || rec.Decisions[len(rec.Decisions)-1] != other {
+		t.Errorf("the other command's change is lost: %+v, last decision %+v", rec.Milestones[1], rec.Decisions[len(rec.Decisions)-1])
+	}
+	if _, err := finish(s, p, tasks, ""); err != nil {
+		t.Fatalf("done again: %v", err)
+	}
+}
+
+// A graduation whose commit fails takes back its own record changes and
+// keeps a change request added while the commit ran.
+func TestFailedGraduationKeepsAChangeAddedMeanwhile(t *testing.T) {
+	s, p := graduatingProject(t)
+	cr1 := load(t, s).Changes[0]
+	var added Change
+	CommitHook = func() error {
+		CommitHook = nil
+		var err error
+		if added, err = AddChange(s, "demo-app", "Add dark mode", "add-dark-mode", decidedAt); err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("the hook failed")
+	}
+	t.Cleanup(func() { CommitHook = nil })
+	if _, err := graduate(s, p, GraduateOptions{}); err == nil || !strings.Contains(err.Error(), "nothing graduated") {
+		t.Fatalf("graduate = %v", err)
+	}
+	rec := load(t, s)
+	if rec.Graduated != nil || len(rec.Changes) != 2 || rec.Changes[1].ID != added.ID || rec.Changes[0] != cr1 {
+		t.Errorf("record = graduated %+v, changes %+v", rec.Graduated, rec.Changes)
 	}
 }

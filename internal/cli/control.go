@@ -260,6 +260,8 @@ func newCleanupCommand() *cobra.Command {
 			cleaned, err := r.Cleanup(cmd.Context(), items)
 			if len(cleaned) > 0 {
 				fmt.Fprintf(out, "removed the worktree and branch of %s\n", strings.Join(cleaned, ", "))
+				warnState(cmd.Context(), r, func(line string) { fmt.Fprintln(cmd.ErrOrStderr(), line) }, true,
+					func(_ runner.Violation, t *task.Task) bool { return t != nil && owners.Has(t.Owner) })
 			}
 			return err
 		},

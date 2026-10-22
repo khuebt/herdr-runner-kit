@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/khuebt/herdr-runner-kit/internal/project"
 	"github.com/khuebt/herdr-runner-kit/internal/redact"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
@@ -181,11 +182,14 @@ func (r *Runner) report(id string, o ReportOptions, finish int, judged *task.Pen
 	if git != nil {
 		ev.Git = git.Short()
 	}
-	if err := r.record(ev); err != nil {
-		return t, fmt.Errorf("write event: %w", err)
-	}
+	// The status is written, so the follow-up runs even when the log
+	// refused the event.
+	recErr := r.record(ev)
 	if err := r.StartAfter(t.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "hrk: %s: start follow-up: %v\n", t.ID, err)
+	}
+	if recErr != nil {
+		return t, fmt.Errorf("write event: %w", recErr)
 	}
 	return t, nil
 }
@@ -341,8 +345,9 @@ func (r *Runner) After(ctx context.Context, id string) error {
 		return errors.Join(r.startDependents(ctx, t), r.planDone(ctx, t))
 	case task.Failed, task.Stopped:
 		err := r.failDependents(t)
-		if t.Plan != "" && planHelper(t) {
-			// A final review or fixup that ended this way still ends the run.
+		if t.Plan != "" {
+			// A final review or fixup that ended this way still ends the
+			// run, and so does an older phase task a newer one replaced.
 			err = errors.Join(err, r.planDone(ctx, t))
 		}
 		return err
@@ -350,9 +355,52 @@ func (r *Runner) After(ctx context.Context, id string) error {
 	return nil
 }
 
-// startDependents moves every queued task whose parents are now all done
-// to held (human gate, or a plan phase whose check failed) or starts it in
-// this process.
+// ended settles what waits on t, which a stop, a failed launch or a lost
+// runner just ended: its waiting tasks fail here, and a plan task gets the
+// follow-up a report would start, which checks whether the plan is done.
+// That check runs in the detached child, never here, because plan run
+// holds the plan's lock while it spawns, and a spawn can fail a task.
+func (r *Runner) ended(t *task.Task) {
+	_ = r.failDependents(t)
+	if t.Plan == "" {
+		return
+	}
+	if err := r.StartAfter(t.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "hrk: %s: start follow-up: %v\n", t.ID, err)
+	}
+}
+
+// SettleWindow is how long the follow-up of a finished task has to settle
+// the tasks that wait for it before the wait backstop's sweep does.
+const SettleWindow = 2 * time.Minute
+
+// SettleWaiting is the wait backstop's sweep for follow-ups that never ran,
+// such as one a crash or a reboot lost. It settles every waiting task that
+// waiting-task-has-a-path finds stuck, and checks the plan of every run that
+// plan-run-finishes finds finished without its plan-done. What finished or
+// was created within window is left to the follow-up or spawn on its way.
+func (r *Runner) SettleWaiting(ctx context.Context, window time.Duration) error {
+	tasks, err := r.Store.List()
+	if err != nil {
+		return err
+	}
+	markers, err := r.planMarkers(tasks)
+	if err != nil {
+		return err
+	}
+	c := newCheck(Snapshot{Tasks: tasks, PlanDone: markers, Now: time.Now(), Settle: window})
+	var errs []error
+	for _, v := range waitingTaskHasAPath(c) {
+		errs = append(errs, r.Settle(ctx, v.Task))
+	}
+	for _, v := range planRunFinishes(c) {
+		errs = append(errs, r.planDone(ctx, c.byID[v.Task]))
+	}
+	return errors.Join(errs...)
+}
+
+// startDependents settles every task that waits for parent, which just
+// finished done, and launches in this process the ones it starts.
 func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 	tasks, err := r.Store.List()
 	if err != nil {
@@ -361,81 +409,44 @@ func (r *Runner) startDependents(ctx context.Context, parent *task.Task) error {
 	var wg sync.WaitGroup
 	var errs []error
 	for _, q := range tasks {
-		if q.Status != task.Queued || !slices.Contains(q.After, parent.ID) {
+		if !waiting(q) || !slices.Contains(q.After, parent.ID) {
 			continue
 		}
-		pending, err := r.pendingParents(q.After)
-		if err != nil {
-			r.failDependent(q.ID, err.Error())
-			continue
-		}
-		if len(pending) > 0 {
-			continue
-		}
-		if q.FixupOf == parent.ID && parent.Review != nil && parent.Review.Verdict == task.ReviewPass {
-			r.skipFixup(q, parent)
-			continue
-		}
-		inputs, base, err := r.parentInputs(q.After)
+		started, err := r.settle(ctx, q.ID)
 		if err != nil {
 			errs = append(errs, err)
-			continue
 		}
-		withInputs := func(t *task.Task) {
-			t.Inputs = inputs
-			if t.Worktree != nil && t.Worktree.Base == "" {
-				t.Worktree.Base = base
-			}
-		}
-		if reason := r.phaseHoldReason(ctx, q); q.Gate == task.GateHuman || reason != "" {
-			hold := func(t *task.Task) {
-				withInputs(t)
-				if reason != "" {
-					t.HoldReason = reason
-				}
-			}
-			if t, changed, err := r.Store.Transition(q.ID, task.Held, []task.Status{task.Queued}, hold); err != nil {
-				errs = append(errs, err)
-			} else if changed {
-				r.emit(t, "held", task.HeldSummary(t), "")
-			}
-			continue
-		}
-		// The status change is the lock: when two parents finish at once,
-		// only one follow-up moves the child to starting and launches it.
-		t, changed, err := r.beginLaunch(q.ID, withInputs)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if !changed {
+		if !started {
 			continue
 		}
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
 			_ = r.Launch(ctx, id) // every outcome is recorded on the task
-		}(t.ID)
+		}(q.ID)
 	}
 	wg.Wait()
 	return errors.Join(errs...)
 }
 
-// failDependents fails every waiting task that depends on parent, and their
-// dependents in turn.
+// failDependents settles every task that waits for parent, which just
+// failed or was stopped, so they fail, and their waiting tasks in turn.
 func (r *Runner) failDependents(parent *task.Task) error {
 	tasks, err := r.Store.List()
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, q := range tasks {
-		if slices.Contains(q.After, parent.ID) {
-			r.failDependent(q.ID, fmt.Sprintf("parent %s %s", parent.ID, parent.Status))
+		if waiting(q) && slices.Contains(q.After, parent.ID) {
+			errs = append(errs, r.Settle(context.Background(), q.ID))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
+// failDependent fails a waiting task for reason, and settles what waits on
+// it.
 func (r *Runner) failDependent(id, reason string) {
 	t, changed, err := r.Store.Transition(id, task.Failed, []task.Status{task.Queued, task.Held}, func(t *task.Task) {
 		t.Error = reason
@@ -444,15 +455,121 @@ func (r *Runner) failDependent(id, reason string) {
 		return
 	}
 	r.emit(t, "failed", reason, "")
-	_ = r.failDependents(t)
+	r.ended(t)
 }
+
+// Settle decides the waiting task id from its parents in the store. A
+// parent that failed, was stopped or does not exist fails it, and the tasks
+// that wait on it in turn. Once every parent is done, it starts the task
+// through a detached launcher, holds it for release (the human gate, or a
+// plan phase whose check holds), or closes a fixup the review found nothing
+// for. Otherwise it changes nothing. Each move is a guarded transition from
+// queued, or held for a failure, so any number of callers may settle the
+// same task: a parent's follow-up, the spawn that created it and the wait
+// backstop's sweep.
+func (r *Runner) Settle(ctx context.Context, id string) error {
+	started, err := r.settle(ctx, id)
+	if err != nil || !started {
+		return err
+	}
+	_, err = r.startLauncher(id)
+	return err
+}
+
+// settle is Settle without the launch: it reports whether it moved the task
+// to starting, for the caller to launch.
+func (r *Runner) settle(ctx context.Context, id string) (bool, error) {
+	t, err := r.Store.Get(id)
+	if err != nil || !waiting(t) {
+		return false, err
+	}
+	pending := false
+	parents := make([]*task.Task, 0, len(t.After))
+	for _, pid := range t.After {
+		p, err := r.Store.Get(pid)
+		switch {
+		case errors.Is(err, state.ErrNotFound):
+			r.failDependent(t.ID, "parent "+pid+" does not exist")
+			return false, nil
+		case err != nil:
+			return false, err
+		case p.Status == task.Failed || p.Status == task.Stopped:
+			r.failDependent(t.ID, fmt.Sprintf("parent %s %s", p.ID, p.Status))
+			return false, nil
+		case p.Status != task.Done:
+			pending = true
+		}
+		parents = append(parents, p)
+	}
+	if pending || t.Status != task.Queued {
+		return false, nil
+	}
+	for _, p := range parents {
+		if p.ID != t.FixupOf || p.Review == nil {
+			continue
+		}
+		if p.Review.Verdict == "" {
+			// Its own follow-up may still be reading the verdict.
+			r.finishReview(ctx, p)
+			if p, err = r.Store.Get(p.ID); err != nil {
+				return false, err
+			}
+		}
+		if p.Review.Verdict == task.ReviewPass {
+			// A fixup closed as done gets the follow-up a report would
+			// start, for what waits on it.
+			r.skipFixup(t, p)
+			return false, r.StartAfter(t.ID)
+		}
+	}
+	inputs, base, err := r.parentInputs(ctx, t.After)
+	if errors.Is(err, errParentBranchGone) && t.Worktree != nil && t.Worktree.Base == "" {
+		r.failDependent(t.ID, err.Error())
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, errParentBranchGone) {
+		return false, err
+	}
+	withInputs := func(t *task.Task) {
+		t.Inputs = inputs
+		if t.Worktree != nil && t.Worktree.Base == "" {
+			t.Worktree.Base = base
+		}
+	}
+	if reason := r.phaseHoldReason(ctx, t); t.Gate == task.GateHuman || reason != "" {
+		hold := func(t *task.Task) {
+			withInputs(t)
+			if reason != "" {
+				t.HoldReason = reason
+			}
+		}
+		t, changed, err := r.Store.Transition(t.ID, task.Held, []task.Status{task.Queued}, hold)
+		if err == nil && changed {
+			r.emit(t, "held", task.HeldSummary(t), "")
+		}
+		return false, err
+	}
+	// The status change is the lock: when two callers settle the task at
+	// once, only one moves it to starting and launches it.
+	_, changed, err := r.beginLaunch(t.ID, withInputs)
+	return changed, err
+}
+
+// errParentBranchGone means the branch a child would start from was
+// deleted before its work was merged.
+var errParentBranchGone = errors.New("parent branch is gone")
 
 // parentInputs describes the results of done parents for the child's first
 // prompt. base is the worktree branch of the only parent that has one, the
 // default starting point for a child worktree that builds on its code.
-func (r *Runner) parentInputs(after []string) (inputs, base string, err error) {
+// Once cleanup deleted that branch as merged, base is the default branch,
+// as soon as that holds its work. Until then, and deleted unmerged, base is
+// still the branch and the error wraps errParentBranchGone, for a child
+// that would start from it.
+func (r *Runner) parentInputs(ctx context.Context, after []string) (inputs, base string, err error) {
 	var lines []string
 	var branches []string
+	var owner *task.Task
 	for _, id := range after {
 		p, err := r.Store.Get(id)
 		if err != nil {
@@ -470,15 +587,31 @@ func (r *Runner) parentInputs(after []string) (inputs, base string, err error) {
 		}
 		if p.Worktree != nil && p.Worktree.Branch != "" {
 			line += " Branch: " + p.Worktree.Branch + "."
-			branches = append(branches, p.Worktree.Branch)
+			branches, owner = append(branches, p.Worktree.Branch), p
 		}
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
 		return "", "", nil
 	}
-	if len(branches) == 1 {
-		base = branches[0]
+	inputs = "Inputs from the tasks this one waited for:\n" + strings.Join(lines, "\n")
+	if len(branches) != 1 {
+		return inputs, "", nil
 	}
-	return "Inputs from the tasks this one waited for:\n" + strings.Join(lines, "\n"), base, nil
+	base = branches[0]
+	switch w := owner.Worktree; {
+	case !w.BranchDeleted:
+	case w.MergedTip == "":
+		return inputs, base, fmt.Errorf("%w: parent branch %s of %s was deleted before it was merged", errParentBranchGone, base, owner.ID)
+	default:
+		def, err := project.DefaultBranch(ctx, owner.RepoRoot)
+		if err != nil {
+			return inputs, base, err
+		}
+		if !holdsWork(ctx, owner.RepoRoot, def, w.MergedTips()) {
+			return inputs, base, fmt.Errorf("%w: parent branch %s of %s was merged and deleted, and %s does not hold its work yet; update %s first", errParentBranchGone, base, owner.ID, def, def)
+		}
+		base = def
+	}
+	return inputs, base, nil
 }

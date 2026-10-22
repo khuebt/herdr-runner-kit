@@ -22,6 +22,7 @@ All packages live under `internal/`, except `cmd/hrk` and `skill` at the reposit
 1. A package imports only what its layer allows. A new internal package needs a row in the layer table first.
 2. Outside `internal/harness` and `internal/task`, no code names a harness constant other than `task.Claude` (so no `task.Codex`, `task.Pi` or `task.Omp`), and `task.Claude` appears only in the allowlisted Claude-only features below. The core lifecycle packages also never spell a harness name as a string, such as `"codex"`. Test files are exempt.
 3. `internal/harness` imports no core package (`runner`, `wait`, `state`, `config`, `cli`).
+4. A file two processes can rewrite (kit state, the user's Claude and Codex config, plan and phase files) goes through `fsutil.Lock` and `fsutil.Update`, or `fsutil.CreateExclusive` when it is only created. The rule and the lock order are in [State model](state-model.md#shared-files-and-locks).
 
 ### Claude-only features
 
@@ -94,6 +95,7 @@ Commands live in `internal/cli`, one file per command or group, registered in `r
 
 - Agent screens and hook payloads are captured from live runs and kept under `internal/harness/testdata`. Tests read them as they are; a new agent version gets new captures rather than edited ones.
 - Runner tests use the fake herdr in `internal/runner/runner_test.go`, which records every call and answers from per-command handlers.
+- The lifecycle rules a test may assert with `runner.CheckInvariants` are listed in the [state model](state-model.md).
 - Live checks against real agents use a scratch build (`go build -o <scratch>/hrk ./cmd/hrk`) with `HRK_STATE_DIR` and `XDG_CONFIG_HOME` pointed at scratch folders, so the user's task store and `config.yaml` are never read or written.
 
 ## Developing against a running install
