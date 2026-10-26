@@ -59,7 +59,7 @@ The user's config may change these defaults. `--agent harness[:model[:effort]]` 
 
 Pass the user's words through `--stdin` with a quoted heredoc, never inside a shell string. Add `--title` with a few words when the prompt does not open with a short summary; the title names the tab and the branch.
 
-For a worktree task, name the branch after the repository's convention with `--branch`, such as `--branch fix/CSD-11-paid-leave`: check recent branch names, the contributing guide or the ticket, and show the name in the brief. A runner works on one branch; for two pull requests, spawn two runners. When `spawn` prints `note: branch … is the kit's default` with recent branch names, tell the user and follow that convention with `--branch` next time.
+For a worktree task, name the branch after the repository's convention with `--branch`, such as `--branch fix/CSD-11-paid-leave`: check recent branch names, the contributing guide or the ticket, and show the name in the brief. A runner works on one branch; for two pull requests, spawn two runners. To continue on a branch whose worktree already exists, spawn from the main checkout with `--no-worktree --cwd <worktree>`; `spawn` refuses a `--branch` that exists. When `spawn` prints `note: branch … is the kit's default` with recent branch names, tell the user and follow that convention with `--branch` next time.
 
 ```sh
 hrk spawn --kind fix --stdin <<'EOF'
@@ -101,7 +101,7 @@ Stages, gates, change control, milestones, graduation (suggest it once after M1)
 
 ## Wait for news
 
-In the session `hrk main` started or resumed, the auto re-arm hook waits for you after every turn: never start your own `hrk wait` there. Elsewhere, after you spawn, answer, send or release, run `hrk wait` with the Bash tool's `run_in_background` and rerun it after every wake.
+In the session `hrk main` started or resumed, the auto re-arm hook waits for you after every turn: never start your own `hrk wait` there. A session herdr restored after a reboot has no Telegram channel and no routing rules in its system prompt: tell the user to exit it and run `hrk main --exec --resume` in the same pane. Elsewhere, after you spawn, answer, send or release, run `hrk wait` with the Bash tool's `run_in_background` and rerun it after every wake.
 
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences.
 - `tN needs-human · … · 3 questions` with numbered lines is one round: ask all of them in one message and send the replies as one answer, such as `1a 2b 3c`. `decided: …` on a `done` line lists what the runner settled itself: relay it first; the user may veto, and you `send` the change. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail and `peek <id>` the screen.

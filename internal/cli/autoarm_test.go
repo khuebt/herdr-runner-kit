@@ -7,9 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
@@ -300,5 +302,149 @@ func TestAutoarmRecordsTheMainTranscript(t *testing.T) {
 	}
 	if got := store.MainSessions(); !slices.Equal(got, want) {
 		t.Errorf("after a re-record = %+v, want %+v", got, want)
+	}
+}
+
+// runHook runs the auto re-arm hook as a session hrk main did not start.
+func runHook(t *testing.T, id string) {
+	t.Helper()
+	cmd := newAutoarmCommand()
+	cmd.SetIn(strings.NewReader(`{"session_id":"` + id + `","cwd":"` + t.TempDir() + `"}`))
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAutoarmKeepsARestoredMainSessionListed(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HRK_MAIN", "") // herdr restored it without the environment
+	t.Setenv("HRK_TASK", "")
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordMainSession("restored"); err != nil {
+		t.Fatal(err)
+	}
+	// Main sessions of other folders start while the restored one keeps
+	// taking turns.
+	for i := range 8 {
+		if err := store.RecordMainSession("other-" + strconv.Itoa(i)); err != nil {
+			t.Fatal(err)
+		}
+		runHook(t, "restored")
+	}
+	if !store.IsMainSession("restored") {
+		t.Errorf("restored main session fell out: %+v", store.MainSessions())
+	}
+}
+
+func TestAutoarmNeverListsAnotherSession(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HRK_MAIN", "")
+	t.Setenv("HRK_TASK", "")
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordMainSession("main-id"); err != nil {
+		t.Fatal(err)
+	}
+	runHook(t, "other-id")
+	if want := []state.MainSession{{ID: "main-id"}}; !slices.Equal(store.MainSessions(), want) {
+		t.Errorf("main sessions = %+v, want %+v", store.MainSessions(), want)
+	}
+}
+
+func TestNewestMainSession(t *testing.T) {
+	sessions := []state.MainSession{
+		{ID: "a", Transcript: "/h/.claude/projects/-home-u-repo/a.jsonl"},
+		{ID: "b", Transcript: "/h/.claude/projects/-home-u-other/b.jsonl"},
+		{ID: "c", Transcript: "/h/.claude/projects/-home-u-repo/c.jsonl"},
+		{ID: "d"},
+		{ID: "e", Transcript: "/h/.claude/projects/-home-u--herdr-wt-my-repo/e.jsonl"},
+	}
+	for dir, want := range map[string]string{
+		"/home/u/repo":              "c",
+		"/home/u/other":             "b",
+		"/home/u/.herdr/wt/my_repo": "e",
+		"/home/u/none":              "",
+	} {
+		if got := newestMainSession(sessions, dir); got != want {
+			t.Errorf("%s: got %q, want %q", dir, got, want)
+		}
+	}
+}
+
+func TestMainResumePrintsTheResumeCommand(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HRK_STATE_DIR", dir)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HERDR_PANE_ID", "") // outside herdr: this folder's newest main session
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := strings.Map(func(r rune) rune {
+		if r < 128 && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			return r
+		}
+		return '-'
+	}, cwd)
+	if err := store.RecordMainTranscript("here-id", filepath.Join("/h/.claude/projects", project, "here-id.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordMainSession("elsewhere-id"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--resume"}, " --resume here-id\n"},
+		{[]string{"--resume", "given-id"}, " --resume given-id\n"},
+	} {
+		var out strings.Builder
+		cmd := newMainCommand()
+		cmd.SetArgs(tc.args)
+		cmd.SetOut(&out)
+		cmd.SetErr(&strings.Builder{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.String(); !strings.HasPrefix(got, "HRK_MAIN=1 claude --settings ") || !strings.HasSuffix(got, tc.want) {
+			t.Errorf("%v: got %q", tc.args, got)
+		}
+	}
+	cmd := newMainCommand()
+	cmd.SetArgs([]string{"given-id"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	if err := cmd.Execute(); err == nil {
+		t.Error("an id without --resume must be refused")
+	}
+}
+
+func TestResumeIDPrefersThePaneSession(t *testing.T) {
+	t.Setenv("HRK_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	if id, err := resumeID([]string{"given"}, func() string { return "pane-id" }); err != nil || id != "given" {
+		t.Errorf("an id given: %q, %v", id, err)
+	}
+	if id, err := resumeID(nil, func() string { return "pane-id" }); err != nil || id != "pane-id" {
+		t.Errorf("in a herdr pane: %q, %v", id, err)
+	}
+	// Without a pane session, nor a main session of this folder, the error
+	// says how to name one.
+	if _, err := resumeID(nil, func() string { return "" }); err == nil || !strings.Contains(err.Error(), "hrk main --exec --resume <session-id>") {
+		t.Errorf("nothing to resume: %v", err)
 	}
 }

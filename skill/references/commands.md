@@ -34,6 +34,7 @@ Each of your calls re-reads your whole context, about 200k tokens in a long sess
 - Never poll runners with `list`, `show`, `events`, `herdr pane read`, the tasks folder or `sleep`; `wait` or the hook brings their news. Use `list` and `show` when the user asks for status.
 - A runner's screen: `peek <id>` (text). Never a screenshot: an image stays in your context until the next compaction.
 - In the session `hrk main` started or resumed, the auto re-arm hook runs `wait` after every turn; a `wait` of your own beside it only gets `already waiting`. One exception: after `/clear` in a resumed main session the hook stops, so run your own `hrk wait` in the background there until you restart with `main --exec`.
+- After a reboot herdr restores the main session without Telegram and without these rules in the system prompt. Tell the user to exit it and run `hrk main --exec --resume` in the same pane; it resumes the session herdr recorded for that pane, else this folder's newest main session, or `--resume <id>` names one.
 
 ## Projects
 
@@ -160,8 +161,8 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--kind NAME` | `code`, `flow`, `fix`, `research`, `report`, or a kind from the user's config. |
 | `--agent SPEC` | `claude`, `codex`, `pi` or `omp`, with optional `:model` and `:effort`. `pi` and `omp` require the model, as `provider/model`: `pi:openai-codex/gpt-6-luna:high`. |
 | `--worktree`, `--no-worktree` | Override the kind's worktree choice. |
-| `--branch NAME` | Name of the new worktree branch, following the repository's convention. |
-| `--base REF` | Git ref a new worktree branch starts from. |
+| `--branch NAME` | Name of the new worktree branch, following the repository's convention. An existing branch is refused before a task is recorded; to continue on one that has a worktree, use `--no-worktree --cwd <worktree>` from the main checkout. |
+| `--base REF` | Git ref a new worktree branch starts from. Default: origin's default branch, such as `origin/main` (else local `main`/`master`, else HEAD), or the single worktree parent's branch with `--after`; the `starting` line names it. |
 | `--skill NAME` | Skill to invoke first, such as `ak:cook`. |
 | `--review` | Queue a read-only review runner on another harness after this `flow` or `code` task, in its checkout. Only with the user's yes in the brief; refused for `fix`, `research` and `report`. `--review=false` skips a kind's `review: true`. |
 | `--after t1,t2` | Start when every listed task is `done`. |

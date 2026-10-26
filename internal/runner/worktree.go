@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -40,6 +42,37 @@ func RepoRoot(ctx context.Context, dir string) string {
 // BranchExists reports whether refs/heads/branch exists in the repo at root.
 func BranchExists(ctx context.Context, root, branch string) bool {
 	return exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil
+}
+
+// branchWorktree returns the folder of the worktree of the repository at
+// root that has branch checked out, or "".
+func branchWorktree(ctx context.Context, root, branch string) string {
+	var wt string
+	for line := range strings.SplitSeq(gitOut(ctx, root, "worktree", "list", "--porcelain"), "\n") {
+		if path, ok := strings.CutPrefix(line, "worktree "); ok {
+			wt = path
+		} else if line == "branch refs/heads/"+branch {
+			return wt
+		}
+	}
+	return ""
+}
+
+// takenBranchError refuses a new worktree on branch, which already exists
+// in the repository at root, and names how to continue on it.
+func takenBranchError(ctx context.Context, root, branch string) error {
+	if wt := branchWorktree(ctx, root, branch); wt != "" {
+		return fmt.Errorf("branch %s already exists in %s, checked out in %s; to continue on it, spawn with --no-worktree --cwd %s", branch, root, wt, wt)
+	}
+	return fmt.Errorf("branch %s already exists in %s; pick another --branch, or check it out in a worktree and spawn with --no-worktree --cwd <that worktree>", branch, root)
+}
+
+// defaultBase is the ref a new worktree branch starts from without --base:
+// origin's default branch as last fetched, such as origin/main, so neither a
+// stale local main nor the main checkout's branch leaks into the task; else
+// the local main or master; else HEAD.
+func defaultBase(ctx context.Context, root string) string {
+	return cmp.Or(defaultBranch(ctx, root), "HEAD")
 }
 
 // RecentBranches returns up to n local branches of the repo at root, most

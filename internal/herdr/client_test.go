@@ -177,3 +177,27 @@ func TestPaneProcessInfo(t *testing.T) {
 		t.Errorf("argv = %q", strings.Join(got, " "))
 	}
 }
+
+func TestPaneClaudeSession(t *testing.T) {
+	var got []string
+	out := `{"id":"cli:pane:get","result":{"pane":{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"abc-123"},"pane_id":"w1:p2"},"type":"pane_info"}}`
+	c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		got = args
+		return []byte(out), nil, nil
+	}}
+	if id, err := c.PaneClaudeSession(context.Background(), "w1:p2"); err != nil || id != "abc-123" {
+		t.Fatalf("id = %q, %v", id, err)
+	}
+	if strings.Join(got, " ") != "pane get w1:p2" {
+		t.Errorf("argv = %q", strings.Join(got, " "))
+	}
+	for _, o := range []string{
+		`{"result":{"pane":{"pane_id":"w1:p2"}}}`,
+		`{"result":{"pane":{"agent_session":{"agent":"codex","kind":"id","value":"x"}}}}`,
+	} {
+		out = o
+		if id, err := c.PaneClaudeSession(context.Background(), "w1:p2"); err != nil || id != "" {
+			t.Errorf("%s: id = %q, %v", o, id, err)
+		}
+	}
+}

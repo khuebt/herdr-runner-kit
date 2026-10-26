@@ -530,6 +530,9 @@ func (r *Runner) settle(ctx context.Context, id string) (bool, error) {
 	if err != nil && !errors.Is(err, errParentBranchGone) {
 		return false, err
 	}
+	if base == "" && t.Worktree != nil && t.Worktree.Base == "" {
+		base = defaultBase(ctx, t.RepoRoot) // no parent branch to build on
+	}
 	withInputs := func(t *task.Task) {
 		t.Inputs = inputs
 		if t.Worktree != nil && t.Worktree.Base == "" {

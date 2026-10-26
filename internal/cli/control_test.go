@@ -82,6 +82,25 @@ func TestKeepLine(t *testing.T) {
 	}
 }
 
+func TestSpawnLineNamesTheBase(t *testing.T) {
+	tk := &task.Task{
+		ID: "t1", Status: task.Starting, Agent: "claude", Kind: "fix", Title: "fix login",
+		Worktree: &task.Worktree{Branch: "fix/x", Base: "main"},
+	}
+	if got, want := spawnLine(tk), "t1 starting · claude · fix · worktree fix/x from main · fix login"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	tk.Worktree.Base = "HEAD" // no default branch, as on a detached HEAD
+	if got, want := spawnLine(tk), "t1 starting · claude · fix · worktree fix/x from HEAD · fix login"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// A queued child takes its base from its parent once that is done.
+	tk.Status, tk.After, tk.Worktree.Base = task.Queued, []string{"t0"}, ""
+	if got, want := spawnLine(tk), "t1 queued · claude · fix · worktree fix/x · after t0 · fix login"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestBranchNote(t *testing.T) {
 	got := branchNote("hrk/t1-x", []string{"feat/CSD-1-a", "main"})
 	want := "note: branch hrk/t1-x is the kit's default; recent branches here: feat/CSD-1-a, main. " +

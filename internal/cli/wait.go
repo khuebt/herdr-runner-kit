@@ -79,7 +79,7 @@ func newWaitCommand() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringSliceVar(&ids, "task", nil, "only these tasks")
-	f.StringVar(&o.Owner, "owner", "", "main session to wait for (default: git top-level of the current folder); its tasks come with those of the project whose repository holds it and of the projects attached to it")
+	f.StringVar(&o.Owner, "owner", "", "main session to wait for (default: the main repository of the current folder); its tasks come with those of the project whose repository holds it and of the projects attached to it")
 	f.StringArrayVar(&projects, "project", nil, "also wait for this project, by name or by a path inside its repository (repeatable)")
 	f.StringVar(&o.Cursor, "cursor", "", "cursor name (default: derived from the owner, or from the --task ids)")
 	f.BoolVar(&o.AllNews, "all-news", false, "wake for every news line, quiet ones too")

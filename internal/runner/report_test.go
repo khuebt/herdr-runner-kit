@@ -681,23 +681,27 @@ func TestFollowUpStartsWhenTheEventWriteFails(t *testing.T) {
 	}
 }
 
-func TestSpawnOnATakenBranchRecordsItsWorktree(t *testing.T) {
+func TestSpawnRefusesATakenBranchBeforeRecording(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	repo := gitRepo(t)
-	if out, err := exec.Command("git", "-C", repo, "branch", "feat/x").CombinedOutput(); err != nil {
-		t.Fatal(err, string(out))
+	git(t, repo, "branch", "feat/x")
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, repo, "worktree", "add", "-q", "-b", "feat/y", wt)
+	for branch, want := range map[string]string{
+		"feat/x": "branch feat/x already exists in " + repo + "; pick another --branch",
+		"feat/y": "checked out in " + wt + "; to continue on it, spawn with --no-worktree --cwd " + wt,
+	} {
+		_, err := r.Spawn(context.Background(), SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, Branch: branch})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", branch, err, want)
+		}
 	}
-	if _, err := r.Spawn(context.Background(), SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo, Branch: "feat/x"}); err == nil {
-		t.Fatal("spawn on a taken branch succeeded")
+	if tasks, _ := r.Store.List(); len(tasks) != 0 {
+		t.Errorf("refused spawns recorded %d tasks", len(tasks))
 	}
-	got, err := r.Store.Get("t1")
-	if err != nil {
-		t.Fatal(err)
+	if evs, _, _ := r.Store.ReadEventsSince(0); len(evs) != 0 {
+		t.Errorf("refused spawns wrote events: %+v", evs)
 	}
-	if got.Status != task.Failed || got.Worktree == nil || got.Worktree.Branch != "feat/x" || got.Worktree.OwnsBranch() {
-		t.Errorf("task = %s, worktree %+v", got.Status, got.Worktree)
-	}
-	checkStore(t, r)
 }
 
 // A parent that finishes while spawn creates its child lists its waiting

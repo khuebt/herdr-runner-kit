@@ -81,7 +81,7 @@ func newUsageCommand() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&since, "since", "", "only tasks and main calls from this time on: an age such as 24h or 7d, or a time such as 2026-10-17 or 2026-10-17 09:30")
 	f.StringVar(&until, "until", "", "only tasks and main calls up to this time, in --since's forms")
-	f.StringVar(&owner, "owner", "", "only tasks of this main session (default: git top-level of the current folder, plus the tasks of every project)")
+	f.StringVar(&owner, "owner", "", "only tasks of this main session (default: the main repository of the current folder, plus the tasks of every project)")
 	f.BoolVar(&all, "all", false, "tasks of every main session")
 	f.StringVar(&by, "by", "task", "one row per task, or per owner")
 	f.BoolVar(&withMain, "main", false, "add the recorded main sessions")
