@@ -126,8 +126,9 @@ func (s *Store) LockCursor(name, holder string) (func(), error) {
 	}, nil
 }
 
-// mainSessionsKept is how many main session ids RecordMainSession keeps, so
-// a nested claude started from the main session cannot push its id out.
+// mainSessionsKept is how many main session ids RecordMainSession keeps. The
+// auto re-arm hook moves a main session's id to the end on every turn, so
+// only a main session idle while others, of any folder, start falls out.
 const mainSessionsKept = 8
 
 func (s *Store) mainSessionsPath() string { return filepath.Join(s.dir, mainSessionsFile) }

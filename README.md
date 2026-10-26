@@ -52,7 +52,7 @@ hrk doctor    # checks herdr, the agents and Telegram, and prints fixes
 hrk main --exec
 ```
 
-`main --exec` starts the main Claude Code session with the routing rules in its system prompt and, when configured, the Telegram channel. Run it inside herdr, so runners open as tabs next to it. See [setup](docs/setup.md).
+`main --exec` starts the main Claude Code session with the routing rules in its system prompt and, when configured, the Telegram channel. Run it inside herdr, so runners open as tabs next to it. After a reboot herdr restores the session without Telegram or the routing rules: exit that pane's session and run `hrk main --exec --resume` in the same folder. See [setup](docs/setup.md).
 
 Then talk to it as usual:
 

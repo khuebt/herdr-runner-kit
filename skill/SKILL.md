@@ -101,7 +101,7 @@ Stages, gates, change control, milestones, graduation (suggest it once after M1)
 
 ## Wait for news
 
-In the session `hrk main` started or resumed, the auto re-arm hook waits for you after every turn: never start your own `hrk wait` there. Elsewhere, after you spawn, answer, send or release, run `hrk wait` with the Bash tool's `run_in_background` and rerun it after every wake.
+In the session `hrk main` started or resumed, the auto re-arm hook waits for you after every turn: never start your own `hrk wait` there. A session herdr restored after a reboot has no Telegram channel and no routing rules in its system prompt: tell the user to exit it and run `hrk main --exec --resume` in the same folder. Elsewhere, after you spawn, answer, send or release, run `hrk wait` with the Bash tool's `run_in_background` and rerun it after every wake.
 
 - News lines like `t3 done · fix login · Login fixed; tests pass` or `t4 needs-human · … · Q: …`: relay them as they are, in one or two sentences.
 - `tN needs-human · … · 3 questions` with numbered lines is one round: ask all of them in one message and send the replies as one answer, such as `1a 2b 3c`. `decided: …` on a `done` line lists what the runner settled itself: relay it first; the user may veto, and you `send` the change. Do not read runner logs, panes or the tasks folder unless the user asks; `show <id>` has the full detail and `peek <id>` the screen.

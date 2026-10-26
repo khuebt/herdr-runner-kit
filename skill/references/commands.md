@@ -34,6 +34,7 @@ Each of your calls re-reads your whole context, about 200k tokens in a long sess
 - Never poll runners with `list`, `show`, `events`, `herdr pane read`, the tasks folder or `sleep`; `wait` or the hook brings their news. Use `list` and `show` when the user asks for status.
 - A runner's screen: `peek <id>` (text). Never a screenshot: an image stays in your context until the next compaction.
 - In the session `hrk main` started or resumed, the auto re-arm hook runs `wait` after every turn; a `wait` of your own beside it only gets `already waiting`. One exception: after `/clear` in a resumed main session the hook stops, so run your own `hrk wait` in the background there until you restart with `main --exec`.
+- After a reboot herdr restores the main session without Telegram and without these rules in the system prompt. Tell the user to exit it and run `hrk main --exec --resume` in the same folder; it resumes this folder's newest main session, or `--resume <id>` names one.
 
 ## Projects
 

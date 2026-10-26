@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -35,10 +37,10 @@ const telegramChannel = "plugin:" + telegramPlugin
 const mainSettings = `{"enabledPlugins":{"` + telegramPlugin + `":true}}`
 
 func newMainCommand() *cobra.Command {
-	var run, noProjects bool
+	var run, resume, noProjects bool
 	var projects []string
 	cmd := &cobra.Command{
-		Use:   "main",
+		Use:   "main [--resume [<session-id>]]",
 		Short: "Print, or run, the command that starts the main session with Telegram",
 		Long: "main prints the command that starts the main Claude Code session with the " +
 			"Telegram channel and the main-agent skill in its system prompt. With --exec it " +
@@ -49,9 +51,15 @@ func newMainCommand() *cobra.Command {
 			"holds the folder, and of each project --project attaches. The attached " +
 			"projects are kept for the folder, so its auto re-arm hook, hrk wait and a later " +
 			"hrk main keep them; --project again replaces them, and --no-projects clears " +
-			"them. main prints the attached projects whenever they change or there are any.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+			"them. main prints the attached projects whenever they change or there are any. " +
+			"After a reboot, herdr restores the main session without Telegram or the skill: " +
+			"exit it and run hrk main --exec --resume, which resumes this folder's newest " +
+			"main session, or the one whose id follows.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 && !resume {
+				return errors.New("a session id needs --resume")
+			}
 			if err := attachProjects(cmd, projects, noProjects); err != nil {
 				return err
 			}
@@ -65,6 +73,13 @@ func newMainCommand() *cobra.Command {
 				argv = append(argv, "--append-system-prompt-file", skillFile)
 			} else {
 				fmt.Fprintf(cmd.ErrOrStderr(), "note: no skill at %s, so the session starts without the routing rules; run hrk setup, or set CLAUDE_CONFIG_DIR\n", skillFile)
+			}
+			if resume {
+				id, err := resumeID(args)
+				if err != nil {
+					return err
+				}
+				argv = append(argv, "--resume", id)
 			}
 			if !run {
 				shown := slices.Clone(argv)
@@ -90,10 +105,50 @@ func newMainCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&run, "exec", false, "start the main session now, with the bot token from the kit's config")
+	cmd.Flags().BoolVar(&resume, "resume", false, "resume a main session after a reboot: the one whose id follows, else this folder's newest")
 	cmd.Flags().StringArrayVar(&projects, "project", nil, "also get this project's news, by name or by a path inside its repository (repeatable); replaces the attached projects")
 	cmd.Flags().BoolVar(&noProjects, "no-projects", false, "clear the attached projects")
 	cmd.MarkFlagsMutuallyExclusive("project", "no-projects")
 	return cmd
+}
+
+// resumeID is the session id hrk main --resume resumes: args[0], else the
+// newest recorded main session whose transcript is in the current folder's
+// Claude project folder.
+func resumeID(args []string) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	s, err := openStore()
+	if err != nil {
+		return "", err
+	}
+	if id := newestMainSession(s.MainSessions(), cwd); id != "" {
+		return id, nil
+	}
+	return "", fmt.Errorf("no main session of %s is recorded; pass its id: hrk main --exec --resume <session-id>", cwd)
+}
+
+// newestMainSession returns the newest of sessions whose transcript lives in
+// the Claude project folder of dir, or "". Claude names that folder after
+// dir with every character but letters and digits turned into a dash.
+func newestMainSession(sessions []state.MainSession, dir string) string {
+	name := strings.Map(func(r rune) rune {
+		if r < utf8.RuneSelf && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			return r
+		}
+		return '-'
+	}, dir)
+	for _, m := range slices.Backward(sessions) {
+		if m.Transcript != "" && filepath.Base(filepath.Dir(m.Transcript)) == name {
+			return m.ID
+		}
+	}
+	return ""
 }
 
 // attachProjects replaces the projects attached to the current folder's main
@@ -154,8 +209,7 @@ func newAutoarmCommand() *cobra.Command {
 			if os.Getenv("HRK_TASK") != "" {
 				return nil // a runner has its own turn-end hook
 			}
-			byMain := startedByMain(main, hookAncestors)
-			if !byMain {
+			if !startedByMain(main, hookAncestors) {
 				// Every Claude session runs this hook, so ask the session list
 				// before opening the state, which may migrate it.
 				dir, err := stateDir()
@@ -170,9 +224,10 @@ func newAutoarmCommand() *cobra.Command {
 			if err != nil {
 				return nil
 			}
-			if byMain {
-				_ = r.Store.RecordMainTranscript(payload.SessionID, payload.TranscriptPath)
-			}
+			// A listed session refreshes its place too: herdr restores a main
+			// session without HRK_MAIN, and main sessions of other folders
+			// would push its id out of the list.
+			_ = r.Store.RecordMainTranscript(payload.SessionID, payload.TranscriptPath)
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 			defer stop()
 			ctx = whileAlive(ctx, mainPID(main))
