@@ -194,7 +194,7 @@ func newGCCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&removeWorktree, "remove-worktree", false, "also remove clean worktrees (branches are kept)")
 	cmd.Flags().BoolVar(&kept, "kept", false, "also close kept runners whose task finished at least --older-than ago")
 	cmd.Flags().BoolVar(&all, "all", false, "close runners of every main session")
-	cmd.Flags().StringVar(&owner, "owner", "", "close runners of this main session only (default: git top-level of the current folder, plus the tasks of every project)")
+	cmd.Flags().StringVar(&owner, "owner", "", "close runners of this main session only (default: the main repository of the current folder, plus the tasks of every project)")
 	cmd.MarkFlagsMutuallyExclusive("owner", "all")
 	return cmd
 }
@@ -268,7 +268,7 @@ func newCleanupCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "remove the worktree and branch of each merged task")
 	cmd.Flags().BoolVar(&noFetch, "no-fetch", false, "compare with the local refs, without fetching origin")
-	cmd.Flags().StringVar(&owner, "owner", "", "main session whose tasks to clean (default: git top-level of the current folder, plus the tasks of every project)")
+	cmd.Flags().StringVar(&owner, "owner", "", "main session whose tasks to clean (default: the main repository of the current folder, plus the tasks of every project)")
 	return cmd
 }
 
@@ -329,7 +329,7 @@ func newListCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "show tasks of every main session")
-	cmd.Flags().StringVar(&owner, "owner", "", "show tasks of this main session only (default: git top-level of the current folder, plus the tasks of every project)")
+	cmd.Flags().StringVar(&owner, "owner", "", "show tasks of this main session only (default: the main repository of the current folder, plus the tasks of every project)")
 	return cmd
 }
 

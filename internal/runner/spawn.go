@@ -195,6 +195,9 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 				base = parentBase
 			}
 		}
+		if base == "" && t.UseWorktree && len(pending) == 0 {
+			base = defaultBase(ctx, t.RepoRoot)
+		}
 		// The owner's first wait must see this task's events. A project
 		// task's news reaches the caller's wait too, so its cursor starts
 		// here as well.
@@ -224,7 +227,7 @@ func (r *Runner) Spawn(ctx context.Context, o SpawnOptions) (*task.Task, error) 
 	}
 	if taken != "" {
 		r.emit(t, "failed", t.Error, "")
-		return nil, fmt.Errorf("branch %s already exists in %s", taken, t.RepoRoot)
+		return nil, takenBranchError(ctx, t.RepoRoot, taken)
 	}
 
 	switch {
@@ -421,6 +424,11 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 		if exec.CommandContext(ctx, "git", "check-ref-format", "--branch", o.Branch).Run() != nil {
 			return nil, "", fmt.Errorf("invalid branch name %q", o.Branch)
 		}
+		// Refused before the task is recorded, so no failed task or news
+		// line is left behind.
+		if BranchExists(ctx, root, o.Branch) {
+			return nil, "", takenBranchError(ctx, root, o.Branch)
+		}
 	}
 	language := r.Config.Language
 	if l := strings.TrimSpace(o.Language); l != "" {
@@ -562,9 +570,13 @@ func (r *Runner) fail(id, reason string) (*task.Task, bool) {
 	return t, true
 }
 
-// CallerOwner names the main session working in dir: its git top-level, or
-// dir itself outside a repository.
+// CallerOwner names the main session working in dir: its main repository
+// root, so a linked worktree reports to the repository's main session, else
+// its git top-level, or dir itself outside a repository.
 func CallerOwner(ctx context.Context, dir string) string {
+	if root := RepoRoot(ctx, dir); root != "" {
+		return root
+	}
 	if top := Toplevel(ctx, dir); top != "" {
 		return top
 	}

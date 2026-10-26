@@ -60,7 +60,7 @@ func newSpawnCommand() *cobra.Command {
 	f.BoolVar(&worktree, "worktree", false, "run in a new git worktree")
 	f.BoolVar(&noWorktree, "no-worktree", false, "run in the current folder")
 	f.StringVar(&o.Branch, "branch", "", "name of the new worktree branch, following the repository's convention (default hrk/<id>-<slug>)")
-	f.StringVar(&o.Base, "base", "", "git ref the worktree branch starts from (default HEAD)")
+	f.StringVar(&o.Base, "base", "", "git ref the worktree branch starts from (default: the branch of a single worktree parent with --after, else the repository's default branch: the one origin/HEAD names, else main or master, else HEAD)")
 	f.StringVar(&o.Skill, "skill", "", "skill to invoke, such as ak:cook; rendered per harness")
 	f.StringSliceVar(&o.After, "after", nil, "start only when these tasks are done")
 	f.StringVar(&gate, "gate", "auto", "auto starts on its own; human waits for `release`")
@@ -73,7 +73,7 @@ func newSpawnCommand() *cobra.Command {
 	f.BoolVar(&stdin, "stdin", false, "read the prompt from stdin")
 	f.StringVar(&o.Project, "project", "", "registered project the task works for; it runs in the project's folder and reports to project:<name> (default: the project holding --cwd, if any)")
 	f.BoolVar(&review, "review", false, "chain a read-only review runner on another harness after this flow or code task (default: the kind's review)")
-	f.StringVar(&o.Owner, "owner", "", "main session the task reports to (default: git top-level of the current folder, or project:<name> for a project task)")
+	f.StringVar(&o.Owner, "owner", "", "main session the task reports to (default: the main repository of the current folder, even from a linked worktree, or project:<name> for a project task)")
 	return cmd
 }
 
@@ -159,7 +159,11 @@ func parallelNote(s *state.Store, name string, warn func(string)) {
 func spawnLine(t *task.Task) string {
 	parts := []string{t.ID + " " + string(t.Status), t.Agent, t.Kind}
 	if t.Worktree != nil {
-		parts = append(parts, "worktree "+t.Worktree.Branch)
+		w := "worktree " + t.Worktree.Branch
+		if t.Worktree.Base != "" {
+			w += " from " + t.Worktree.Base
+		}
+		parts = append(parts, w)
 	}
 	if len(t.After) > 0 && t.Status == task.Queued {
 		parts = append(parts, "after "+strings.Join(t.After, ","))

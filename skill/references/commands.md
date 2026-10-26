@@ -161,8 +161,8 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 | `--kind NAME` | `code`, `flow`, `fix`, `research`, `report`, or a kind from the user's config. |
 | `--agent SPEC` | `claude`, `codex`, `pi` or `omp`, with optional `:model` and `:effort`. `pi` and `omp` require the model, as `provider/model`: `pi:openai-codex/gpt-6-luna:high`. |
 | `--worktree`, `--no-worktree` | Override the kind's worktree choice. |
-| `--branch NAME` | Name of the new worktree branch, following the repository's convention. |
-| `--base REF` | Git ref a new worktree branch starts from. |
+| `--branch NAME` | Name of the new worktree branch, following the repository's convention. An existing branch is refused before a task is recorded; to continue on one that has a worktree, use `--no-worktree --cwd <worktree>` from the main checkout. |
+| `--base REF` | Git ref a new worktree branch starts from. Default: the repository's default branch (or the single worktree parent's branch with `--after`); the `starting` line names it. |
 | `--skill NAME` | Skill to invoke first, such as `ak:cook`. |
 | `--review` | Queue a read-only review runner on another harness after this `flow` or `code` task, in its checkout. Only with the user's yes in the brief; refused for `fix`, `research` and `report`. `--review=false` skips a kind's `review: true`. |
 | `--after t1,t2` | Start when every listed task is `done`. |

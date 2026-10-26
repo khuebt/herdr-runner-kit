@@ -82,6 +82,16 @@ func TestKeepLine(t *testing.T) {
 	}
 }
 
+func TestSpawnLineNamesTheBase(t *testing.T) {
+	tk := &task.Task{
+		ID: "t1", Status: task.Starting, Agent: "claude", Kind: "fix", Title: "fix login",
+		Worktree: &task.Worktree{Branch: "fix/x", Base: "main"},
+	}
+	if got, want := spawnLine(tk), "t1 starting · claude · fix · worktree fix/x from main · fix login"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestBranchNote(t *testing.T) {
 	got := branchNote("hrk/t1-x", []string{"feat/CSD-1-a", "main"})
 	want := "note: branch hrk/t1-x is the kit's default; recent branches here: feat/CSD-1-a, main. " +

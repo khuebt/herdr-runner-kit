@@ -499,7 +499,7 @@ func TestLaunchCodexWorktree(t *testing.T) {
 	}
 
 	wt := fake.call("worktree", "create")
-	if !strings.Contains(strings.Join(wt, " "), "--cwd "+repo+" --branch hrk/t1-plan-md --base HEAD") {
+	if !strings.Contains(strings.Join(wt, " "), "--cwd "+repo+" --branch hrk/t1-plan-md --base main") {
 		t.Errorf("worktree create = %q", wt)
 	}
 	run := fake.call("pane", "run")
@@ -1743,6 +1743,40 @@ func TestSpawnOwnerIsTheCallersFolder(t *testing.T) {
 	tk = spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t), Owner: "/elsewhere"})
 	if tk.Owner != "/elsewhere" {
 		t.Fatalf("--owner ignored: %q", tk.Owner)
+	}
+}
+
+func TestSpawnOwnerFromAWorktreeIsTheMainRepository(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, repo, "worktree", "add", "-q", "-b", "fix/x", wt)
+	t.Chdir(wt)
+	no := false
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "fix", Prompt: "x", Worktree: &no})
+	if tk.Owner != repo || tk.Cwd != wt {
+		t.Fatalf("owner = %q, cwd = %q; want owner %q", tk.Owner, tk.Cwd, repo)
+	}
+	// The main session's hook, wait and list ask the same way.
+	if got := CallerOwner(context.Background(), wt); got != repo {
+		t.Errorf("CallerOwner(worktree) = %q, want %q", got, repo)
+	}
+	if dir := plainDir(t); CallerOwner(context.Background(), dir) != dir {
+		t.Error("outside git the owner is the folder itself")
+	}
+}
+
+func TestSpawnStartsFromTheDefaultBranch(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	git(t, repo, "checkout", "-q", "-b", "develop") // the main checkout left on another branch
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo})
+	if tk.Worktree == nil || tk.Worktree.Base != "main" {
+		t.Fatalf("worktree = %+v, want base main", tk.Worktree)
+	}
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "y", Cwd: repo, Base: "develop"})
+	if tk.Worktree.Base != "develop" {
+		t.Errorf("--base ignored: %+v", tk.Worktree)
 	}
 }
 

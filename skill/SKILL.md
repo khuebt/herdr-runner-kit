@@ -59,7 +59,7 @@ The user's config may change these defaults. `--agent harness[:model[:effort]]` 
 
 Pass the user's words through `--stdin` with a quoted heredoc, never inside a shell string. Add `--title` with a few words when the prompt does not open with a short summary; the title names the tab and the branch.
 
-For a worktree task, name the branch after the repository's convention with `--branch`, such as `--branch fix/CSD-11-paid-leave`: check recent branch names, the contributing guide or the ticket, and show the name in the brief. A runner works on one branch; for two pull requests, spawn two runners. When `spawn` prints `note: branch … is the kit's default` with recent branch names, tell the user and follow that convention with `--branch` next time.
+For a worktree task, name the branch after the repository's convention with `--branch`, such as `--branch fix/CSD-11-paid-leave`: check recent branch names, the contributing guide or the ticket, and show the name in the brief. A runner works on one branch; for two pull requests, spawn two runners. To continue on a branch whose worktree already exists, spawn from the main checkout with `--no-worktree --cwd <worktree>`; `spawn` refuses a `--branch` that exists. When `spawn` prints `note: branch … is the kit's default` with recent branch names, tell the user and follow that convention with `--branch` next time.
 
 ```sh
 hrk spawn --kind fix --stdin <<'EOF'
