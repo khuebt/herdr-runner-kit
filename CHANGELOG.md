@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.9](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.8...v0.15.9) (2026-10-26)
+
+
+### Bug Fixes
+
+* keep restored main sessions and spawn from the repository's default branch ([#106](https://github.com/khuebt/herdr-runner-kit/issues/106)) ([b719b27](https://github.com/khuebt/herdr-runner-kit/commit/b719b27532cdaeb197d1c568d589de15889cd963))
+
 ## [0.15.8](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.7...v0.15.8) (2026-10-22)
 
 
