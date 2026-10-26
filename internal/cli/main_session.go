@@ -20,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
@@ -53,8 +54,9 @@ func newMainCommand() *cobra.Command {
 			"hrk main keep them; --project again replaces them, and --no-projects clears " +
 			"them. main prints the attached projects whenever they change or there are any. " +
 			"After a reboot, herdr restores the main session without Telegram or the skill: " +
-			"exit it and run hrk main --exec --resume, which resumes this folder's newest " +
-			"main session, or the one whose id follows.",
+			"exit it and run hrk main --exec --resume in that pane, which resumes the session " +
+			"herdr recorded for the pane, else this folder's newest main session, or the one " +
+			"whose id follows.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 && !resume {
@@ -75,7 +77,7 @@ func newMainCommand() *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "note: no skill at %s, so the session starts without the routing rules; run hrk setup, or set CLAUDE_CONFIG_DIR\n", skillFile)
 			}
 			if resume {
-				id, err := resumeID(args)
+				id, err := resumeID(args, func() string { return paneSession(cmd.Context()) })
 				if err != nil {
 					return err
 				}
@@ -105,7 +107,7 @@ func newMainCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&run, "exec", false, "start the main session now, with the bot token from the kit's config")
-	cmd.Flags().BoolVar(&resume, "resume", false, "resume a main session after a reboot: the one whose id follows, else this folder's newest")
+	cmd.Flags().BoolVar(&resume, "resume", false, "resume a main session after a reboot: the one whose id follows, else the one herdr recorded for this pane, else this folder's newest")
 	cmd.Flags().StringArrayVar(&projects, "project", nil, "also get this project's news, by name or by a path inside its repository (repeatable); replaces the attached projects")
 	cmd.Flags().BoolVar(&noProjects, "no-projects", false, "clear the attached projects")
 	cmd.MarkFlagsMutuallyExclusive("project", "no-projects")
@@ -113,11 +115,15 @@ func newMainCommand() *cobra.Command {
 }
 
 // resumeID is the session id hrk main --resume resumes: args[0], else the
+// Claude session herdr recorded for the pane, which pane returns, else the
 // newest recorded main session whose transcript is in the current folder's
 // Claude project folder.
-func resumeID(args []string) (string, error) {
+func resumeID(args []string, pane func() string) (string, error) {
 	if len(args) > 0 {
 		return args[0], nil
+	}
+	if id := pane(); id != "" {
+		return id, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -131,6 +137,17 @@ func resumeID(args []string) (string, error) {
 		return id, nil
 	}
 	return "", fmt.Errorf("no main session of %s is recorded; pass its id: hrk main --exec --resume <session-id>", cwd)
+}
+
+// paneSession returns the Claude session herdr recorded for the pane hrk
+// runs in, or "" outside herdr or when herdr cannot tell.
+func paneSession(ctx context.Context) string {
+	pane := os.Getenv("HERDR_PANE_ID")
+	if pane == "" {
+		return ""
+	}
+	id, _ := herdr.New().PaneClaudeSession(ctx, pane)
+	return id
 }
 
 // newestMainSession returns the newest of sessions whose transcript lives in

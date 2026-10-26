@@ -385,6 +385,7 @@ func TestMainResumePrintsTheResumeCommand(t *testing.T) {
 	t.Setenv("HRK_STATE_DIR", dir)
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HERDR_PANE_ID", "") // outside herdr: this folder's newest main session
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -430,5 +431,20 @@ func TestMainResumePrintsTheResumeCommand(t *testing.T) {
 	cmd.SetErr(&strings.Builder{})
 	if err := cmd.Execute(); err == nil {
 		t.Error("an id without --resume must be refused")
+	}
+}
+
+func TestResumeIDPrefersThePaneSession(t *testing.T) {
+	t.Setenv("HRK_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	if id, err := resumeID([]string{"given"}, func() string { return "pane-id" }); err != nil || id != "given" {
+		t.Errorf("an id given: %q, %v", id, err)
+	}
+	if id, err := resumeID(nil, func() string { return "pane-id" }); err != nil || id != "pane-id" {
+		t.Errorf("in a herdr pane: %q, %v", id, err)
+	}
+	// Without a pane session, nor a main session of this folder, the error
+	// says how to name one.
+	if _, err := resumeID(nil, func() string { return "" }); err == nil || !strings.Contains(err.Error(), "hrk main --exec --resume <session-id>") {
+		t.Errorf("nothing to resume: %v", err)
 	}
 }
