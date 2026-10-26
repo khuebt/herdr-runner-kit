@@ -438,6 +438,10 @@ func (r *Runner) openLocation(ctx context.Context, t *task.Task) (herdr.Location
 	if err != nil {
 		return loc, err
 	}
+	// As git worktree add --no-track: a branch cut from origin/main would
+	// otherwise take it as upstream, and a push or the git line would
+	// treat the default branch as the task's own.
+	gitOut(ctx, t.RepoRoot, "branch", "--unset-upstream", t.Worktree.Branch)
 	// Record the worktree at once, so cleanup finds it even when a later
 	// launch step fails.
 	if _, err := r.launchUpdate(t.ID, func(t *task.Task) {

@@ -1766,17 +1766,82 @@ func TestSpawnOwnerFromAWorktreeIsTheMainRepository(t *testing.T) {
 	}
 }
 
+// withOrigin gives repo an origin whose default branch is branch, at the
+// commit at, without fetching anything.
+func withOrigin(t *testing.T, repo, branch, at string) {
+	t.Helper()
+	git(t, repo, "remote", "add", "origin", repo)
+	git(t, repo, "update-ref", "refs/remotes/origin/"+branch, at)
+	git(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+branch)
+}
+
 func TestSpawnStartsFromTheDefaultBranch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup func(t *testing.T, repo string)
+		want  string
+	}{
+		"no remote": {func(t *testing.T, repo string) {
+			git(t, repo, "checkout", "-q", "-b", "develop") // the main checkout left on another branch
+		}, "main"},
+		"remote default only": {func(t *testing.T, repo string) {
+			withOrigin(t, repo, "trunk", "main")
+			git(t, repo, "checkout", "-q", "-b", "develop")
+			git(t, repo, "branch", "-q", "-D", "main")
+		}, "origin/trunk"},
+		"stale local main": {func(t *testing.T, repo string) {
+			git(t, repo, "checkout", "-q", "-b", "newer")
+			git(t, repo, "commit", "-q", "--allow-empty", "-m", "on origin only")
+			withOrigin(t, repo, "main", "newer")
+			git(t, repo, "checkout", "-q", "main")
+			git(t, repo, "branch", "-q", "-D", "newer")
+		}, "origin/main"},
+		"detached HEAD": {func(t *testing.T, repo string) {
+			git(t, repo, "branch", "-q", "-m", "main", "feature")
+			git(t, repo, "checkout", "-q", "--detach")
+		}, "HEAD"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, _ := newTestRunner(t)
+			repo := gitRepo(t)
+			tc.setup(t, repo)
+			tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo})
+			if tk.Worktree == nil || tk.Worktree.Base != tc.want {
+				t.Fatalf("worktree = %+v, want base %s", tk.Worktree, tc.want)
+			}
+		})
+	}
 	r, _, _ := newTestRunner(t)
 	repo := gitRepo(t)
-	git(t, repo, "checkout", "-q", "-b", "develop") // the main checkout left on another branch
-	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo})
-	if tk.Worktree == nil || tk.Worktree.Base != "main" {
-		t.Fatalf("worktree = %+v, want base main", tk.Worktree)
-	}
-	tk = spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "y", Cwd: repo, Base: "develop"})
-	if tk.Worktree.Base != "develop" {
+	git(t, repo, "checkout", "-q", "-b", "develop")
+	if tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "y", Cwd: repo, Base: "develop"}); tk.Worktree.Base != "develop" {
 		t.Errorf("--base ignored: %+v", tk.Worktree)
+	}
+}
+
+func TestLaunchLeavesTheNewBranchWithoutUpstream(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	repo := gitRepo(t)
+	withOrigin(t, repo, "main", "main")
+	wt := filepath.Join(t.TempDir(), "wt")
+	fake.on("worktree create", func(args []string) (string, error) {
+		branch, base := args[slices.Index(args, "--branch")+1], args[slices.Index(args, "--base")+1]
+		// git worktree add -b sets an upstream when it starts from a
+		// remote-tracking branch.
+		if out, err := exec.Command("git", "-C", repo, "worktree", "add", "-q", "--track", "-b", branch, wt, base).CombinedOutput(); err != nil {
+			return "", fmt.Errorf("%v: %s", err, out)
+		}
+		return fmt.Sprintf(`{"result":{"root_pane":{"pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2"},"worktree":{"path":%q}}}`, wt), nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "code", Prompt: "x", Cwd: repo})
+	if tk.Worktree.Base != "origin/main" {
+		t.Fatalf("base = %q", tk.Worktree.Base)
+	}
+	_ = r.Launch(context.Background(), tk.ID) // only the branch matters here
+	if !BranchExists(context.Background(), repo, tk.Worktree.Branch) {
+		t.Fatal("worktree create never ran")
+	}
+	if up := gitOut(context.Background(), repo, "rev-parse", "--abbrev-ref", tk.Worktree.Branch+"@{upstream}"); up != "" {
+		t.Errorf("new branch tracks %s", up)
 	}
 }
 

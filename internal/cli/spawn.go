@@ -60,7 +60,7 @@ func newSpawnCommand() *cobra.Command {
 	f.BoolVar(&worktree, "worktree", false, "run in a new git worktree")
 	f.BoolVar(&noWorktree, "no-worktree", false, "run in the current folder")
 	f.StringVar(&o.Branch, "branch", "", "name of the new worktree branch, following the repository's convention (default hrk/<id>-<slug>)")
-	f.StringVar(&o.Base, "base", "", "git ref the worktree branch starts from (default: the branch of a single worktree parent with --after, else the repository's default branch: the one origin/HEAD names, else main or master, else HEAD)")
+	f.StringVar(&o.Base, "base", "", "git ref the worktree branch starts from (default: the branch of a single worktree parent with --after, else origin's default branch such as origin/main, else local main or master, else HEAD); the new branch gets no upstream")
 	f.StringVar(&o.Skill, "skill", "", "skill to invoke, such as ak:cook; rendered per harness")
 	f.StringSliceVar(&o.After, "after", nil, "start only when these tasks are done")
 	f.StringVar(&gate, "gate", "auto", "auto starts on its own; human waits for `release`")

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os/exec"
@@ -9,8 +10,6 @@ import (
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
-
-	"github.com/khuebt/herdr-runner-kit/internal/project"
 )
 
 // gitOut runs git in dir and returns trimmed stdout, or "" on any failure.
@@ -69,10 +68,11 @@ func takenBranchError(ctx context.Context, root, branch string) error {
 }
 
 // defaultBase is the ref a new worktree branch starts from without --base:
-// the repository's default branch, or "" for HEAD when it cannot be told.
+// origin's default branch as last fetched, such as origin/main, so neither a
+// stale local main nor the main checkout's branch leaks into the task; else
+// the local main or master; else HEAD.
 func defaultBase(ctx context.Context, root string) string {
-	def, _ := project.DefaultBranch(ctx, root)
-	return def
+	return cmp.Or(defaultBranch(ctx, root), "HEAD")
 }
 
 // RecentBranches returns up to n local branches of the repo at root, most
