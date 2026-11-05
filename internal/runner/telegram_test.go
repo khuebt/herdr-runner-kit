@@ -340,3 +340,28 @@ func TestRouteTelegram(t *testing.T) {
 		}
 	})
 }
+
+func TestNotificationRecordsRetryAttempts(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var calls atomic.Int32
+	withTelegram(t, r, func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	tk := running(t, r, SpawnOptions{Prompt: "x", Cwd: plainDir(t)})
+	if err := r.SendNotification(context.Background(), state.Event{Task: tk.ID, Type: "stalled", Attempt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	ev := lastEvent(t, r)
+	if ev.Type != "notified" || ev.NotifyAttempts != 2 || ev.Attempt != 2 {
+		t.Fatalf("result = %+v", ev)
+	}
+}

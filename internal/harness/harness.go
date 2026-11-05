@@ -33,7 +33,8 @@ type LaunchOptions struct {
 	Dir string
 	// MCP keeps the user's MCP servers; without it an adapter that can
 	// starts the agent with none.
-	MCP bool
+	MCP         bool
+	InputLocked bool // install a session-scoped prompt gate
 }
 
 // FilesInput are the inputs to an adapter's per-task runner files.
@@ -183,6 +184,9 @@ type Adapter interface {
 	FirstPrompt(skill, prompt, contract string) string
 	// Dialogs lists the known startup dialogs.
 	Dialogs() []Dialog
+	// ExitKeys handles an exit dialog without stopping background work.
+	// Nil leaves the normal Ctrl+C exit path in place.
+	ExitKeys(screen string) []string
 	// ShowsUsageLimit reports whether the last lines of screen hold the
 	// error line the agent itself draws when its account hit a usage limit.
 	// Conversation text and tool output never count.
@@ -253,6 +257,9 @@ type Adapter interface {
 	// prompt-submit hook calls `hrk __prompt-gate`, which lets through only
 	// the prompts the kit typed and the agent's own.
 	LocksInput() bool
+	// NeedsGateConfirmation requires a consumed token in the current attempt
+	// before the kit can assume the prompt hook is trusted and input locked.
+	NeedsGateConfirmation() bool
 	// ClearInputKeys are the herdr keys that empty the agent's input box
 	// without interrupting a running turn. The kit sends them before it
 	// types into a locked runner: the agent puts a prompt the gate blocked
@@ -265,6 +272,9 @@ type Adapter interface {
 	// GateBlock is what the prompt gate prints to refuse a prompt, showing
 	// reason to the human.
 	GateBlock(reason string) string
+	// GateTokenMatcher, when non-nil, matches a queued kit prompt by text
+	// even after its token expires. Nil uses the normal short-lived token.
+	GateTokenMatcher(prompt string) func(expected string) bool
 	// Usage sums the token usage in the session transcripts that hooks
 	// named, counting only calls between from and to (a zero time leaves
 	// that side open). It returns nil for an agent whose transcripts the

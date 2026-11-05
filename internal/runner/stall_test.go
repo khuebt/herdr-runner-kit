@@ -250,37 +250,47 @@ func withBackground(t *testing.T, r *Runner, id string, running bool) {
 	}
 }
 
-// A Claude runner waiting on background work of its own is woken by it,
-// so it is nudged only after three times stallAfter. The turn-end hook's
-// list says so even when the screen draws no count, as with subagents only;
-// without a list the mode line decides.
-func TestIdleClaudeWaitingOnBackgroundWorkIsNudgedLater(t *testing.T) {
-	for name, tc := range map[string]struct {
-		screen string
-		listed bool
-	}{
-		"subagents listed, no count on screen": {harnessFixture(t, "background-agents-claude-1.txt"), true},
-		"no list, shells counted on screen":    {harnessFixture(t, "background-agents-claude-2.txt"), false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			r, fake, tk := idleRunner(t, "claude", 0, tc.screen)
-			if tc.listed {
+// A background wait is informational until the hard watchdog ceiling.
+func TestIdleBackgroundWaitIsInformational(t *testing.T) {
+	for _, listed := range []bool{false, true} {
+		t.Run(fmt.Sprint(listed), func(t *testing.T) {
+			r, fake, tk := idleRunner(t, "claude", 0, harnessFixture(t, "background-agents-claude-2.txt"))
+			if listed {
 				withBackground(t, r, tk.ID, true)
 			}
 			start := time.Now()
-			sampleEvery(t, r, tk.ID, start, 0, 29)
-			if p := kitPrompts(fake); len(p) != 0 {
-				t.Fatalf("nudged a runner waiting on its background work: %q", p)
+			sampleEvery(t, r, tk.ID, start, 0, 90)
+			if len(kitPrompts(fake)) != 0 || countEvents(t, r, tk.ID, "stalled") != 0 {
+				t.Fatal("healthy background wait escalated")
 			}
-			sampleEvery(t, r, tk.ID, start, 30, 30)
-			p := kitPrompts(fake)
-			if len(p) != 1 || !strings.Contains(p[0], "you are woken when they finish") {
-				t.Fatalf("prompts = %q", p)
+			if countEvents(t, r, tk.ID, "background-waiting") != 1 {
+				t.Fatal("missing informational background state")
 			}
-			if ev := eventsOf(t, r, tk.ID, "nudged"); len(ev) != 1 || ev[0].Summary != "idle at its prompt for 30 min without a report, with background work of its own still running; nudged" {
-				t.Errorf("nudged = %+v", ev)
+			sampleEvery(t, r, tk.ID, start, 91, 250)
+			if countEvents(t, r, tk.ID, "stalled") != 1 {
+				t.Fatal("hung background work did not hit watchdog once")
+			}
+			cur, _ := r.Store.Get(tk.ID)
+			r.unstall(cur)
+			sampleEvery(t, r, tk.ID, start, 251, 550)
+			if countEvents(t, r, tk.ID, "stalled") != 1 || countEvents(t, r, tk.ID, "background-waiting") != 1 || countEvents(t, r, tk.ID, "unstalled") != 0 {
+				t.Fatal("continuous background wait repeated its watchdog cycle")
+			}
+			if len(kitPrompts(fake)) != 0 || fake.count("agent", "send-keys") != 0 {
+				t.Fatal("watchdog interrupted background work")
 			}
 		})
+	}
+}
+
+func TestIdleBackgroundLossResumesWatchdog(t *testing.T) {
+	r, fake, tk := idleRunner(t, "claude", 1, harnessFixture(t, "background-agents-claude-2.txt"))
+	start := time.Now()
+	sampleEvery(t, r, tk.ID, start, 0, 35)
+	fake.on("pane read", ok("❯ \n"))
+	sampleEvery(t, r, tk.ID, start, 36, 36)
+	if countEvents(t, r, tk.ID, "stalled") != 1 {
+		t.Fatal("lost background work did not escalate")
 	}
 }
 
@@ -432,5 +442,31 @@ func TestStallSkipsAWaitForAHeavySlot(t *testing.T) {
 	sampleEvery(t, r, tk.ID, start, 41, 51)
 	if p := kitPrompts(fake); len(p) != 1 {
 		t.Errorf("prompts after the queue = %q", p)
+	}
+}
+
+func TestProgressStallCannotCrossAnAttempt(t *testing.T) {
+	r, _, tk, _ := stallRunner(t, "working")
+	if _, err := r.Store.Update(tk.ID, func(cur *task.Task) error { cur.Attempt = 2; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	r.climb(context.Background(), tk, stepStalled, time.Hour)
+	if countEvents(t, r, tk.ID, "stalled") != 0 {
+		t.Fatal("stale progress sample recorded a stall")
+	}
+}
+
+func TestBackgroundReadFailureDoesNotLookLikeLostWork(t *testing.T) {
+	r, fake, tk := idleRunner(t, "claude", 1, harnessFixture(t, "background-agents-claude-2.txt"))
+	start := time.Now()
+	sampleEvery(t, r, tk.ID, start, 0, 20)
+	fake.on("pane read", herdrErr("server_unavailable"))
+	sampleEvery(t, r, tk.ID, start, 21, 90)
+	if countEvents(t, r, tk.ID, "stalled") != 0 {
+		t.Fatal("failed screen read was treated as background loss")
+	}
+	sampleEvery(t, r, tk.ID, start, 91, 250)
+	if countEvents(t, r, tk.ID, "stalled") != 1 {
+		t.Fatal("unknown background work escaped hard watchdog")
 	}
 }

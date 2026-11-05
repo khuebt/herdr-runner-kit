@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -99,14 +100,14 @@ func TestLockedClaudeRunnerClearsThenTokensThenPrompts(t *testing.T) {
 	}
 }
 
-func TestOpenOrCodexRunnerPromptsAsBefore(t *testing.T) {
+func TestOpenRunnerPromptsAsBefore(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		input string
 		agent string
 	}{
 		{"open claude", config.InputOpen, ""},
-		{"locked codex", config.InputLocked, "codex"},
+		{"open codex", config.InputOpen, "codex"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r, fake, _ := newTestRunner(t)
@@ -268,14 +269,103 @@ func TestLockedPromptFailureAfterClearKeepsThePendingPrompt(t *testing.T) {
 	}
 }
 
-func TestLockedCodexStartedLineSaysInputIsOpen(t *testing.T) {
-	for agent, want := range map[string]bool{"codex": true, "claude": false} {
-		r, _ := lockedRunner(t)
-		tk := spawnStarting(t, r, SpawnOptions{Agent: agent, Prompt: "x", Cwd: plainDir(t)})
-		spec, _ := task.ParseAgentSpec(tk.Agent)
-		line := startedLine(tk, spec, nil, "")
-		if got := strings.Contains(line, "input open (Codex cannot lock it yet)"); got != want {
-			t.Errorf("%s started line = %q", agent, line)
+func TestLockedCodexRunnerClearsThenTokensThenPrompts(t *testing.T) {
+	r, fake := lockedRunner(t)
+	var id string
+	log := watchPrompts(t, r, fake, &id)
+	adapter, _ := harness.For(task.Codex)
+	fake.on("agent prompt", func(args []string) (string, error) {
+		cur, _ := r.Store.Get(id)
+		if len(log.tokens) == 0 && InputLocked(cur) {
+			t.Fatal("Codex input locked before gate consumption")
 		}
+		fake.mu.Lock()
+		log.prev = append(log.prev, fake.calls[len(fake.calls)-2])
+		fake.mu.Unlock()
+		log.tokens = append(log.tokens, tokens(t, r, id))
+		payload, _ := json.Marshal(map[string]string{"prompt": args[3]})
+		if block, err := r.GatePrompt(id, adapter, payload); err != nil || block != "" {
+			t.Fatalf("gate: block=%q err=%v", block, err)
+		}
+		return "{}", nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Agent: "codex", Prompt: "x", Cwd: plainDir(t)})
+	id = tk.ID
+	if err := r.Launch(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(fake.call("agent", "start"), " "), "trusted_hash") {
+		t.Fatal("Codex launch lacks scoped hook trust")
+	}
+	if _, err := r.Send(context.Background(), id, "next step"); err != nil {
+		t.Fatal(err)
+	}
+	if len(log.tokens) != 2 {
+		t.Fatalf("prompts=%d", len(log.tokens))
+	}
+	for i, count := range log.tokens {
+		if count != 1 || i > 0 && !slices.Equal(log.prev[i][3:], adapter.ClearInputKeys()) {
+			t.Fatalf("prompt %d tokens=%d preceding=%v", i, count, log.prev[i])
+		}
+	}
+	tk, _ = r.Store.Get(id)
+	if !InputLocked(tk) || strings.Contains(startedLine(tk, task.AgentSpec{Harness: task.Codex}, nil, ""), "input open") {
+		t.Fatal("Codex incorrectly claims open input")
+	}
+}
+
+func TestCodexGateNeverRunsDoesNotRetypeEarlierPrompts(t *testing.T) {
+	r, fake := lockedRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Agent: "codex", Prompt: "FIRST", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"SECOND", "THIRD"} {
+		if _, err := r.Send(context.Background(), tk.ID, text); err != nil {
+			t.Fatal(err)
+		}
+		if got := lastPrompt(fake); got != text {
+			t.Fatalf("prompt = %q, want only %q", got, text)
+		}
+	}
+	cur, _ := r.Store.Get(tk.ID)
+	if InputLocked(cur) || cur.InputLocked {
+		t.Fatal("Codex without a working gate claims locked input")
+	}
+	if fake.count("agent", "send-keys") != 0 {
+		t.Fatal("unconfirmed input was cleared instead of typed as open")
+	}
+	evs, _, _ := r.Store.ReadEventsSince(0)
+	for _, ev := range evs {
+		if ev.Task == tk.ID && ev.Type == "started" && !strings.Contains(ev.Summary, "input open") {
+			t.Fatalf("started does not disclose open input: %s", ev.Summary)
+		}
+	}
+}
+
+func TestCodexInputLockRequiresCurrentAttemptGate(t *testing.T) {
+	r, fake := lockedRunner(t)
+	tk := spawnStarting(t, r, SpawnOptions{Agent: "codex", Prompt: "FIRST", Cwd: plainDir(t)})
+	if _, err := r.Store.Update(tk.ID, func(tk *task.Task) error {
+		tk.InputGateAttempt, tk.Attempt = 1, 2
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.SetPendingPrompt(tk.ID, "OLD"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Store.AddPromptToken(tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(lastPrompt(fake), "OLD") {
+		t.Fatal("new attempt retyped an old pending prompt")
+	}
+	cur, _ := r.Store.Get(tk.ID)
+	if InputLocked(cur) || cur.InputLocked {
+		t.Fatal("previous attempt's gate confirmed the current attempt")
 	}
 }

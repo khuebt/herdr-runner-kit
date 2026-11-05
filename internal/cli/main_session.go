@@ -20,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/install"
 	"github.com/khuebt/herdr-runner-kit/internal/runner"
@@ -83,10 +84,15 @@ func newMainCommand() *cobra.Command {
 				}
 				argv = append(argv, "--resume", id)
 			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			owner := runner.CallerOwner(cmd.Context(), cwd)
 			if !run {
 				shown := slices.Clone(argv)
 				shown[2] = "'" + mainSettings + "'"
-				_, err := fmt.Fprintln(cmd.OutOrStdout(), "HRK_MAIN=1 "+strings.Join(shown, " "))
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), "HRK_MAIN=1 "+runner.MainOwnerEnv+"="+harness.ShellQuote(owner)+" "+strings.Join(shown, " "))
 				return err
 			}
 			path, err := exec.LookPath(argv[0])
@@ -96,6 +102,9 @@ func newMainCommand() *cobra.Command {
 			// Exec keeps this PID, so HRK_MAIN names the Claude process the
 			// auto re-arm hook belongs to.
 			env := withEnv(os.Environ(), "HRK_MAIN", strconv.Itoa(os.Getpid()))
+			// The session's owner, so a spawn from its first turn reports
+			// here even from another folder, before the hook records it.
+			env = withEnv(env, runner.MainOwnerEnv, owner)
 			if os.Getenv("TELEGRAM_BOT_TOKEN") == "" {
 				if cfg, err := loadConfig(); err == nil {
 					if creds, err := telegram.Resolve(cfg.Telegram, os.Getenv); err == nil {
@@ -243,12 +252,20 @@ func newAutoarmCommand() *cobra.Command {
 			}
 			// A listed session refreshes its place too: herdr restores a main
 			// session without HRK_MAIN, and main sessions of other folders
-			// would push its id out of the list.
-			_ = r.Store.RecordMainTranscript(payload.SessionID, payload.TranscriptPath)
+			// would push its id out of the list. Its owner lets spawn, run from
+			// any folder of the session, report to the owner this hook watches.
+			owner := r.Store.MainSessionOwner(payload.SessionID)
+			if owner == "" {
+				owner = os.Getenv(runner.MainOwnerEnv)
+			}
+			if owner == "" {
+				owner = runner.CallerOwner(cmd.Context(), payload.Cwd)
+			}
+			_ = r.Store.RecordMainTranscript(payload.SessionID, payload.TranscriptPath, owner)
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 			defer stop()
 			ctx = whileAlive(ctx, mainPID(main))
-			if code := autoarm(ctx, r, runner.CallerOwner(ctx, payload.Cwd), cmd.ErrOrStderr()); code != 0 {
+			if code := autoarm(ctx, r, owner, cmd.ErrOrStderr()); code != 0 {
 				os.Exit(code)
 			}
 			return nil

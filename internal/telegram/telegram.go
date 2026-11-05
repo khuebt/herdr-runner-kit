@@ -6,16 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/state"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
-// SendTimeout bounds one sendMessage call. There are no retries.
+// SendTimeout bounds each sendMessage attempt.
 const SendTimeout = 10 * time.Second
 
 // maxText keeps a message well under Telegram's 4096-character limit.
@@ -32,42 +35,79 @@ func New() *Client {
 	return &Client{BaseURL: "https://api.telegram.org", HTTP: &http.Client{Timeout: SendTimeout}}
 }
 
-// Send posts text to every chat. Errors never contain the token.
-func (c *Client) Send(ctx context.Context, creds Creds, text string) error {
+// retryBackoff is the delay before each retry, shortened by tests.
+var retryBackoff = []time.Duration{time.Second, 2 * time.Second}
+
+// Send posts text to every chat, retrying only transient transport failures.
+// It returns the total request attempts across chats. A successful chat is
+// never resent because another chat failed. Errors never contain the token.
+func (c *Client) Send(ctx context.Context, creds Creds, text string) (int, error) {
 	var errs []error
+	attempts := 0
 	for _, chat := range creds.ChatIDs {
-		if err := c.send(ctx, creds.Token, chat, text); err != nil {
+		var err error
+		for n := 0; ; n++ {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+				break
+			}
+			var retry bool
+			attempts++
+			retry, err = c.send(ctx, creds.Token, chat, text)
+			if !retry || n >= len(retryBackoff) {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+			case <-time.After(retryBackoff[n]):
+				continue
+			}
+			break
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("chat %s: %w", chat, err))
 		}
 	}
-	return errors.Join(errs...)
+	return attempts, errors.Join(errs...)
 }
 
-func (c *Client) send(ctx context.Context, token, chat, text string) error {
+func transientSendError(err error) bool {
+	var network net.Error
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.As(err, &network) && network.Timeout()
+}
+
+func (c *Client) send(ctx context.Context, token, chat, text string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, SendTimeout)
+	defer cancel()
 	body, _ := json.Marshal(map[string]any{"chat_id": chat, "text": text, "disable_web_page_preview": true})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/bot"+token+"/sendMessage", bytes.NewReader(body))
 	if err != nil {
-		return errors.New("build sendMessage request")
+		return false, errors.New("build sendMessage request")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		// The *url.Error text carries the URL, and the URL carries the token.
-		return fmt.Errorf("sendMessage: %s", redact(err.Error(), token))
+		// Classify before redacting: the URL contains the token.
+		return transientSendError(err), fmt.Errorf("sendMessage: %s", redact(err.Error(), token))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var out struct {
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.OK {
-		desc := out.Description
-		if desc == "" {
-			desc = resp.Status
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return false, nil // Telegram accepted it; retrying could send it twice.
 		}
-		return fmt.Errorf("sendMessage: %s", redact(desc, token))
+		return false, fmt.Errorf("sendMessage: %s: %s", resp.Status, redact(err.Error(), token))
 	}
-	return nil
+	if !out.OK {
+		return false, fmt.Errorf("sendMessage: %s", redact(out.Description, token))
+	}
+	return false, nil
 }
 
 func redact(s, token string) string {

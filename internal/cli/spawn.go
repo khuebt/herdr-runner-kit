@@ -73,7 +73,7 @@ func newSpawnCommand() *cobra.Command {
 	f.BoolVar(&stdin, "stdin", false, "read the prompt from stdin")
 	f.StringVar(&o.Project, "project", "", "registered project the task works for; it runs in the project's folder and reports to project:<name> (default: the project holding --cwd, if any)")
 	f.BoolVar(&review, "review", false, "chain a read-only review runner on another harness after this flow or code task (default: the kind's review)")
-	f.StringVar(&o.Owner, "owner", "", "main session the task reports to (default: the main repository of the current folder, even from a linked worktree, or project:<name> for a project task)")
+	f.StringVar(&o.Owner, "owner", "", "main session the task reports to: the absolute path of its folder, or project:<name> (default: this main session, else the main repository of the current folder, even from a linked worktree, or project:<name> for a project task)")
 	return cmd
 }
 
@@ -88,7 +88,7 @@ func spawnTask(ctx context.Context, r *runner.Runner, o runner.SpawnOptions, rev
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(out, spawnLine(t)); err != nil {
+	if _, err := fmt.Fprintln(out, ownedSpawnLine(t, otherOwner(ctx, t))); err != nil {
 		return err
 	}
 	if t.Project != "" {
@@ -102,7 +102,7 @@ func spawnTask(ctx context.Context, r *runner.Runner, o runner.SpawnOptions, rev
 		if err != nil {
 			return fmt.Errorf("%s started, but its review could not be queued: %w", t.ID, err)
 		}
-		if _, err := fmt.Fprintln(out, spawnLine(rt)); err != nil {
+		if _, err := fmt.Fprintln(out, ownedSpawnLine(rt, otherOwner(ctx, rt))); err != nil {
 			return err
 		}
 	}
@@ -156,7 +156,24 @@ func parallelNote(s *state.Store, name string, warn func(string)) {
 	}
 }
 
-func spawnLine(t *task.Task) string {
+// otherOwner returns t's owner when it is not the one t's folder, or its
+// project, implies, as when a main session spawns from a scratchpad, else "".
+func otherOwner(ctx context.Context, t *task.Task) string {
+	want := task.ProjectOwner(t.Project)
+	if t.Project == "" {
+		want = runner.CallerOwner(ctx, t.Cwd)
+	}
+	if t.Owner == want {
+		return ""
+	}
+	return t.Owner
+}
+
+func spawnLine(t *task.Task) string { return ownedSpawnLine(t, "") }
+
+// ownedSpawnLine is spawnLine naming owner, the one the task reports to,
+// when it is not empty.
+func ownedSpawnLine(t *task.Task, owner string) string {
 	parts := []string{t.ID + " " + string(t.Status), t.Agent, t.Kind}
 	if t.Worktree != nil {
 		w := "worktree " + t.Worktree.Branch
@@ -170,6 +187,9 @@ func spawnLine(t *task.Task) string {
 	}
 	if t.HoldReason != "" {
 		parts = append(parts, "held for: "+t.HoldReason)
+	}
+	if owner != "" {
+		parts = append(parts, "reports to "+owner)
 	}
 	parts = append(parts, t.Title)
 	return strings.Join(parts, " · ")

@@ -108,7 +108,7 @@ func (r *Runner) SendNotification(ctx context.Context, ev state.Event) error {
 	}
 	var errs []error
 	if selected {
-		errs = append(errs, r.send(ctx, creds, err, t, ev.Type, telegram.Message(ev, t)))
+		errs = append(errs, r.send(ctx, creds, err, t, ev.Type, ev.Attempt, telegram.Message(ev, t)))
 	}
 	if r.endsChain(ev) {
 		errs = append(errs, r.flushDeferred(ctx, creds, err, t, ev.Type))
@@ -118,13 +118,11 @@ func (r *Runner) SendNotification(ctx context.Context, ev state.Event) error {
 
 // send delivers text unless resolving the credentials failed with credErr,
 // and records the outcome on t as notified or notify-failed, labelled what.
-func (r *Runner) send(ctx context.Context, creds telegram.Creds, credErr error, t *task.Task, what, text string) error {
+func (r *Runner) send(ctx context.Context, creds telegram.Creds, credErr error, t *task.Task, what string, attempt int, text string) error {
 	err := credErr
-	result := state.Event{Task: t.ID, Owner: t.Owner, Type: "notified", Summary: what}
+	result := state.Event{Task: t.ID, Owner: t.Owner, Type: "notified", Summary: what, Attempt: attempt}
 	if err == nil {
-		ctx, cancel := context.WithTimeout(ctx, telegram.SendTimeout)
-		defer cancel()
-		err = r.Telegram.Send(ctx, creds, text)
+		result.NotifyAttempts, err = r.Telegram.Send(ctx, creds, text)
 	}
 	if err != nil {
 		result.Type, result.Summary = "notify-failed", what+": "+err.Error()
@@ -231,7 +229,7 @@ func (r *Runner) flushDeferred(ctx context.Context, creds telegram.Creds, credEr
 	}
 	slices.SortFunc(chain, func(a, b *task.Task) int { return idNumber(a.ID) - idNumber(b.ID) })
 	var errs []error
-	if err := r.send(ctx, creds, credErr, end, "chain", telegram.ChainMessage(end, how, chain)); err != nil {
+	if err := r.send(ctx, creds, credErr, end, "chain", eventAttempt(end), telegram.ChainMessage(end, how, chain)); err != nil {
 		errs = append(errs, err)
 	} else {
 		for _, p := range chain {

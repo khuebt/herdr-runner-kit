@@ -693,7 +693,20 @@ func (r *Runner) quitAgent(ctx context.Context, pane string) error {
 			continue
 		}
 		unseen = false
-		if err := r.Herdr.AgentSendKeys(ctx, pane, "ctrl+c", "ctrl+c"); err != nil && !isGone(err) {
+		keys := []string{"ctrl+c", "ctrl+c"}
+		if adapter, err := harness.For(task.Harness(a.Kind)); err == nil {
+			screen, err := r.Herdr.PaneRead(ctx, pane, 40)
+			if err != nil {
+				if isGone(err) {
+					return nil
+				}
+				return err
+			}
+			if exit := adapter.ExitKeys(screen); len(exit) > 0 {
+				keys = exit
+			}
+		}
+		if err := r.Herdr.AgentSendKeys(ctx, pane, keys...); err != nil && !isGone(err) {
 			return err
 		}
 		_, err = r.Herdr.AgentWait(ctx, pane, 3*time.Second, "unknown")

@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/khuebt/herdr-runner-kit/internal/config"
 	"github.com/khuebt/herdr-runner-kit/internal/state"
@@ -129,13 +133,13 @@ func TestSend(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &Client{BaseURL: srv.URL, HTTP: srv.Client()}
-	if err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"42"}}, "hi"); err != nil {
+	if _, err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"42"}}, "hi"); err != nil {
 		t.Fatal(err)
 	}
 	if path != "/bot"+token+"/sendMessage" || got["chat_id"] != "42" || got["text"] != "hi" {
 		t.Errorf("request = %s %v", path, got)
 	}
-	err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"bad"}}, "hi")
+	_, err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"bad"}}, "hi")
 	if err == nil || !strings.Contains(err.Error(), "chat not found") {
 		t.Errorf("err = %v", err)
 	}
@@ -146,7 +150,7 @@ func TestSendErrorNeverShowsToken(t *testing.T) {
 	url := srv.URL
 	srv.Close() // connection refused
 	c := &Client{BaseURL: url, HTTP: &http.Client{}}
-	err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"42"}}, "hi")
+	_, err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"42"}}, "hi")
 	if err == nil || strings.Contains(err.Error(), "SECRET") || !strings.Contains(err.Error(), "<token>") {
 		t.Errorf("err = %v", err)
 	}
@@ -211,5 +215,119 @@ func TestMessageTagNamesALaterAttempt(t *testing.T) {
 	}
 	if got = Message(state.Event{Task: "t3", Type: "needs-human", Question: "Drop v1?"}, tk); !strings.HasPrefix(got, "#t3 needs") {
 		t.Errorf("first attempt = %q", got)
+	}
+}
+
+func TestSendRetriesDroppedResponse(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	if _, err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"42"}}, "same message"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("requests = %d, want 2", calls)
+	}
+}
+
+// roundTripFunc injects real transport errors without waiting for network timeouts.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSendTransientRetriesAreBounded(t *testing.T) {
+	old := retryBackoff
+	retryBackoff = []time.Duration{time.Millisecond, 2 * time.Millisecond}
+	t.Cleanup(func() { retryBackoff = old })
+	for _, cause := range []error{io.EOF, io.ErrUnexpectedEOF, syscall.ECONNRESET, context.DeadlineExceeded} {
+		for _, recover := range []bool{false, true} {
+			t.Run(fmt.Sprint(cause, recover), func(t *testing.T) {
+				calls := 0
+				c := &Client{BaseURL: "https://example.invalid", HTTP: &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+					calls++
+					if !recover || calls < 3 {
+						return nil, cause
+					}
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Header: http.Header{}}, nil
+				})}}
+				attempts, err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"42"}}, "same")
+				if attempts != 3 || calls != 3 || (err == nil) != recover {
+					t.Fatalf("attempts=%d calls=%d err=%v", attempts, calls, err)
+				}
+				if err != nil && strings.Contains(err.Error(), token) {
+					t.Fatal("error exposes token")
+				}
+			})
+		}
+	}
+}
+
+func TestSendDoesNotRetrySuccessfulStatusWithUnreadableBody(t *testing.T) {
+	for _, code := range []int{200, 201, 204} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			calls := 0
+			c := &Client{BaseURL: "https://example.invalid", HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(`{"ok":`)), Header: http.Header{}}, nil
+			})}}
+			attempts, err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"42"}}, "same")
+			if err != nil || attempts != 1 || calls != 1 {
+				t.Fatalf("attempts=%d calls=%d err=%v", attempts, calls, err)
+			}
+		})
+	}
+}
+
+func TestSendDoesNotRetrySuccessfulChatsOrPermanentErrors(t *testing.T) {
+	old := retryBackoff
+	retryBackoff = []time.Duration{time.Millisecond, 2 * time.Millisecond}
+	t.Cleanup(func() { retryBackoff = old })
+	calls := map[string]int{}
+	c := &Client{BaseURL: "https://example.invalid", HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Chat string `json:"chat_id"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		calls[body.Chat]++
+		if body.Chat == "retry" && calls[body.Chat] < 2 {
+			return nil, io.EOF
+		}
+		response := `{"ok":true}`
+		if body.Chat == "bad" {
+			response = `{"ok":false,"description":"chat not found"}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{}}, nil
+	})}}
+	attempts, err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"ok", "retry", "bad"}}, "same")
+	if attempts != 4 || err == nil || calls["ok"] != 1 || calls["retry"] != 2 || calls["bad"] != 1 {
+		t.Fatalf("attempts=%d calls=%v err=%v", attempts, calls, err)
+	}
+}
+
+func TestSendCancellationStopsBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &Client{BaseURL: "https://example.invalid", HTTP: &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		cancel()
+		return nil, io.EOF
+	})}}
+	attempts, err := c.Send(ctx, Creds{Token: token, ChatIDs: []string{"42"}}, "same")
+	if attempts != 1 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
 	}
 }

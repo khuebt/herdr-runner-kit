@@ -295,3 +295,12 @@ func TestClaudeInputIsOnlyTheWholeText(t *testing.T) {
 		}
 	}
 }
+
+func TestSelfResolvingBlockWording(t *testing.T) {
+	for _, name := range []string{"rm-safety-prompt-claude.txt", "rm-safety-prompt-glob-claude.txt", "rm-safety-prompt-narrow-claude.txt"} {
+		screen := strings.ReplaceAll(readFixture(t, name), "deny", "block")
+		if p, ok := MatchSelfResolving(claude{}, screen); !ok || p.Timeout != 2*time.Minute {
+			t.Errorf("%s: block wording did not get grace", name)
+		}
+	}
+}

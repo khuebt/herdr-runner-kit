@@ -180,6 +180,8 @@ func (claude) WorksInBackground(screen Screen) (bool, error) {
 // reach it.
 func (claude) LocksInput() bool { return true }
 
+func (claude) NeedsGateConfirmation() bool { return false }
+
 // claudeClearLines is how many lines ClearInputKeys clears: enough for a
 // typed prompt the gate put back, since a long paste shows as one "[Pasted
 // text …]" line.
@@ -390,7 +392,9 @@ var claudeAutoDeny = SelfResolvingPrompt{
 }
 
 func (claude) SelfResolvingPrompts() []SelfResolvingPrompt {
-	return []SelfResolvingPrompt{claudeAutoDeny}
+	block := claudeAutoDeny
+	block.Match = "Claude Code will automatically block this request in"
+	return []SelfResolvingPrompt{claudeAutoDeny, block}
 }
 
 // ClaudeUsageLimit reads a Claude hook input and returns the message of a
@@ -770,3 +774,15 @@ func ClaudeBlock(reason string) string {
 	out, _ := json.Marshal(map[string]string{"decision": "block", "reason": reason})
 	return string(out)
 }
+
+// ExitKeys chooses the numbered preserving option. Claude submits digits
+// immediately, so Enter could reach the shell after the menu closes.
+func (claude) ExitKeys(screen string) []string {
+	text := strings.Join(strings.Fields(screen), " ")
+	if strings.Contains(text, "Exit and stop tasks") && strings.Contains(text, "Move to background and exit") && strings.Contains(text, "Stay") {
+		return []string{"2"}
+	}
+	return nil
+}
+
+func (claude) GateTokenMatcher(string) func(string) bool { return nil }

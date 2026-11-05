@@ -1,6 +1,8 @@
 package harness
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,9 +43,32 @@ func (codex) LaunchArgs(o LaunchOptions) []string {
 		args = append(args, "-c", "model_reasoning_effort="+tomlString(o.Spec.Effort))
 	}
 	if o.Bin != "" {
+		if o.InputLocked {
+			args = append(args, "-c", "features.hooks=true", "-c", codexPromptHook(o.Bin))
+		}
 		args = append(args, "-c", "notify="+tomlStringArray(o.Bin, "__turn-end", "--harness", "codex"))
 	}
 	return args
+}
+
+// codexPromptHook trusts only the kit's session-flag hook, without changing
+// persisted trust or bypassing review of other hooks (codex-cli 0.166.0).
+// Hash identity follows hooks/engine/discovery.rs and config/fingerprint.rs:
+// TOML omits absent fields, then JSON sorts keys and does not escape HTML.
+func codexPromptHook(bin string) string {
+	command := ShellQuote(bin) + " __prompt-gate --harness codex"
+	identity := map[string]any{
+		"event_name": "user_prompt_submit",
+		"hooks":      []any{map[string]any{"type": "command", "command": command, "timeout": 600, "async": false}},
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(identity) // only strings, numbers and booleans
+	sum := sha256.Sum256(bytes.TrimSuffix(encoded.Bytes(), []byte("\n")))
+	hash := fmt.Sprintf("sha256:%x", sum)
+	return "hooks={UserPromptSubmit=[{hooks=[{type=\"command\",command=" + tomlString(command) +
+		"}]}],state={\"/<session-flags>/config.toml:user_prompt_submit:0:0\"={enabled=true,trusted_hash=" + tomlString(hash) + "}}}"
 }
 
 // RenderSkill uses Codex's "$name" syntax, where a colon becomes a dash.
@@ -358,6 +383,9 @@ func (c codex) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 	if len(n.Input) > 0 && strings.HasPrefix(strings.TrimSpace(n.Input[0]), codexTitlePrompt) {
 		return TurnSignal{Ignore: true}, nil
 	}
+	if codexSubagentThread(n.Thread) {
+		return TurnSignal{Ignore: true}, nil
+	}
 	sig := TurnSignal{Thread: n.Thread}
 	// A screen that cannot be read shows no limit and no context.
 	if screen, err := in.Screen(40); err == nil {
@@ -367,15 +395,49 @@ func (c codex) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 	return sig, nil
 }
 
+// codexThreadID is what a Codex thread id looks like; anything else never
+// reaches a file glob.
+var codexThreadID = regexp.MustCompile(`^[0-9a-f-]{36}$`)
+
+// codexSubagentThread reports whether thread is a subagent the runner's own
+// Codex started, which fires notify too, from its rollout's first line
+// ("parent_thread_id"). The runner's thread is the first one the kit sees
+// end a turn, so a subagent that ends first must not be taken for it. A
+// rollout that cannot be found or read counts as not a subagent.
+func codexSubagentThread(thread string) bool {
+	if !codexThreadID.MatchString(thread) {
+		return false
+	}
+	path, err := CodexConfigPath()
+	if err != nil {
+		return false
+	}
+	files, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "sessions", "*", "*", "*", "rollout-*-"+thread+".jsonl"))
+	if len(files) == 0 {
+		return false
+	}
+	f, err := os.Open(files[0])
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	var first struct {
+		Payload struct {
+			Parent string `json:"parent_thread_id"`
+		} `json:"payload"`
+	}
+	return json.NewDecoder(f).Decode(&first) == nil && first.Payload.Parent != ""
+}
+
 // NudgeInHook is false: notify takes no reply, so the nudge is typed.
 func (codex) NudgeInHook() bool { return false }
 
 // HookPayload reads the notify JSON Codex passes as the last argument, and
 // calls the notify command the user set in config.toml with it, which the
 // runner's own notify replaced.
-func (codex) HookPayload(args []string, _ io.Reader) ([]byte, error) {
+func (codex) HookPayload(args []string, stdin io.Reader) ([]byte, error) {
 	if len(args) == 0 {
-		return nil, nil
+		return io.ReadAll(io.LimitReader(stdin, 1<<20))
 	}
 	callUserCodexNotify(args[0])
 	return []byte(args[0]), nil
@@ -407,13 +469,42 @@ func (codex) ShowsWorking(screen string) bool {
 	return anyLineMatches(lastLines(screen, statusLines), codexWorking)
 }
 
-// LocksInput is false: a per-run prompt hook loads, but Codex skips it
-// until the user trusts its hash, which would add a trust step for every
-// Codex user.
-func (codex) LocksInput() bool                        { return false }
-func (codex) ClearInputKeys() []string                { return nil }
-func (codex) GatePrompt([]byte) (string, bool, error) { return "", false, nil }
-func (codex) GateBlock(string) string                 { return "" }
+// LocksInput uses the session-trusted UserPromptSubmit hook.
+func (codex) LocksInput() bool { return true }
+
+func (codex) NeedsGateConfirmation() bool { return true }
+
+func (codex) ClearInputKeys() []string {
+	// shortcut: clear up to 12 draft lines; use clear-all if Codex adds it.
+	// The text-bound token refuses any leftover draft joined to the kit's prompt.
+	keys := make([]string, 0, 36)
+	for range 12 {
+		keys = append(keys, "ctrl+e")
+	}
+	for range 12 {
+		keys = append(keys, "ctrl+u", "backspace")
+	}
+	return keys
+}
+
+// Codex checks steers after the current tools finish, possibly past the
+// token TTL. Match the text too, ignoring paste whitespace normalization.
+func (codex) GateTokenMatcher(prompt string) func(string) bool {
+	return func(expected string) bool {
+		return expected != "" && strings.Join(strings.Fields(prompt), " ") == strings.Join(strings.Fields(expected), " ")
+	}
+}
+
+func (codex) GatePrompt(payload []byte) (string, bool, error) {
+	var in struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(payload, &in); err != nil {
+		return "", false, fmt.Errorf("parse codex hook input: %w", err)
+	}
+	return in.Prompt, false, nil
+}
+func (codex) GateBlock(reason string) string { return ClaudeBlock(reason) }
 
 // Usage is nil: where Codex keeps a session's token usage is not confirmed.
 func (codex) Usage([]string, time.Time, time.Time) (*task.Usage, error) { return nil, nil }
@@ -555,3 +646,5 @@ func CodexUserNotify(configPath string) ([]string, error) {
 	}
 	return cfg.Notify, nil
 }
+
+func (codex) ExitKeys(string) []string { return nil }

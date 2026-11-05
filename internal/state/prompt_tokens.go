@@ -46,6 +46,22 @@ func (s *Store) TakePromptToken(id string) (bool, error) {
 	})
 }
 
+// TakeMatchingPromptToken consumes a pending prompt only when match accepts
+// its text. Expired tokens are valid here: an agent may queue the prompt
+// behind a long tool call before invoking its submit hook.
+func (s *Store) TakeMatchingPromptToken(id string, match func(string) bool) (bool, error) {
+	var readErr error
+	taken, err := s.promptTokens(id, func(_ time.Time, live, stale []time.Time) ([]time.Time, []time.Time, bool) {
+		var expected string
+		expected, readErr = s.PendingPrompt(id)
+		if readErr != nil || len(live)+len(stale) == 0 || !match(expected) {
+			return live, stale, false
+		}
+		return nil, nil, true
+	})
+	return taken, errors.Join(err, readErr)
+}
+
 // ReturnPromptToken takes back the newest valid token of task id, for a
 // prompt the kit failed to type, and keeps the expired ones.
 func (s *Store) ReturnPromptToken(id string) error {

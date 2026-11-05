@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -218,6 +219,76 @@ func TestWatcherFinishesADoneWhoseTurnEndWasLost(t *testing.T) {
 	got, _ := r.Store.Get(tk.ID)
 	if got.Status != task.Done || len(doneEvents(t, r, tk.ID)) != 1 || !slices.Equal(after, []string{tk.ID}) {
 		t.Errorf("status %s, done events %d, dependents %q", got.Status, len(doneEvents(t, r, tk.ID)), after)
+	}
+}
+
+// A subagent of the runner's Codex ends a turn before the runner does; its
+// thread must not become the runner's, or the runner's own turn end is
+// ignored and its done stays held.
+func TestSubagentTurnEndDoesNotTakeTheRunnersThread(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	var after []string
+	tk := codexRunning(t, r, gitRepo(t), &after)
+	const root, sub = "01a1aba2-a97a-7110-bf32-1a24d71d6738", "01a1aba3-80cd-7e90-a7c4-1d50f31b39c8"
+	dir := filepath.Join(os.Getenv("CODEX_HOME"), "sessions", "2026", "11", "05")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"session_meta","payload":{"id":"` + sub + `","parent_thread_id":"` + root + `"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "rollout-2026-11-05T19-16-21-"+sub+".jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turn := func(thread string) {
+		payload := `{"type":"agent-turn-complete","thread-id":"` + thread + `","input-messages":["x"]}`
+		if _, err := r.TurnEnd(context.Background(), tk.ID, task.Codex, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn(sub)
+	if got, _ := r.Store.Get(tk.ID); got.CodexThread != "" || got.Unreported != 0 {
+		t.Fatalf("subagent turn end: thread %q, unreported %d", got.CodexThread, got.Unreported)
+	}
+	runnerDone(t, r, tk.ID, "fixed")
+	turn(root)
+	got, _ := r.Store.Get(tk.ID)
+	if got.Status != task.Done || got.CodexThread != root || !slices.Equal(after, []string{tk.ID}) {
+		t.Errorf("status %s, thread %q, dependents %q", got.Status, got.CodexThread, after)
+	}
+}
+
+// A task that already took the wrong thread, or whose turn end hook never
+// fires, still settles once herdr sees the agent idle.
+func TestWatcherFinishesADoneOfATaskWithTheWrongThread(t *testing.T) {
+	defer func(age, every, recheck time.Duration) {
+		pendingDoneAge, pendingDoneEvery, pendingDoneRecheck = age, every, recheck
+	}(pendingDoneAge, pendingDoneEvery, pendingDoneRecheck)
+	pendingDoneAge, pendingDoneEvery, pendingDoneRecheck = 0, time.Millisecond, time.Millisecond
+
+	r, fake, _ := newTestRunner(t)
+	var after []string
+	tk := codexRunning(t, r, gitRepo(t), &after)
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error { t.CodexThread = "sub"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	runnerDone(t, r, tk.ID, "fixed")
+	root := []byte(`{"type":"agent-turn-complete","thread-id":"main","input-messages":["x"]}`)
+	if _, err := r.TurnEnd(context.Background(), tk.ID, task.Codex, root); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Running {
+		t.Fatalf("a turn end of another thread settled the done: %s", got.Status)
+	}
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}`))
+	fake.on("pane read", ok("› Ask Codex to do anything\n"))
+	done := make(chan struct{})
+	go func() { r.WatchPendingDone(context.Background(), tk.ID); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watcher never finished the done")
+	}
+	if got, _ := r.Store.Get(tk.ID); got.Status != task.Done || !slices.Equal(after, []string{tk.ID}) {
+		t.Errorf("status %s, dependents %q", got.Status, after)
 	}
 }
 

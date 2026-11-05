@@ -38,6 +38,8 @@ type Event struct {
 	// Attempt is the task's agent session when it is past the first, so
 	// news and replies name the session they belong to.
 	Attempt int `json:"attempt,omitempty"`
+	// NotifyAttempts counts Telegram HTTP requests, including retries across chats.
+	NotifyAttempts int `json:"notifyAttempts,omitempty"`
 	// Quiet marks news the main session need not wake for: it comes with
 	// the next wake instead. It is decided when the event is written,
 	// because a later look would see a chain's next task already running.

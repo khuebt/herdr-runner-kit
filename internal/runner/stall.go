@@ -33,9 +33,9 @@ const (
 	interruptSettle = 10 * time.Second
 	// progressScreenLines is how much of the pane a sample reads.
 	progressScreenLines = 40
-	// backgroundIdleFactor stretches the idle bound of an agent whose
-	// screen shows its own background work, which wakes it when it ends.
-	backgroundIdleFactor = 3
+	// Background work may legitimately outlive several idle periods, but
+	// even a stale hook or frozen counter must eventually surface.
+	backgroundWaitLimit = 4 * time.Hour
 )
 
 // Ladder steps, each taken once per stall.
@@ -65,7 +65,9 @@ type progressState struct {
 	RetryNoted  bool      `json:"retryNoted,omitempty"`
 	// IdleSince is when the agent was first seen idle at its prompt since
 	// it last worked or the task last changed.
-	IdleSince time.Time `json:"idleSince,omitzero"`
+	IdleSince        time.Time `json:"idleSince,omitzero"`
+	BackgroundSince  time.Time `json:"backgroundSince,omitzero"`
+	BackgroundWarned bool      `json:"backgroundWarned,omitempty"`
 }
 
 // WatchProgress samples a running task's agent once per progressEvery
@@ -115,13 +117,13 @@ func (r *Runner) checkProgress(ctx context.Context, t *task.Task, now time.Time)
 		st.Since, st.Samples, st.RetrySince, st.RetryNoted = now, 0, time.Time{}, false
 		if t.Status == task.Running && !t.Stalled && err == nil && (a.Status == "idle" || a.Status == "done") {
 			r.checkIdle(ctx, t, adapter, &st, now)
-		} else {
-			st.IdleSince = time.Time{}
+		} else if err == nil || t.Status != task.Running || t.Stalled {
+			st.IdleSince, st.BackgroundSince, st.BackgroundWarned = time.Time{}, time.Time{}, false
 		}
 		r.saveProgress(t.ID, st)
 		return
 	}
-	st.IdleSince = time.Time{}
+	st.IdleSince, st.BackgroundSince, st.BackgroundWarned = time.Time{}, time.Time{}, false
 	if r.Store.HeavyWaiting(t.ID) {
 		// Queued for a heavy command slot: the wait is someone else's
 		// command, so it never nudges or interrupts this runner.
@@ -150,7 +152,7 @@ func (r *Runner) checkProgress(ctx context.Context, t *task.Task, now time.Time)
 		}
 		if span := now.Sub(st.RetrySince); !st.RetryNoted && span >= retryEscalation*stallAfter {
 			st.RetryNoted = true
-			r.emit(t, "stalled", fmt.Sprintf("retrying for %d min; the runner is left open", int(span.Minutes())), "")
+			r.emitStall(t, fmt.Sprintf("retrying for %d min; the runner is left open", int(span.Minutes())))
 		}
 		r.saveProgress(t.ID, st)
 		return
@@ -200,38 +202,44 @@ func (r *Runner) climb(ctx context.Context, t *task.Task, step int, idle time.Du
 		}
 		r.emit(t, "interrupted", summary, "")
 	case stepStalled:
-		r.emit(t, "stalled", fmt.Sprintf("no progress for %d min after a nudge and an interrupt; the runner is left open", minutes), "")
+		r.emitStall(t, fmt.Sprintf("no progress for %d min after a nudge and an interrupt; the runner is left open", minutes))
 	}
 }
 
-// checkIdle handles a running task whose agent sits idle at its prompt, as
-// one that ended its turn to wait for work nothing wakes it from does. Once
-// it has been idle for stallAfter since the task last changed, or three
-// times that while background work of its own still runs, it takes the
-// next step of the turn-end ladder, so a turn end the kit missed counts
-// too: with no unreported turn it is nudged, after one it is stalled news.
-// A runner that already had both is left alone. A held done is a report,
-// and its turn end finishes it.
+// checkIdle nudges an idle runner without a report. Background work is
+// informational until it disappears or reaches the hard watchdog limit.
 func (r *Runner) checkIdle(ctx context.Context, t *task.Task, adapter harness.Adapter, st *progressState, now time.Time) {
 	if st.IdleSince.IsZero() {
 		st.IdleSince = now
 	}
 	idle, bound := now.Sub(st.IdleSince), r.Config.StallAfter
-	if idle < bound || t.PendingDone != nil || t.Unreported >= 2 {
+	if idle < bound || t.PendingDone != nil {
 		return
 	}
-	background := r.idleInBackground(ctx, t, adapter)
-	if background {
-		bound *= backgroundIdleFactor
-		if idle < bound {
+	background, err := r.idleInBackground(ctx, t, adapter)
+	if err != nil {
+		if st.BackgroundSince.IsZero() {
 			return
 		}
+		background = true // an unreadable screen is not evidence the work ended
+	}
+	if background {
+		if st.BackgroundSince.IsZero() {
+			st.BackgroundSince = st.IdleSince
+			r.emit(t, "background-waiting", "idle while background work is still running; waiting for it to finish", "")
+		}
+		if !st.BackgroundWarned && now.Sub(st.BackgroundSince) >= backgroundWaitLimit {
+			st.BackgroundWarned = true
+			r.emitStall(t, "background work has not woken the runner for 4 hours; check it in the runner's tab")
+		}
+		return
+	}
+	st.BackgroundSince, st.BackgroundWarned = time.Time{}, false
+	if t.Unreported >= 2 {
+		return
 	}
 	minutes := int(idle.Minutes())
 	what := "without a report"
-	if background {
-		what = "without a report, with background work of its own still running"
-	}
 	if t.Unreported == 0 {
 		text := r.idleNudgeText(adapter.Harness(), minutes)
 		if err := r.typePrompt(ctx, t, t.Herdr.PaneID, text); err != nil {
@@ -243,8 +251,9 @@ func (r *Runner) checkIdle(ctx context.Context, t *task.Task, adapter harness.Ad
 		}
 	}
 	before := t.Unreported
+	attempt := task.AttemptOf(t)
 	cur, err := r.Store.Update(t.ID, func(t *task.Task) error {
-		if t.Status != task.Running || t.Unreported != before || t.PendingDone != nil {
+		if t.Status != task.Running || task.AttemptOf(t) != attempt || t.Unreported != before || t.PendingDone != nil {
 			return errNotRunning // a report, a send or a turn end came first
 		}
 		t.Unreported++
@@ -262,12 +271,11 @@ func (r *Runner) checkIdle(ctx context.Context, t *task.Task, adapter harness.Ad
 // idleInBackground reports whether t's agent waits on background work of
 // its own, which wakes it: as its last turn-end hook listed it, or, when
 // the hook listed none, as its screen shows it.
-func (r *Runner) idleInBackground(ctx context.Context, t *task.Task, adapter harness.Adapter) bool {
+func (r *Runner) idleInBackground(ctx context.Context, t *task.Task, adapter harness.Adapter) (bool, error) {
 	if t.Background != nil {
-		return *t.Background
+		return *t.Background, nil
 	}
-	busy, _ := adapter.WorksInBackground(func(lines int) (string, error) { return r.Herdr.PaneRead(ctx, t.Herdr.PaneID, lines) })
-	return busy
+	return adapter.WorksInBackground(func(lines int) (string, error) { return r.Herdr.PaneRead(ctx, t.Herdr.PaneID, lines) })
 }
 
 func (r *Runner) progressPath(id string) string {
@@ -295,5 +303,18 @@ func (r *Runner) saveProgress(id string, st progressState) {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hrk: %s: save progress: %v\n", id, err)
+	}
+}
+
+// emitStall records a sampled stall only while the observed attempt runs.
+func (r *Runner) emitStall(observed *task.Task, summary string) {
+	unlock, err := r.Store.LockFile(observed.ID, "task.lock")
+	if err != nil {
+		return
+	}
+	defer unlock()
+	cur, err := r.Store.Get(observed.ID)
+	if err == nil && cur.Status == task.Running && task.AttemptOf(cur) == task.AttemptOf(observed) {
+		r.emit(cur, "stalled", summary, "")
 	}
 }

@@ -14,10 +14,11 @@ import (
 
 // InputLocked reports whether t's runner takes prompts only from the kit:
 // it was spawned with runnerInput locked, and its current agent can lock
-// its input.
+// its input. Codex must first consume a kit token in the current attempt.
 func InputLocked(t *task.Task) bool {
 	a, ok := adapterOf(t)
-	return t.InputLocked && ok && a.LocksInput()
+	return t.InputLocked && ok && a.LocksInput() &&
+		(!a.NeedsGateConfirmation() || t.InputGateAttempt == task.AttemptOf(t))
 }
 
 // typePrompt types text into t's agent in pane as a prompt; every prompt
@@ -31,14 +32,20 @@ func InputLocked(t *task.Task) bool {
 // typed in the tab goes through. A prompt that fails takes its token back,
 // so no window stays open for a prompt typed in the tab.
 func (r *Runner) typePrompt(ctx context.Context, t *task.Task, pane, text string) error {
-	if !InputLocked(t) {
+	adapter, _ := adapterOf(t)
+	probe := t.InputLocked && adapter != nil && adapter.NeedsGateConfirmation() && t.Status == task.Starting
+	if !InputLocked(t) && !probe {
 		return r.Herdr.AgentPrompt(ctx, pane, text)
 	}
-	adapter, _ := adapterOf(t)
+	if probe {
+		if err := r.Store.DropPromptTokens(t.ID); err != nil {
+			return err
+		}
+	}
 	// stored is what the box holds once text is typed, for the next prompt
 	// to compare it with.
 	stored, restore := text, false
-	if keys := adapter.ClearInputKeys(); len(keys) > 0 {
+	if keys := adapter.ClearInputKeys(); len(keys) > 0 && !probe {
 		pending := r.pendingPrompt(t.ID)
 		if pending != "" && r.boxIs(ctx, adapter, pane, pending) {
 			stored = pending + "\n\n" + text
@@ -58,18 +65,26 @@ func (r *Runner) typePrompt(ctx context.Context, t *task.Task, pane, text string
 			restore = r.Store.DropPromptTokens(t.ID) == nil
 		}
 	}
+	// Any failed replacement must keep the earlier prompt pending.
+	defer func() {
+		if restore {
+			_ = r.Store.AddPromptToken(t.ID)
+		}
+	}()
+	previous, _ := r.Store.PendingPrompt(t.ID)
+	if err := r.Store.SetPendingPrompt(t.ID, stored); err != nil {
+		return fmt.Errorf("record the prompt for the input lock: %w", err)
+	}
 	if err := r.Store.AddPromptToken(t.ID); err != nil {
+		_ = r.Store.SetPendingPrompt(t.ID, previous)
 		return fmt.Errorf("let the prompt through the input lock: %w", err)
 	}
 	if err := r.Herdr.AgentPrompt(ctx, pane, text); err != nil {
+		_ = r.Store.SetPendingPrompt(t.ID, previous)
 		_ = r.Store.ReturnPromptToken(t.ID)
-		if restore {
-			// The cleared prompt is still pending: its text was not typed.
-			_ = r.Store.AddPromptToken(t.ID)
-		}
 		return err
 	}
-	_ = r.Store.SetPendingPrompt(t.ID, stored)
+	restore = false
 	return nil
 }
 
@@ -111,11 +126,24 @@ func (r *Runner) GatePrompt(id string, adapter harness.Adapter, payload []byte) 
 	}
 	r.recordTranscript(t, adapter.Harness(), adapter.HookTranscript(payload))
 	prompt, synthetic, err := adapter.GatePrompt(payload)
-	pass := err != nil || synthetic || !InputLocked(t)
+	pass := err != nil || synthetic || !t.InputLocked || !adapter.LocksInput()
 	if !pass {
 		var taken bool
-		taken, err = r.Store.TakePromptToken(t.ID)
+		if match := adapter.GateTokenMatcher(prompt); match != nil {
+			taken, err = r.Store.TakeMatchingPromptToken(t.ID, match)
+		} else {
+			taken, err = r.Store.TakePromptToken(t.ID)
+		}
 		pass = taken || err != nil
+		if taken && adapter.NeedsGateConfirmation() && t.InputGateAttempt != task.AttemptOf(t) {
+			_, gateErr := r.Store.Update(t.ID, func(cur *task.Task) error {
+				if task.AttemptOf(cur) == task.AttemptOf(t) {
+					cur.InputGateAttempt = task.AttemptOf(t)
+				}
+				return nil
+			})
+			err = errors.Join(err, gateErr)
+		}
 	}
 	if pass {
 		return "", errors.Join(err, r.turnStarted(t))

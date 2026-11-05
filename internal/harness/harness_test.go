@@ -623,9 +623,12 @@ func TestClaudeSettingsPromptGate(t *testing.T) {
 
 func TestInputLockMethods(t *testing.T) {
 	for _, a := range All() {
-		locks := a.Harness() != task.Codex
+		locks := true
 		if a.LocksInput() != locks {
 			t.Errorf("%s: LocksInput = %v", a.Harness(), a.LocksInput())
+		}
+		if got, want := a.NeedsGateConfirmation(), a.Harness() == task.Codex; got != want {
+			t.Errorf("%s: NeedsGateConfirmation = %v, want %v", a.Harness(), got, want)
 		}
 		if !locks && (a.ClearInputKeys() != nil || a.GateBlock("x") != "") {
 			t.Errorf("%s: an open adapter clears or blocks", a.Harness())
@@ -1189,6 +1192,41 @@ func TestHookTranscript(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentTurnEndIsIgnored(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	const root, sub = "01a1aba2-a97a-7110-bf32-1a24d71d6738", "01a1aba3-80cd-7e90-a7c4-1d50f31b39c8"
+	dir := filepath.Join(home, "sessions", "2026", "11", "05")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := func(id, payload string) {
+		line := `{"type":"session_meta","payload":{"id":"` + id + `"` + payload + `}}` + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "rollout-2026-11-05T19-15-26-"+id+".jsonl"), []byte(line), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rollout(root, "")
+	rollout(sub, `,"parent_thread_id":"`+root+`"`)
+	turn := func(thread string) TurnSignal {
+		payload := `{"type":"agent-turn-complete","thread-id":"` + thread + `","input-messages":["x"]}`
+		got, err := codex{}.ReadTurnEnd(TurnInput{Payload: []byte(payload), Screen: screenOf("")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := turn(sub); !got.Ignore {
+		t.Errorf("subagent turn end = %+v, want ignored", got)
+	}
+	if got := turn(root); got.Ignore || got.Thread != root {
+		t.Errorf("root turn end = %+v, want kept", got)
+	}
+	if got := turn("01a1aba3-0000-7000-8000-000000000000"); got.Ignore {
+		t.Errorf("turn end with no rollout = %+v, want kept", got)
+	}
+}
+
 func TestReadTurnEnd(t *testing.T) {
 	const codexTurn = `{"type":"agent-turn-complete","thread-id":"th1","input-messages":["go on"]}`
 	tests := []struct {
@@ -1265,6 +1303,53 @@ func TestShowsWorking(t *testing.T) {
 	for _, a := range All() {
 		if a.Harness() != task.Codex && a.ShowsWorking(string(working)) {
 			t.Errorf("%s reads a working marker", a.Harness())
+		}
+	}
+}
+
+func TestCodexPromptHookTrustIsScopedToItsDefinition(t *testing.T) {
+	const key = "/<session-flags>/config.toml:user_prompt_submit:0:0"
+	// currentHash returned by codex-cli 0.166.0 hooks/list in an isolated home.
+	const wantHash = "sha256:8aa3e3f0a7d55120af05a3262b679019ae45947dffddd3090db946d6fa76593c"
+	for _, bin := range []string{"/usr/local/bin/hrk", `/opt/my "kit" & tools/hrk`} {
+		args := codex{}.LaunchArgs(LaunchOptions{Bin: bin, InputLocked: true})
+		var doc struct {
+			Hooks struct {
+				Groups []struct{ Hooks []struct{ Command string } } `toml:"UserPromptSubmit"`
+				State  map[string]struct {
+					Enabled bool
+					Hash    string `toml:"trusted_hash"`
+				}
+			}
+		}
+		var value string
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "hooks=") {
+				value = arg
+			}
+		}
+		if err := toml.Unmarshal([]byte(value), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if len(doc.Hooks.Groups) != 1 || len(doc.Hooks.Groups[0].Hooks) != 1 || len(doc.Hooks.State) != 1 {
+			t.Fatalf("unexpected hook override: %+v", doc)
+		}
+		if doc.Hooks.Groups[0].Hooks[0].Command != ShellQuote(bin)+" __prompt-gate --harness codex" || !doc.Hooks.State[key].Enabled {
+			t.Fatal("hook command/trust scope changed")
+		}
+		if bin == "/usr/local/bin/hrk" && doc.Hooks.State[key].Hash != wantHash {
+			t.Fatalf("hash = %s", doc.Hooks.State[key].Hash)
+		}
+		if bin != "/usr/local/bin/hrk" && doc.Hooks.State[key].Hash == wantHash {
+			t.Fatal("hash did not change with command")
+		}
+		if slices.Contains(args, "--dangerously-bypass-hook-trust") {
+			t.Fatal("global trust bypass")
+		}
+	}
+	for _, arg := range (codex{}).LaunchArgs(LaunchOptions{Bin: "/usr/local/bin/hrk"}) {
+		if strings.HasPrefix(arg, "hooks=") {
+			t.Fatal("open input installs a lock")
 		}
 	}
 }

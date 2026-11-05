@@ -167,8 +167,8 @@ func TestLearningCountsNoTabAnswerInALockedTab(t *testing.T) {
 	}
 	tasks := []*task.Task{
 		{ID: "t1", Kind: "code", Agent: "claude", InputLocked: true, Status: task.Done},
-		// Codex cannot lock its tab, so its user may have answered there.
-		{ID: "t2", Kind: "code", Agent: "codex", InputLocked: true, Status: task.Done},
+		// Codex gates typed input once its gate consumes a kit token.
+		{ID: "t2", Kind: "code", Agent: "codex", InputLocked: true, InputGateAttempt: 1, Status: task.Done},
 		{ID: "t3", Kind: "code", Agent: "claude", Status: task.Done},
 	}
 	var out strings.Builder
@@ -178,7 +178,7 @@ func TestLearningCountsNoTabAnswerInALockedTab(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n")[1:] {
 		f := strings.Fields(line)
 		want := "1"
-		if f[0] == "t1" {
+		if f[0] == "t1" || f[0] == "t2" {
 			want = "0"
 		}
 		if f[8] != want { // ANSWERS
