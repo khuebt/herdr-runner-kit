@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.11](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.10...v0.15.11) (2026-11-05)
+
+
+### Bug Fixes
+
+* keep each folder's newest main sessions listed ([#110](https://github.com/khuebt/herdr-runner-kit/issues/110)) ([2fdced0](https://github.com/khuebt/herdr-runner-kit/commit/2fdced0e141562c16d244df973320fc31beef25a))
+
 ## [0.15.10](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.9...v0.15.10) (2026-11-05)
 
 
