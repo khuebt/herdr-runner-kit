@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.10](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.9...v0.15.10) (2026-11-05)
+
+
+### Bug Fixes
+
+* harden runner routing, handoffs, stall checks and Codex input ([#108](https://github.com/khuebt/herdr-runner-kit/issues/108)) ([36d2a4f](https://github.com/khuebt/herdr-runner-kit/commit/36d2a4f22518723e09c4ea87393e79e114f34251))
+
 ## [0.15.9](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.8...v0.15.9) (2026-10-26)
 
 
