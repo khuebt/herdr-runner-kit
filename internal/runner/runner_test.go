@@ -1800,6 +1800,32 @@ func TestSpawnRefusesAnOwnerNoSessionReceives(t *testing.T) {
 	}
 }
 
+func TestSpawnWarnsForUnrecordedAbsoluteOwner(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	owner := gitRepo(t)
+	sub := filepath.Join(owner, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var warnings []string
+	spawn := func(wantWarnings int) {
+		t.Helper()
+		warnings = nil
+		tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t), Owner: sub, Warn: func(s string) { warnings = append(warnings, s) }})
+		if tk.Owner != owner || len(warnings) != wantWarnings {
+			t.Fatalf("owner=%q warnings=%v", tk.Owner, warnings)
+		}
+		if wantWarnings > 0 && !strings.Contains(warnings[0], "no recorded main session or project") {
+			t.Fatalf("warning = %q", warnings[0])
+		}
+	}
+	spawn(1)
+	if err := r.Store.RecordMainTranscript("main", "", owner); err != nil {
+		t.Fatal(err)
+	}
+	spawn(0)
+}
+
 func TestSpawnOwnerFromAWorktreeIsTheMainRepository(t *testing.T) {
 	r, _, _ := newTestRunner(t)
 	repo := gitRepo(t)

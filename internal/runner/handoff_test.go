@@ -437,3 +437,15 @@ func TestHandoffExitsWithoutStoppingBackgroundShells(t *testing.T) {
 		t.Fatalf("handoff failed: exited=%v status=%s", exited, cur.Status)
 	}
 }
+
+func TestQuitAgentSucceedsWhenPaneDisappearsDuringRead(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude"}}}`))
+	fake.on("pane read", herdrErr("pane_not_found"))
+	if err := r.quitAgent(context.Background(), "w1:p9"); err != nil {
+		t.Fatal(err)
+	}
+	if fake.count("agent", "send-keys") != 0 {
+		t.Fatal("sent exit keys to a missing pane")
+	}
+}

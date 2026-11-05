@@ -257,6 +257,9 @@ type Adapter interface {
 	// prompt-submit hook calls `hrk __prompt-gate`, which lets through only
 	// the prompts the kit typed and the agent's own.
 	LocksInput() bool
+	// NeedsGateConfirmation requires a consumed token in the current attempt
+	// before the kit can assume the prompt hook is trusted and input locked.
+	NeedsGateConfirmation() bool
 	// ClearInputKeys are the herdr keys that empty the agent's input box
 	// without interrupting a running turn. The kit sends them before it
 	// types into a locked runner: the agent puts a prompt the gate blocked

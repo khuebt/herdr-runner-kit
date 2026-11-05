@@ -167,8 +167,8 @@ func TestLearningCountsNoTabAnswerInALockedTab(t *testing.T) {
 	}
 	tasks := []*task.Task{
 		{ID: "t1", Kind: "code", Agent: "claude", InputLocked: true, Status: task.Done},
-		// Codex now gates typed input as Claude does.
-		{ID: "t2", Kind: "code", Agent: "codex", InputLocked: true, Status: task.Done},
+		// Codex gates typed input once its gate consumes a kit token.
+		{ID: "t2", Kind: "code", Agent: "codex", InputLocked: true, InputGateAttempt: 1, Status: task.Done},
 		{ID: "t3", Kind: "code", Agent: "claude", Status: task.Done},
 	}
 	var out strings.Builder

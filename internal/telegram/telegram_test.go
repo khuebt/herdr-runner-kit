@@ -275,6 +275,22 @@ func TestSendTransientRetriesAreBounded(t *testing.T) {
 	}
 }
 
+func TestSendDoesNotRetrySuccessfulStatusWithUnreadableBody(t *testing.T) {
+	for _, code := range []int{200, 201, 204} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			calls := 0
+			c := &Client{BaseURL: "https://example.invalid", HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(`{"ok":`)), Header: http.Header{}}, nil
+			})}}
+			attempts, err := c.Send(context.Background(), Creds{Token: token, ChatIDs: []string{"42"}}, "same")
+			if err != nil || attempts != 1 || calls != 1 {
+				t.Fatalf("attempts=%d calls=%d err=%v", attempts, calls, err)
+			}
+		})
+	}
+}
+
 func TestSendDoesNotRetrySuccessfulChatsOrPermanentErrors(t *testing.T) {
 	old := retryBackoff
 	retryBackoff = []time.Duration{time.Millisecond, 2 * time.Millisecond}

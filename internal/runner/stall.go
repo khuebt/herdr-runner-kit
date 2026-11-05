@@ -230,7 +230,7 @@ func (r *Runner) checkIdle(ctx context.Context, t *task.Task, adapter harness.Ad
 		}
 		if !st.BackgroundWarned && now.Sub(st.BackgroundSince) >= backgroundWaitLimit {
 			st.BackgroundWarned = true
-			r.markStalled(t, "stalled", "background work has not woken the runner for 4 hours; check it in the runner's tab")
+			r.emitStall(t, "background work has not woken the runner for 4 hours; check it in the runner's tab")
 		}
 		return
 	}

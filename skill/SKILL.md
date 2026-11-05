@@ -7,7 +7,7 @@ description: Main-agent rules for herdr-runner-kit. Answer questions yourself; o
 
 **If `$HRK_TASK` is set, you are a runner. Ignore this skill and follow your runner contract.**
 
-You are the main agent. You talk with the user and delegate the work. Runners do the work in herdr tabs that the user can watch. Claude, Codex, pi and omp runner tabs take prompts only from the kit by default (`runnerInput: locked`), so steer runners from here, with `hrk send` or `hrk answer`, or from Telegram. Keep your own turns short, so news and Telegram replies reach you quickly.
+You are the main agent. You talk with the user and delegate the work. Runners do the work in herdr tabs that the user can watch. Claude, Codex, pi and omp runner tabs take prompts only from the kit by default (`runnerInput: locked`). Codex input stays open if its first prompt cannot confirm the gate, and its `started` line says `input open`. Steer runners from here, with `hrk send` or `hrk answer`, or from Telegram. Keep your own turns short, so news and Telegram replies reach you quickly.
 
 ## Route every request
 
@@ -78,7 +78,7 @@ Implement the plan from the previous task
 EOF
 ```
 
-`spawn` returns at once with one line such as `t4 starting · claude:… · fix · Fix the typo`. Tell the user the id and title in one sentence, then end your turn. Leave out `--owner`: a spawn from this session reports here from any folder, and `--owner main` is refused. A line with `reports to <owner>` names where the news goes. `notified` confirms Telegram only; main news follows that owner. Background waiting is informational until the watchdog reports `stalled`; do not interrupt it just because it is idle.
+`spawn` returns at once with one line such as `t4 starting · claude:… · fix · Fix the typo`. Tell the user the id and title in one sentence, then end your turn. Leave out `--owner`: a spawn from this session reports here from any folder, and `--owner main` is refused. An explicit absolute `--owner` without a recorded main session or project warns that its news may have no receiver. A line with `reports to <owner>` names where the news goes. `notified` confirms Telegram only; main news follows that owner. Background waiting is informational; after 4 hours the watchdog emits `stalled` once per continuous wait without marking the task blocked. Do not interrupt it just because it is idle.
 
 Plans: for an AgentKit plan with phase files, put the waves from `hrk plan run <plan> --dry-run` in the brief and run `plan run <plan>` on yes; a plan without phase files gets one `--skill ak:cook` runner. A `held` that names files outside a phase's scope: ask the user before `release`. `plan-done`: relay the report path, the verified count and the review verdict; a single task's review `done` starts with its verdict, and on `fix` offer `send <writer id>` with the report. Details: [references/commands.md#plans](references/commands.md#plans).
 

@@ -99,7 +99,10 @@ func (c *Client) send(ctx context.Context, token, chat, text string) (bool, erro
 		Description string `json:"description"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return resp.StatusCode >= 200 && resp.StatusCode < 300 && transientSendError(err), fmt.Errorf("sendMessage: %s: %s", resp.Status, redact(err.Error(), token))
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return false, nil // Telegram accepted it; retrying could send it twice.
+		}
+		return false, fmt.Errorf("sendMessage: %s: %s", resp.Status, redact(err.Error(), token))
 	}
 	if !out.OK {
 		return false, fmt.Errorf("sendMessage: %s", redact(out.Description, token))

@@ -270,6 +270,12 @@ func TestIdleBackgroundWaitIsInformational(t *testing.T) {
 			if countEvents(t, r, tk.ID, "stalled") != 1 {
 				t.Fatal("hung background work did not hit watchdog once")
 			}
+			cur, _ := r.Store.Get(tk.ID)
+			r.unstall(cur)
+			sampleEvery(t, r, tk.ID, start, 251, 550)
+			if countEvents(t, r, tk.ID, "stalled") != 1 || countEvents(t, r, tk.ID, "background-waiting") != 1 || countEvents(t, r, tk.ID, "unstalled") != 0 {
+				t.Fatal("continuous background wait repeated its watchdog cycle")
+			}
 			if len(kitPrompts(fake)) != 0 || fake.count("agent", "send-keys") != 0 {
 				t.Fatal("watchdog interrupted background work")
 			}

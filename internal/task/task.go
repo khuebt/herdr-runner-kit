@@ -268,8 +268,11 @@ type Task struct {
 	// Stalled is set while herdr reports the agent blocked on a prompt.
 	Stalled bool `json:"stalled,omitempty"`
 	// InputLocked says the runner takes prompts only from the kit, when its
-	// agent can lock its input: the runnerInput config at spawn.
+	// agent can lock its input: the runnerInput config at spawn, disabled
+	// for Codex when the first prompt's gate cannot be confirmed.
 	InputLocked bool `json:"inputLocked,omitempty"`
+	// InputGateAttempt is the Codex attempt whose gate consumed a kit token.
+	InputGateAttempt int `json:"inputGateAttempt,omitempty"`
 	// MCP keeps the user's MCP servers in the runner, from spawn --mcp or
 	// the kind; without it a Claude runner starts with none.
 	MCP bool `json:"mcp,omitempty"`

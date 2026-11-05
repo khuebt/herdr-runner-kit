@@ -627,6 +627,9 @@ func TestInputLockMethods(t *testing.T) {
 		if a.LocksInput() != locks {
 			t.Errorf("%s: LocksInput = %v", a.Harness(), a.LocksInput())
 		}
+		if got, want := a.NeedsGateConfirmation(), a.Harness() == task.Codex; got != want {
+			t.Errorf("%s: NeedsGateConfirmation = %v, want %v", a.Harness(), got, want)
+		}
 		if !locks && (a.ClearInputKeys() != nil || a.GateBlock("x") != "") {
 			t.Errorf("%s: an open adapter clears or blocks", a.Harness())
 		}

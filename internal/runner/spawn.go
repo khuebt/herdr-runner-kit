@@ -152,8 +152,7 @@ type SpawnOptions struct {
 	// review it names.
 	Review  *task.Review
 	FixupOf string
-	// Warn, when set, receives a one-line warning that spawn carried on
-	// without the project registry because it could not be read.
+	// Warn receives non-fatal warnings about the project registry or owner.
 	Warn func(string)
 }
 
@@ -444,7 +443,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 	owner := o.Owner
 	switch {
 	case owner != "":
-		if owner, err = r.checkOwner(ctx, owner); err != nil {
+		if owner, err = r.checkOwner(ctx, owner, o.Warn); err != nil {
 			return nil, "", err
 		}
 	case project.Name != "":
@@ -597,9 +596,9 @@ func MainOwner(s *state.Store, getenv func(string) string) string {
 
 // checkOwner returns the owner an explicit --owner names: a registered
 // project's project:<name>, or the owner of a main session in the folder an
-// absolute path names. Anything else would leave the task's news with no
-// session to receive it, so it is refused before the task is recorded.
-func (r *Runner) checkOwner(ctx context.Context, owner string) (string, error) {
+// absolute path names. An unrecorded folder warns; invalid forms are refused
+// before the task is recorded.
+func (r *Runner) checkOwner(ctx context.Context, owner string, warn func(string)) (string, error) {
 	if name, ok := strings.CutPrefix(owner, task.ProjectOwner("")); ok {
 		if _, err := r.Store.ProjectByName(name); err != nil {
 			return "", fmt.Errorf("--owner %s: %w", owner, err)
@@ -608,7 +607,22 @@ func (r *Runner) checkOwner(ctx context.Context, owner string) (string, error) {
 	}
 	if filepath.IsAbs(owner) {
 		if info, err := os.Stat(owner); err == nil && info.IsDir() {
-			return CallerOwner(ctx, filepath.Clean(owner)), nil
+			owner = CallerOwner(ctx, filepath.Clean(owner))
+			for _, main := range r.Store.MainSessions() {
+				if main.Owner == owner {
+					return owner, nil
+				}
+			}
+			projects, _ := r.Store.Projects()
+			for _, project := range projects {
+				if !project.Reserved && project.Path == owner {
+					return owner, nil
+				}
+			}
+			if warn != nil {
+				warn(fmt.Sprintf("warning: --owner %s has no recorded main session or project; its news may have no session to receive it", owner))
+			}
+			return owner, nil
 		}
 	}
 	return "", fmt.Errorf("--owner %q names no main session or project; pass the absolute path of a main session's folder, or project:<name> of a registered project, or leave it out to report to this main session", owner)

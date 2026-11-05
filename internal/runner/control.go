@@ -697,6 +697,9 @@ func (r *Runner) quitAgent(ctx context.Context, pane string) error {
 		if adapter, err := harness.For(task.Harness(a.Kind)); err == nil {
 			screen, err := r.Herdr.PaneRead(ctx, pane, 40)
 			if err != nil {
+				if isGone(err) {
+					return nil
+				}
 				return err
 			}
 			if exit := adapter.ExitKeys(screen); len(exit) > 0 {

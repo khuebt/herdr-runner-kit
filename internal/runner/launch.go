@@ -226,12 +226,23 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	if err != nil {
 		return err
 	}
-	if changed {
-		r.emit(t, "started", startedLine(t, spec, setup, scope), "")
-	}
 	if _, err := r.Herdr.AgentWait(ctx, loc.PaneID, 5*time.Second, "working"); err != nil {
 		r.emit(t, "prompt-unconfirmed", "prompt sent, but herdr saw no turn start within 5 s", "")
 		r.resubmitFirstPrompt(ctx, t, adapter, loc.PaneID, text)
+	}
+	if adapter.NeedsGateConfirmation() && t.InputLocked {
+		attempt := task.AttemptOf(t)
+		if t, err = r.Store.Update(t.ID, func(cur *task.Task) error {
+			if task.AttemptOf(cur) == attempt && cur.InputGateAttempt != attempt {
+				cur.InputLocked = false
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if changed {
+		r.emit(t, "started", startedLine(t, spec, setup, scope), "")
 	}
 	r.emit(t, "prompted", "", "")
 	return nil
@@ -287,7 +298,7 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 	if err := r.prepareTrust(t, adapter); err != nil {
 		return spec, nil, "", err
 	}
-	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID), MCP: t.MCP, InputLocked: InputLocked(t)})
+	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID), MCP: t.MCP, InputLocked: t.InputLocked && adapter.LocksInput()})
 	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
 	if herdr.HasCode(err, herdr.CodeAgentPaneBusy) {
 		// The shell is still reading its startup files, or still running
@@ -811,7 +822,9 @@ func startedLine(t *task.Task, spec task.AgentSpec, setup *setupResult, scope st
 	if scope != "" {
 		parts = append(parts, scope)
 	}
-	if t.InputLocked && !InputLocked(t) {
+	if adapter, ok := adapterOf(t); ok && adapter.NeedsGateConfirmation() && !InputLocked(t) {
+		parts = append(parts, "input open (prompt gate unconfirmed or disabled)")
+	} else if t.InputLocked && !InputLocked(t) {
 		name := string(spec.Harness)
 		parts = append(parts, fmt.Sprintf("input open (%s cannot lock it yet)", strings.ToUpper(name[:1])+name[1:]))
 	}
