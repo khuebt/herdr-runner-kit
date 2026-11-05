@@ -420,7 +420,7 @@ func codexSubagentThread(thread string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var first struct {
 		Payload struct {
 			Parent string `json:"parent_thread_id"`
