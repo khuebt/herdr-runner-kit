@@ -383,6 +383,9 @@ func (c codex) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 	if len(n.Input) > 0 && strings.HasPrefix(strings.TrimSpace(n.Input[0]), codexTitlePrompt) {
 		return TurnSignal{Ignore: true}, nil
 	}
+	if codexSubagentThread(n.Thread) {
+		return TurnSignal{Ignore: true}, nil
+	}
 	sig := TurnSignal{Thread: n.Thread}
 	// A screen that cannot be read shows no limit and no context.
 	if screen, err := in.Screen(40); err == nil {
@@ -390,6 +393,40 @@ func (c codex) ReadTurnEnd(in TurnInput) (TurnSignal, error) {
 		sig.ContextLeft, sig.ContextKnown = c.ContextLeft(screen)
 	}
 	return sig, nil
+}
+
+// codexThreadID is what a Codex thread id looks like; anything else never
+// reaches a file glob.
+var codexThreadID = regexp.MustCompile(`^[0-9a-f-]{36}$`)
+
+// codexSubagentThread reports whether thread is a subagent the runner's own
+// Codex started, which fires notify too, from its rollout's first line
+// ("parent_thread_id"). The runner's thread is the first one the kit sees
+// end a turn, so a subagent that ends first must not be taken for it. A
+// rollout that cannot be found or read counts as not a subagent.
+func codexSubagentThread(thread string) bool {
+	if !codexThreadID.MatchString(thread) {
+		return false
+	}
+	path, err := CodexConfigPath()
+	if err != nil {
+		return false
+	}
+	files, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "sessions", "*", "*", "*", "rollout-*-"+thread+".jsonl"))
+	if len(files) == 0 {
+		return false
+	}
+	f, err := os.Open(files[0])
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var first struct {
+		Payload struct {
+			Parent string `json:"parent_thread_id"`
+		} `json:"payload"`
+	}
+	return json.NewDecoder(f).Decode(&first) == nil && first.Payload.Parent != ""
 }
 
 // NudgeInHook is false: notify takes no reply, so the nudge is typed.

@@ -1192,6 +1192,41 @@ func TestHookTranscript(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentTurnEndIsIgnored(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	const root, sub = "01a1aba2-a97a-7110-bf32-1a24d71d6738", "01a1aba3-80cd-7e90-a7c4-1d50f31b39c8"
+	dir := filepath.Join(home, "sessions", "2026", "11", "05")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := func(id, payload string) {
+		line := `{"type":"session_meta","payload":{"id":"` + id + `"` + payload + `}}` + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "rollout-2026-11-05T19-15-26-"+id+".jsonl"), []byte(line), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rollout(root, "")
+	rollout(sub, `,"parent_thread_id":"`+root+`"`)
+	turn := func(thread string) TurnSignal {
+		payload := `{"type":"agent-turn-complete","thread-id":"` + thread + `","input-messages":["x"]}`
+		got, err := codex{}.ReadTurnEnd(TurnInput{Payload: []byte(payload), Screen: screenOf("")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := turn(sub); !got.Ignore {
+		t.Errorf("subagent turn end = %+v, want ignored", got)
+	}
+	if got := turn(root); got.Ignore || got.Thread != root {
+		t.Errorf("root turn end = %+v, want kept", got)
+	}
+	if got := turn("01a1aba3-0000-7000-8000-000000000000"); got.Ignore {
+		t.Errorf("turn end with no rollout = %+v, want kept", got)
+	}
+}
+
 func TestReadTurnEnd(t *testing.T) {
 	const codexTurn = `{"type":"agent-turn-complete","thread-id":"th1","input-messages":["go on"]}`
 	tests := []struct {
