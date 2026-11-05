@@ -127,10 +127,18 @@ func (s *Store) LockCursor(name, holder string) (func(), error) {
 	}, nil
 }
 
-// mainSessionsKept is how many main session ids RecordMainSession keeps. The
-// auto re-arm hook moves a main session's id to the end on every turn, so
-// only a main session idle while others, of any folder, start falls out.
-const mainSessionsKept = 8
+// Retention of RecordMainTranscript. Main sessions are grouped by the Claude
+// project folder of their transcript, so a folder's newest main session is
+// never pushed out by main sessions of other folders: each folder keeps its
+// newest few, sessions without a transcript share one group of their own,
+// and mainSessionsMax only bounds the whole file. The auto re-arm hook moves
+// a main session's id to the end on every turn, so only a main session idle
+// while others of its own folder start falls out.
+const (
+	mainSessionsKept      = 8  // sessions without a transcript
+	mainSessionsPerFolder = 4  // the newest of a folder plus three older ones
+	mainSessionsMax       = 64 // safety bound over all folders
+)
 
 func (s *Store) mainSessionsPath() string { return filepath.Join(s.dir, mainSessionsFile) }
 
@@ -193,8 +201,7 @@ func (s *Store) RecordMainTranscript(id, transcript, owner string) error {
 		}
 		return m.ID == id
 	})
-	sessions = append(sessions, MainSession{ID: id, Transcript: transcript, Owner: owner})
-	sessions = sessions[max(0, len(sessions)-mainSessionsKept):]
+	sessions = pruneMainSessions(append(sessions, MainSession{ID: id, Transcript: transcript, Owner: owner}))
 	var b strings.Builder
 	for _, m := range sessions {
 		b.WriteString(m.ID)
@@ -207,6 +214,31 @@ func (s *Store) RecordMainTranscript(id, transcript, owner string) error {
 		b.WriteString("\n")
 	}
 	return writeFileAtomic(s.mainSessionsPath(), []byte(b.String()))
+}
+
+// pruneMainSessions drops, from sessions (oldest first), what the retention
+// constants leave out, newest first, and keeps the order.
+func pruneMainSessions(sessions []MainSession) []MainSession {
+	perGroup := map[string]int{}
+	keep := make([]bool, len(sessions))
+	total := 0
+	for i := len(sessions) - 1; i >= 0 && total < mainSessionsMax; i-- {
+		group, limit := "", mainSessionsKept
+		if t := sessions[i].Transcript; t != "" {
+			group, limit = filepath.Dir(t), mainSessionsPerFolder
+		}
+		if perGroup[group]++; perGroup[group] <= limit {
+			keep[i] = true
+			total++
+		}
+	}
+	var out []MainSession
+	for i, m := range sessions {
+		if keep[i] {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // MainSessionOwner returns the owner recorded for main session id, or "".

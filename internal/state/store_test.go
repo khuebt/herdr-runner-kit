@@ -388,6 +388,51 @@ func TestMainSessionsKeepTheNewest(t *testing.T) {
 	}
 }
 
+func TestMainSessionsKeepEachFolderNewest(t *testing.T) {
+	s := openStore(t)
+	rec := func(folder, id string) {
+		t.Helper()
+		if err := s.RecordMainTranscript(id, "/h/.claude/projects/"+folder+"/"+id+".jsonl", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec("first", "first-main")
+	for i := range 12 {
+		rec(fmt.Sprintf("folder%d", i), fmt.Sprintf("main%d", i))
+	}
+	if !s.IsMainSession("first-main") {
+		t.Fatal("a folder's main session must outlive the main sessions of other folders")
+	}
+	for i := range 12 {
+		if !s.IsMainSession(fmt.Sprintf("main%d", i)) {
+			t.Fatalf("main%d was pushed out", i)
+		}
+	}
+	// A folder with many mains keeps its newest few.
+	for i := range 6 {
+		rec("many", fmt.Sprintf("many%d", i))
+	}
+	if s.IsMainSession("many0") || s.IsMainSession("many1") || !s.IsMainSession("many2") || !s.IsMainSession("many5") {
+		t.Fatalf("a folder must keep its newest %d: %+v", mainSessionsPerFolder, s.MainSessions())
+	}
+	if !s.IsMainSession("first-main") || !s.IsMainSession("main0") {
+		t.Fatal("pruning one folder must not touch the others")
+	}
+}
+
+func TestMainSessionsReadLegacyLinesAndIgnoreUnlisted(t *testing.T) {
+	s := openStore(t)
+	if err := os.WriteFile(filepath.Join(s.Dir(), "main-sessions"), []byte("old\nmid\t/p/a/mid.jsonl\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordMainTranscript("new", "/p/a/new.jsonl", "/a"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsMainSession("old") || !s.IsMainSession("mid") || !s.IsMainSession("new") || s.IsMainSession("other") {
+		t.Fatalf("sessions = %+v", s.MainSessions())
+	}
+}
+
 func TestMainSessionKeepsItsOwner(t *testing.T) {
 	s := openStore(t)
 	if err := s.RecordMainTranscript("m", "", "/repo"); err != nil {
