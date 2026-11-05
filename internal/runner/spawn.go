@@ -437,10 +437,16 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 	if err := config.CheckLanguage(language); err != nil {
 		return nil, "", fmt.Errorf("--language: %w", err)
 	}
-	caller := CallerOwner(ctx, wd)
+	caller := MainOwner(r.Store, r.Getenv)
+	if caller == "" {
+		caller = CallerOwner(ctx, wd)
+	}
 	owner := o.Owner
 	switch {
 	case owner != "":
+		if owner, err = r.checkOwner(ctx, owner); err != nil {
+			return nil, "", err
+		}
 	case project.Name != "":
 		owner = task.ProjectOwner(project.Name)
 	default:
@@ -462,7 +468,7 @@ func (r *Runner) newTask(ctx context.Context, o SpawnOptions) (*task.Task, strin
 		after = append(after, id)
 	}
 	if o.Owner != "" {
-		caller = o.Owner
+		caller = owner
 	}
 	return &task.Task{
 		Kind: kindName, Agent: spec.String(), Prompt: o.Prompt, Skill: o.Skill, Title: title,
@@ -568,6 +574,44 @@ func (r *Runner) fail(id, reason string) (*task.Task, bool) {
 	r.emit(t, "failed", reason, "")
 	r.ended(t)
 	return t, true
+}
+
+// MainOwnerEnv names the variable hrk main --exec sets to the owner of the
+// main session it starts.
+const MainOwnerEnv = "HRK_MAIN_OWNER"
+
+// MainOwner returns the owner of the main session a command runs in, or ""
+// outside one: the owner its auto re-arm hook recorded for Claude's session
+// id, else the one hrk main --exec started it with. A main session's shell
+// may stand in a scratchpad or another repository, and its news must still
+// reach the owner its hook watches.
+func MainOwner(s *state.Store, getenv func(string) string) string {
+	if getenv("HRK_TASK") != "" {
+		return ""
+	}
+	if owner := s.MainSessionOwner(getenv("CLAUDE_CODE_SESSION_ID")); owner != "" {
+		return owner
+	}
+	return getenv(MainOwnerEnv)
+}
+
+// checkOwner returns the owner an explicit --owner names: a registered
+// project's project:<name>, or the owner of a main session in the folder an
+// absolute path names. Anything else would leave the task's news with no
+// session to receive it, so it is refused before the task is recorded.
+func (r *Runner) checkOwner(ctx context.Context, owner string) (string, error) {
+	if name, ok := strings.CutPrefix(owner, task.ProjectOwner("")); ok {
+		if _, err := r.Store.ProjectByName(name); err != nil {
+			return "", fmt.Errorf("--owner %s: %w", owner, err)
+		}
+		return owner, nil
+	}
+	if filepath.IsAbs(owner) {
+		if info, err := os.Stat(owner); err == nil && info.IsDir() {
+			return CallerOwner(ctx, filepath.Clean(owner)), nil
+		}
+	}
+	return "", fmt.Errorf("--owner %q names no main session or project; pass the absolute path of a main session's folder, or project:<name> of a registered project, or leave it out to report to this main session", owner)
 }
 
 // CallerOwner names the main session working in dir: its main repository

@@ -99,14 +99,14 @@ func TestLockedClaudeRunnerClearsThenTokensThenPrompts(t *testing.T) {
 	}
 }
 
-func TestOpenOrCodexRunnerPromptsAsBefore(t *testing.T) {
+func TestOpenRunnerPromptsAsBefore(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		input string
 		agent string
 	}{
 		{"open claude", config.InputOpen, ""},
-		{"locked codex", config.InputLocked, "codex"},
+		{"open codex", config.InputOpen, "codex"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r, fake, _ := newTestRunner(t)
@@ -268,14 +268,31 @@ func TestLockedPromptFailureAfterClearKeepsThePendingPrompt(t *testing.T) {
 	}
 }
 
-func TestLockedCodexStartedLineSaysInputIsOpen(t *testing.T) {
-	for agent, want := range map[string]bool{"codex": true, "claude": false} {
-		r, _ := lockedRunner(t)
-		tk := spawnStarting(t, r, SpawnOptions{Agent: agent, Prompt: "x", Cwd: plainDir(t)})
-		spec, _ := task.ParseAgentSpec(tk.Agent)
-		line := startedLine(tk, spec, nil, "")
-		if got := strings.Contains(line, "input open (Codex cannot lock it yet)"); got != want {
-			t.Errorf("%s started line = %q", agent, line)
+func TestLockedCodexRunnerClearsThenTokensThenPrompts(t *testing.T) {
+	r, fake := lockedRunner(t)
+	var id string
+	log := watchPrompts(t, r, fake, &id)
+	tk := spawnStarting(t, r, SpawnOptions{Agent: "codex", Prompt: "x", Cwd: plainDir(t)})
+	id = tk.ID
+	if err := r.Launch(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(fake.call("agent", "start"), " "), "trusted_hash") {
+		t.Fatal("Codex launch lacks scoped hook trust")
+	}
+	if _, err := r.Send(context.Background(), id, "next step"); err != nil {
+		t.Fatal(err)
+	}
+	if len(log.tokens) != 2 {
+		t.Fatalf("prompts=%d", len(log.tokens))
+	}
+	adapter, _ := harness.For(task.Codex)
+	for i, count := range log.tokens {
+		if count != 1 || !slices.Equal(log.prev[i][3:], adapter.ClearInputKeys()) {
+			t.Fatalf("prompt %d tokens=%d preceding=%v", i, count, log.prev[i])
 		}
+	}
+	if !InputLocked(tk) || strings.Contains(startedLine(tk, task.AgentSpec{Harness: task.Codex}, nil, ""), "input open") {
+		t.Fatal("Codex incorrectly claims open input")
 	}
 }

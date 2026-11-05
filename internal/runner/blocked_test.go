@@ -153,3 +153,36 @@ func TestSelfResolvingPromptRidesOutAHerdrError(t *testing.T) {
 		t.Errorf("events = %v", ev)
 	}
 }
+
+func TestSelfResolvingTimeoutDoesNotCrossHandoff(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	fake.on("pane read", ok("Claude Code will automatically deny this request in 1:42"))
+	r.onBlocked(context.Background(), tk)
+	file := handoffFile(t, r, tk.ID)
+	fake.on("pane read", func([]string) (string, error) {
+		if _, err := r.Handoff(tk.ID, ReportOptions{Summary: "continue", Outputs: []string{file}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := r.Store.SetStatus(tk.ID, task.Running); err != nil {
+			t.Fatal(err)
+		}
+		return "Claude Code will automatically block this request in 0:00", nil
+	})
+	before := countEvents(t, r, tk.ID, "stalled")
+	if err := r.awaitSelfResolve(context.Background(), tk, time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if countEvents(t, r, tk.ID, "stalled") != before {
+		t.Fatal("stale countdown escalated")
+	}
+}
+
+func TestAutoBlockPromptGetsGrace(t *testing.T) {
+	screen := strings.ReplaceAll(harnessFixture(t, "rm-safety-prompt-narrow-claude.txt"), "deny", "block")
+	r, tk := blockedRunner(t, screen, status("blocked"), status("working"))
+	r.WatchAgent(context.Background(), tk.ID)
+	if countEvents(t, r, tk.ID, "stalled") != 0 || countEvents(t, r, tk.ID, "blocked") != 1 {
+		t.Fatal("auto-block did not get grace")
+	}
+}

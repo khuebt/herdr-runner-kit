@@ -46,7 +46,7 @@ func usageState(t *testing.T) *state.Store {
 	if err := store.RecordMainSession("old-main"); err != nil { // no transcript kept
 		t.Fatal(err)
 	}
-	if err := store.RecordMainTranscript("main-session-id", usageFixture); err != nil {
+	if err := store.RecordMainTranscript("main-session-id", usageFixture, ""); err != nil {
 		t.Fatal(err)
 	}
 	return store

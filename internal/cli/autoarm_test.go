@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -284,12 +285,14 @@ func TestAutoarmRecordsTheMainTranscript(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main-sessions"), []byte("old-id\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	cwd := t.TempDir()
 	cmd := newAutoarmCommand()
-	cmd.SetIn(strings.NewReader(`{"session_id":"main-id","transcript_path":"/home/user/.claude/projects/demo/main-id.jsonl","cwd":"` + t.TempDir() + `"}`))
+	cmd.SetIn(strings.NewReader(`{"session_id":"main-id","transcript_path":"/home/user/.claude/projects/demo/main-id.jsonl","cwd":"` + cwd + `"}`))
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	want := []state.MainSession{{ID: "old-id"}, {ID: "main-id", Transcript: "/home/user/.claude/projects/demo/main-id.jsonl"}}
+	// The owner the hook watches, so spawn reports to it from any folder.
+	want := []state.MainSession{{ID: "old-id"}, {ID: "main-id", Transcript: "/home/user/.claude/projects/demo/main-id.jsonl", Owner: cwd}}
 	if got := store.MainSessions(); !slices.Equal(got, want) {
 		t.Errorf("main sessions = %+v, want %+v", got, want)
 	}
@@ -400,7 +403,7 @@ func TestMainResumePrintsTheResumeCommand(t *testing.T) {
 		}
 		return '-'
 	}, cwd)
-	if err := store.RecordMainTranscript("here-id", filepath.Join("/h/.claude/projects", project, "here-id.jsonl")); err != nil {
+	if err := store.RecordMainTranscript("here-id", filepath.Join("/h/.claude/projects", project, "here-id.jsonl"), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordMainSession("elsewhere-id"); err != nil {
@@ -421,7 +424,7 @@ func TestMainResumePrintsTheResumeCommand(t *testing.T) {
 		if err := cmd.Execute(); err != nil {
 			t.Fatal(err)
 		}
-		if got := out.String(); !strings.HasPrefix(got, "HRK_MAIN=1 claude --settings ") || !strings.HasSuffix(got, tc.want) {
+		if got := out.String(); !strings.HasPrefix(got, "HRK_MAIN=1 HRK_MAIN_OWNER=") || !strings.Contains(got, " claude --settings ") || !strings.HasSuffix(got, tc.want) {
 			t.Errorf("%v: got %q", tc.args, got)
 		}
 	}
@@ -446,5 +449,37 @@ func TestResumeIDPrefersThePaneSession(t *testing.T) {
 	// says how to name one.
 	if _, err := resumeID(nil, func() string { return "" }); err == nil || !strings.Contains(err.Error(), "hrk main --exec --resume <session-id>") {
 		t.Errorf("nothing to resume: %v", err)
+	}
+}
+
+func TestAutoarmKeepsMainOwnerWhenHookCwdChanges(t *testing.T) {
+	for _, recorded := range []bool{false, true} {
+		t.Run(fmt.Sprint(recorded), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			t.Setenv("HRK_STATE_DIR", dir)
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("HRK_MAIN", "1")
+			t.Setenv("HRK_TASK", "")
+			owner := t.TempDir()
+			t.Setenv(runner.MainOwnerEnv, owner)
+			store, err := state.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recorded {
+				t.Setenv(runner.MainOwnerEnv, "")
+				if err := store.RecordMainTranscript("main-id", "", owner); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := newAutoarmCommand()
+			cmd.SetIn(strings.NewReader(`{"session_id":"main-id","cwd":"` + t.TempDir() + `"}`))
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if got := store.MainSessionOwner("main-id"); got != owner {
+				t.Fatalf("owner = %q, want %q", got, owner)
+			}
+		})
 	}
 }

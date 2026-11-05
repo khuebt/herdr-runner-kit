@@ -387,3 +387,26 @@ func TestMainSessionsKeepTheNewest(t *testing.T) {
 		t.Fatal("MainSessionListed must read the state folder's list")
 	}
 }
+
+func TestMainSessionKeepsItsOwner(t *testing.T) {
+	s := openStore(t)
+	if err := s.RecordMainTranscript("m", "", "/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordMainSession("other"); err != nil {
+		t.Fatal(err)
+	}
+	// A record without an owner keeps the one recorded before.
+	if err := s.RecordMainTranscript("m", "/t.jsonl", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.MainSessionOwner("m"); got != "/repo" {
+		t.Fatalf("owner = %q, want /repo", got)
+	}
+	if got := s.MainSessions(); got[len(got)-1] != (MainSession{ID: "m", Transcript: "/t.jsonl", Owner: "/repo"}) {
+		t.Fatalf("sessions = %+v", got)
+	}
+	if s.MainSessionOwner("other") != "" || s.MainSessionOwner("") != "" {
+		t.Fatal("a session without an owner, or no id, has none")
+	}
+}

@@ -58,18 +58,26 @@ func (r *Runner) typePrompt(ctx context.Context, t *task.Task, pane, text string
 			restore = r.Store.DropPromptTokens(t.ID) == nil
 		}
 	}
+	// Any failed replacement must keep the earlier prompt pending.
+	defer func() {
+		if restore {
+			_ = r.Store.AddPromptToken(t.ID)
+		}
+	}()
+	previous, _ := r.Store.PendingPrompt(t.ID)
+	if err := r.Store.SetPendingPrompt(t.ID, stored); err != nil {
+		return fmt.Errorf("record the prompt for the input lock: %w", err)
+	}
 	if err := r.Store.AddPromptToken(t.ID); err != nil {
+		_ = r.Store.SetPendingPrompt(t.ID, previous)
 		return fmt.Errorf("let the prompt through the input lock: %w", err)
 	}
 	if err := r.Herdr.AgentPrompt(ctx, pane, text); err != nil {
+		_ = r.Store.SetPendingPrompt(t.ID, previous)
 		_ = r.Store.ReturnPromptToken(t.ID)
-		if restore {
-			// The cleared prompt is still pending: its text was not typed.
-			_ = r.Store.AddPromptToken(t.ID)
-		}
 		return err
 	}
-	_ = r.Store.SetPendingPrompt(t.ID, stored)
+	restore = false
 	return nil
 }
 
@@ -114,7 +122,11 @@ func (r *Runner) GatePrompt(id string, adapter harness.Adapter, payload []byte) 
 	pass := err != nil || synthetic || !InputLocked(t)
 	if !pass {
 		var taken bool
-		taken, err = r.Store.TakePromptToken(t.ID)
+		if match := adapter.GateTokenMatcher(prompt); match != nil {
+			taken, err = r.Store.TakeMatchingPromptToken(t.ID, match)
+		} else {
+			taken, err = r.Store.TakePromptToken(t.ID)
+		}
 		pass = taken || err != nil
 	}
 	if pass {

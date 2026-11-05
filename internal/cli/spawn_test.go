@@ -68,3 +68,38 @@ func TestSpawnReviewRefusesFix(t *testing.T) {
 		t.Errorf("a refused kind created %d tasks", len(tasks))
 	}
 }
+
+func TestSpawnFromScratchpadShowsMainOwner(t *testing.T) {
+	r, _, _, _ := planRunner(t, map[string]string{"phase-01-a.md": phaseFile(1, "[]", "a/")})
+	owner := t.TempDir()
+	getenv := r.Getenv
+	r.Getenv = func(key string) string {
+		if key == runner.MainOwnerEnv {
+			return owner
+		}
+		if key == "HRK_TASK" {
+			return ""
+		}
+		return getenv(key)
+	}
+	t.Chdir(t.TempDir())
+	r.StartLauncher = func(string) (int, error) { return 4242, nil }
+	var out bytes.Buffer
+	if err := spawnTask(t.Context(), r, spawnOptions("research"), nil, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := getTask(t, r, "t1"); got.Owner != owner {
+		t.Fatalf("owner=%q", got.Owner)
+	}
+	if !strings.Contains(out.String(), "reports to "+owner) {
+		t.Fatalf("spawn line=%q", out.String())
+	}
+	o := spawnOptions("research")
+	o.Owner = "main"
+	if err := spawnTask(t.Context(), r, o, nil, &out, &out); err == nil || !strings.Contains(err.Error(), "project:<name>") {
+		t.Fatalf("bad owner=%v", err)
+	}
+	if tasks, _ := r.Store.List(); len(tasks) != 1 {
+		t.Fatal("invalid owner recorded a task")
+	}
+}

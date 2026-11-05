@@ -101,6 +101,22 @@ func TestSpawnLineNamesTheBase(t *testing.T) {
 	}
 }
 
+func TestSpawnLineNamesAnotherOwner(t *testing.T) {
+	dir := t.TempDir()
+	tk := &task.Task{ID: "t1", Status: task.Starting, Agent: "claude", Kind: "research", Title: "x", Cwd: dir, Owner: dir}
+	if got := otherOwner(context.Background(), tk); got != "" {
+		t.Errorf("the folder's own owner shown: %q", got)
+	}
+	tk.Owner = "/repo"
+	if got, want := ownedSpawnLine(tk, otherOwner(context.Background(), tk)), "t1 starting · claude · research · reports to /repo · x"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	tk.Project, tk.Owner = "shop", task.ProjectOwner("shop")
+	if got := otherOwner(context.Background(), tk); got != "" {
+		t.Errorf("a project task's own owner shown: %q", got)
+	}
+}
+
 func TestBranchNote(t *testing.T) {
 	got := branchNote("hrk/t1-x", []string{"feat/CSD-1-a", "main"})
 	want := "note: branch hrk/t1-x is the kit's default; recent branches here: feat/CSD-1-a, main. " +

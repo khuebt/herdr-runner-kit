@@ -4,7 +4,7 @@ herdr-runner-kit sends runner news to your Telegram chat. Your replies reach the
 
 ## How it works
 
-- **Sending:** when a task reports `needs-human`, fails, stalls, is held, ends turns without reporting, finishes, or a chain stops before its end, a detached process calls the Bot API `sendMessage`. `report` and `wait` never wait for the network. A failed send is recorded as a `notify-failed` event.
+- **Sending:** when a task reports `needs-human`, fails, stalls, is held, ends turns without reporting, finishes, or a chain stops before its end, a detached process calls the Bot API `sendMessage`. `report` and `wait` never wait for the network. Transient transport failures (connection reset, EOF or deadline) get at most 3 attempts per chat, with 1-second then 2-second backoff and a 10-second timeout per attempt. A chat already sent successfully is not resent because another chat failed. The final outcome is `notified` or `notify-failed`, with `notifyAttempts` counting HTTP attempts across chats and the original attempt tag retained. A timeout or lost response can mean Telegram accepted the message, so retry may deliver duplicates. `notified` confirms Telegram delivery only; main-session news uses its own owner routing.
 - **Replying:** the main session runs the official Telegram channel plugin, which owns the bot's update polling. When your reply arrives there, the main agent passes it to `hrk answer --from-telegram`. The kit never polls Telegram itself, and runners have `TELEGRAM_BOT_TOKEN` cleared so they never take over the bot.
 
 ## Credentials
@@ -82,6 +82,6 @@ hrk main --exec   # starts it, with the bot token from the kit's config
 CLAUDE_CONFIG_DIR=~/.claude2 hrk main --exec   # with the plugin in another config folder
 ```
 
-The skill and the plugin come from `$CLAUDE_CONFIG_DIR`, or `~/.claude`. `main` warns when that folder has no skill. The command is `HRK_MAIN=<pid> claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels plugin:telegram@claude-plugins-official --append-system-prompt-file <claude config>/skills/herdr-runner-kit/SKILL.md`. The skill in the system prompt keeps the routing rules in force for the whole session, including after compaction.
+The skill and the plugin come from `$CLAUDE_CONFIG_DIR`, or `~/.claude`. `main` warns when that folder has no skill. The command is `HRK_MAIN=<pid> HRK_MAIN_OWNER=<folder owner> claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels plugin:telegram@claude-plugins-official --append-system-prompt-file <claude config>/skills/herdr-runner-kit/SKILL.md`. The skill in the system prompt keeps the routing rules in force for the whole session, including after compaction.
 
 Run one such session per bot. It answers tasks from every repository. A reply sent while no main session is running is lost; send it again once the session is up.

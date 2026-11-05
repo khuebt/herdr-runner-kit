@@ -1740,9 +1740,63 @@ func TestSpawnOwnerIsTheCallersFolder(t *testing.T) {
 	if tk.Owner != caller || tk.Project != "" {
 		t.Fatalf("owner = %q, project = %q; want the caller's top-level %q", tk.Owner, tk.Project, caller)
 	}
-	tk = spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t), Owner: "/elsewhere"})
-	if tk.Owner != "/elsewhere" {
+	elsewhere := plainDir(t)
+	tk = spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t), Owner: elsewhere})
+	if tk.Owner != elsewhere {
 		t.Fatalf("--owner ignored: %q", tk.Owner)
+	}
+	// A path inside a repository names that repository's main session.
+	sub := filepath.Join(caller, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if tk = spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t), Owner: sub}); tk.Owner != caller {
+		t.Fatalf("--owner %s = %q, want the repository's %q", sub, tk.Owner, caller)
+	}
+}
+
+func TestSpawnFromAScratchpadReportsToTheMainSession(t *testing.T) {
+	r, _, e := newTestRunner(t)
+	repo := gitRepo(t)
+	t.Chdir(plainDir(t)) // the main session's shell stands in its scratchpad
+	// Started by hrk main --exec, before its hook recorded the session.
+	e[MainOwnerEnv] = repo
+	if tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x"}); tk.Owner != repo {
+		t.Fatalf("owner = %q, want the started main session's %q", tk.Owner, repo)
+	}
+	// Restored by herdr without the environment: the hook's record of the
+	// session id wins.
+	delete(e, MainOwnerEnv)
+	other := gitRepo(t)
+	if err := r.Store.RecordMainTranscript("main-id", "", other); err != nil {
+		t.Fatal(err)
+	}
+	e["CLAUDE_CODE_SESSION_ID"] = "main-id"
+	if tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x"}); tk.Owner != other {
+		t.Fatalf("owner = %q, want the registered main session's %q", tk.Owner, other)
+	}
+	// Another Claude session's id is not a main session's.
+	e["CLAUDE_CODE_SESSION_ID"] = "not-main"
+	wd, _ := os.Getwd()
+	if tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Prompt: "x"}); tk.Owner != wd {
+		t.Fatalf("owner = %q, want the folder %q", tk.Owner, wd)
+	}
+}
+
+func TestSpawnRefusesAnOwnerNoSessionReceives(t *testing.T) {
+	r, _, _ := newTestRunner(t)
+	t.Chdir(gitRepo(t))
+	for _, owner := range []string{"main", "relative/dir", "/no/such/folder", "project:nope"} {
+		_, err := r.Spawn(context.Background(), SpawnOptions{Kind: "research", Prompt: "x", Owner: owner})
+		if err == nil || !strings.Contains(err.Error(), "--owner") {
+			t.Errorf("--owner %q: err = %v, want a refusal", owner, err)
+		}
+		if owner == "main" && !strings.Contains(err.Error(), "project:<name>") {
+			t.Errorf("the refusal names no valid form: %v", err)
+		}
+	}
+	if tasks, err := r.Store.List(); err != nil || len(tasks) != 0 {
+		t.Fatalf("a refused spawn recorded tasks: %d, %v", len(tasks), err)
 	}
 }
 

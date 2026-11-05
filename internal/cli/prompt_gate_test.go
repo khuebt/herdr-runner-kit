@@ -153,3 +153,52 @@ func TestPromptGateAnswersTheRunnerExtension(t *testing.T) {
 		t.Errorf("events = %+v", blocked)
 	}
 }
+
+func TestCodexPromptGateAcceptsOnlyKitPrompts(t *testing.T) {
+	store, id := gateEnv(t)
+	if _, err := store.Update(id, func(t *task.Task) error { t.Agent = "codex"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"hook_event_name":"UserPromptSubmit","prompt":"typed in the runner"}`)
+	if out := runGateAs(t, "codex", payload); !strings.Contains(out, `"decision":"block"`) {
+		t.Fatalf("typed prompt passed: %q", out)
+	}
+	if err := store.SetPendingPrompt(id, "typed in the runner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddPromptToken(id); err != nil {
+		t.Fatal(err)
+	}
+	if out := runGateAs(t, "codex", []byte(`{"prompt":"leftover human text typed in the runner"}`)); !strings.Contains(out, `"decision":"block"`) {
+		t.Fatal("leftover draft passed with a kit token")
+	}
+	if out := runGateAs(t, "codex", payload); out != "" {
+		t.Fatalf("kit prompt blocked: %q", out)
+	}
+	if out := runGateAs(t, "codex", payload); !strings.Contains(out, `"decision":"block"`) {
+		t.Fatal("token was reusable")
+	}
+}
+
+func TestCodexPromptGateAcceptsDelayedSteerOnlyOnce(t *testing.T) {
+	store, id := gateEnv(t)
+	if _, err := store.Update(id, func(t *task.Task) error { t.Agent = "codex"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPendingPrompt(id, "kit\tmessage\ncontinued"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.TaskDir(id), "prompt-tokens"), []byte(strconv.FormatInt(time.Now().Add(-time.Minute).UnixNano(), 10)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := runGateAs(t, "codex", []byte(`{"prompt":"human message"}`)); !strings.Contains(out, `"decision":"block"`) {
+		t.Fatal("expired token admitted other text")
+	}
+	payload := []byte(`{"prompt":"kit    message\ncontinued"}`)
+	if out := runGateAs(t, "codex", payload); out != "" {
+		t.Fatalf("delayed kit steer blocked: %q", out)
+	}
+	if out := runGateAs(t, "codex", payload); !strings.Contains(out, `"decision":"block"`) {
+		t.Fatal("delayed token reused")
+	}
+}

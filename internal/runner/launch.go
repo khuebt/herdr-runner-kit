@@ -259,7 +259,7 @@ func (r *Runner) resubmitFirstPrompt(ctx context.Context, t *task.Task, adapter 
 		// A loaded machine can take longer to show the turn: only a prompt
 		// still in the input is stalled.
 		if screen, err := r.Herdr.PaneRead(ctx, pane, progressScreenLines); err == nil && adapter.InputState(screen, prompt) == harness.InputHolds {
-			r.markStalled(t.ID, "stalled", "prompt not submitted: the first prompt is still in the input after a second Enter; the runner is left open")
+			r.markStalled(t, "stalled", "prompt not submitted: the first prompt is still in the input after a second Enter; the runner is left open")
 			return
 		}
 	}
@@ -287,7 +287,7 @@ func (r *Runner) startAgent(ctx context.Context, t *task.Task, name, pane string
 	if err := r.prepareTrust(t, adapter); err != nil {
 		return spec, nil, "", err
 	}
-	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID), MCP: t.MCP})
+	args := adapter.LaunchArgs(harness.LaunchOptions{Spec: spec, Bin: r.Bin, Dir: r.Store.TaskDir(t.ID), MCP: t.MCP, InputLocked: InputLocked(t)})
 	_, err = r.Herdr.AgentStart(ctx, name, adapter.HerdrKind(), pane, agentStartTimeout, args)
 	if herdr.HasCode(err, herdr.CodeAgentPaneBusy) {
 		// The shell is still reading its startup files, or still running

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -136,15 +137,16 @@ func (s *Store) mainSessionsPath() string { return filepath.Join(s.dir, mainSess
 const mainSessionsFile = "main-sessions"
 
 // MainSession is a recorded main session: its Claude session id and, when
-// the hook named it, its transcript file.
+// the hook named them, its transcript file and the owner its hook watches.
 type MainSession struct {
 	ID         string
 	Transcript string
+	Owner      string
 }
 
 // MainSessions returns the recorded main sessions, oldest first. The file
-// holds one per line, the id and then the transcript after a tab; lines
-// from before transcripts were kept hold the id only.
+// holds one per line: the id, then the transcript and the owner, each after
+// a tab; lines from before transcripts or owners were kept stop early.
 func (s *Store) MainSessions() []MainSession {
 	return readMainSessions(s.mainSessionsPath())
 }
@@ -153,9 +155,10 @@ func readMainSessions(path string) []MainSession {
 	data, _ := os.ReadFile(path)
 	var out []MainSession
 	for line := range strings.SplitSeq(string(data), "\n") {
-		id, transcript, _ := strings.Cut(line, "\t")
+		id, rest, _ := strings.Cut(line, "\t")
+		transcript, owner, _ := strings.Cut(rest, "\t")
 		if id = strings.TrimSpace(id); id != "" {
-			out = append(out, MainSession{ID: id, Transcript: strings.TrimSpace(transcript)})
+			out = append(out, MainSession{ID: id, Transcript: strings.TrimSpace(transcript), Owner: strings.TrimSpace(owner)})
 		}
 	}
 	return out
@@ -164,12 +167,13 @@ func readMainSessions(path string) []MainSession {
 // RecordMainSession remembers the Claude session id of a main session,
 // newest last, so the auto re-arm hook still knows that session after a
 // resume that lost its environment. Empty ids are ignored.
-func (s *Store) RecordMainSession(id string) error { return s.RecordMainTranscript(id, "") }
+func (s *Store) RecordMainSession(id string) error { return s.RecordMainTranscript(id, "", "") }
 
 // RecordMainTranscript records a main session as RecordMainSession does,
-// with its transcript, so usage can read it. An empty transcript keeps the
-// one recorded before.
-func (s *Store) RecordMainTranscript(id, transcript string) error {
+// with its transcript, so usage can read it, and the owner its hook
+// watches, so spawn can report to it from any folder. An empty transcript or
+// owner keeps the one recorded before.
+func (s *Store) RecordMainTranscript(id, transcript, owner string) error {
 	if id == "" {
 		return nil
 	}
@@ -179,26 +183,40 @@ func (s *Store) RecordMainTranscript(id, transcript string) error {
 	}
 	defer unlock()
 	sessions := s.MainSessions()
-	if n := len(sessions); n > 0 && sessions[n-1].ID == id && (transcript == "" || sessions[n-1].Transcript == transcript) {
+	if n := len(sessions); n > 0 && sessions[n-1].ID == id && (transcript == "" || sessions[n-1].Transcript == transcript) &&
+		(owner == "" || sessions[n-1].Owner == owner) {
 		return nil
 	}
 	sessions = slices.DeleteFunc(sessions, func(m MainSession) bool {
-		if m.ID == id && transcript == "" {
-			transcript = m.Transcript
+		if m.ID == id {
+			transcript, owner = cmp.Or(transcript, m.Transcript), cmp.Or(owner, m.Owner)
 		}
 		return m.ID == id
 	})
-	sessions = append(sessions, MainSession{ID: id, Transcript: transcript})
+	sessions = append(sessions, MainSession{ID: id, Transcript: transcript, Owner: owner})
 	sessions = sessions[max(0, len(sessions)-mainSessionsKept):]
 	var b strings.Builder
 	for _, m := range sessions {
 		b.WriteString(m.ID)
-		if m.Transcript != "" {
+		if m.Transcript != "" || m.Owner != "" {
 			b.WriteString("\t" + m.Transcript)
+		}
+		if m.Owner != "" {
+			b.WriteString("\t" + m.Owner)
 		}
 		b.WriteString("\n")
 	}
 	return writeFileAtomic(s.mainSessionsPath(), []byte(b.String()))
+}
+
+// MainSessionOwner returns the owner recorded for main session id, or "".
+func (s *Store) MainSessionOwner(id string) string {
+	for _, m := range s.MainSessions() {
+		if id != "" && m.ID == id {
+			return m.Owner
+		}
+	}
+	return ""
 }
 
 // IsMainSession reports whether RecordMainSession recorded id.

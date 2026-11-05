@@ -623,7 +623,7 @@ func TestClaudeSettingsPromptGate(t *testing.T) {
 
 func TestInputLockMethods(t *testing.T) {
 	for _, a := range All() {
-		locks := a.Harness() != task.Codex
+		locks := true
 		if a.LocksInput() != locks {
 			t.Errorf("%s: LocksInput = %v", a.Harness(), a.LocksInput())
 		}
@@ -1265,6 +1265,53 @@ func TestShowsWorking(t *testing.T) {
 	for _, a := range All() {
 		if a.Harness() != task.Codex && a.ShowsWorking(string(working)) {
 			t.Errorf("%s reads a working marker", a.Harness())
+		}
+	}
+}
+
+func TestCodexPromptHookTrustIsScopedToItsDefinition(t *testing.T) {
+	const key = "/<session-flags>/config.toml:user_prompt_submit:0:0"
+	// currentHash returned by codex-cli 0.166.0 hooks/list in an isolated home.
+	const wantHash = "sha256:8aa3e3f0a7d55120af05a3262b679019ae45947dffddd3090db946d6fa76593c"
+	for _, bin := range []string{"/usr/local/bin/hrk", `/opt/my "kit" & tools/hrk`} {
+		args := codex{}.LaunchArgs(LaunchOptions{Bin: bin, InputLocked: true})
+		var doc struct {
+			Hooks struct {
+				Groups []struct{ Hooks []struct{ Command string } } `toml:"UserPromptSubmit"`
+				State  map[string]struct {
+					Enabled bool
+					Hash    string `toml:"trusted_hash"`
+				}
+			}
+		}
+		var value string
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "hooks=") {
+				value = arg
+			}
+		}
+		if err := toml.Unmarshal([]byte(value), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if len(doc.Hooks.Groups) != 1 || len(doc.Hooks.Groups[0].Hooks) != 1 || len(doc.Hooks.State) != 1 {
+			t.Fatalf("unexpected hook override: %+v", doc)
+		}
+		if doc.Hooks.Groups[0].Hooks[0].Command != ShellQuote(bin)+" __prompt-gate --harness codex" || !doc.Hooks.State[key].Enabled {
+			t.Fatal("hook command/trust scope changed")
+		}
+		if bin == "/usr/local/bin/hrk" && doc.Hooks.State[key].Hash != wantHash {
+			t.Fatalf("hash = %s", doc.Hooks.State[key].Hash)
+		}
+		if bin != "/usr/local/bin/hrk" && doc.Hooks.State[key].Hash == wantHash {
+			t.Fatal("hash did not change with command")
+		}
+		if slices.Contains(args, "--dangerously-bypass-hook-trust") {
+			t.Fatal("global trust bypass")
+		}
+	}
+	for _, arg := range (codex{}).LaunchArgs(LaunchOptions{Bin: "/usr/local/bin/hrk"}) {
+		if strings.HasPrefix(arg, "hooks=") {
+			t.Fatal("open input installs a lock")
 		}
 	}
 }

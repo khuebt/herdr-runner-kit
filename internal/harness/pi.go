@@ -317,3 +317,7 @@ func (p pi) Checks() Checks {
 	}
 	return Checks{Bin: p.kind, Flags: flags, Integration: p.kind}
 }
+
+func (pi) ExitKeys(string) []string { return nil }
+
+func (pi) GateTokenMatcher(string) func(string) bool { return nil }

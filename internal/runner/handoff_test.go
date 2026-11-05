@@ -360,3 +360,80 @@ func TestHandoffWaitsForTheQuitSessionToReleaseItsName(t *testing.T) {
 		})
 	}
 }
+
+func TestHandoffIgnoresBlockedResultFromPreviousAttempt(t *testing.T) {
+	for _, screen := range []string{"Exit and stop tasks\nMove to background and exit\nStay", "Claude Code will automatically deny this request in 1:42"} {
+		for _, next := range []task.Status{task.Starting, task.Running} {
+			t.Run(string(next)+screen[:4], func(t *testing.T) {
+				r, fake, _ := newTestRunner(t)
+				tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+				file := handoffFile(t, r, tk.ID)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				fake.on("agent wait", func([]string) (string, error) {
+					if _, err := r.Handoff(tk.ID, ReportOptions{Summary: "continue", Outputs: []string{file}, Attempt: 1}); err != nil {
+						t.Fatal(err)
+					}
+					if next == task.Running {
+						if _, _, err := r.Store.SetStatus(tk.ID, next); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return status("blocked")(nil)
+				})
+				fake.on("pane read", func([]string) (string, error) { cancel(); return screen, nil })
+				r.WatchAgent(ctx, tk.ID)
+				cur, _ := r.Store.Get(tk.ID)
+				if cur.Stalled || countEvents(t, r, tk.ID, "stalled") != 0 || countEvents(t, r, tk.ID, "blocked") != 0 {
+					t.Fatalf("old watcher marked new attempt: stalled=%v events=%v", cur.Stalled, events(t, r, tk.ID))
+				}
+			})
+		}
+	}
+}
+
+func TestHandoffExitsWithoutStoppingBackgroundShells(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	tk := running(t, r, SpawnOptions{Kind: "research", Prompt: "x", Cwd: plainDir(t)})
+	file := handoffFile(t, r, tk.ID)
+	if _, err := r.Handoff(tk.ID, ReportOptions{Summary: "continue", Outputs: []string{file}}); err != nil {
+		t.Fatal(err)
+	}
+	menu, exited := false, false
+	fake.on("agent get", ok(`{"result":{"agent":{"agent":"claude","agent_status":"idle","agent_kind":"claude"}}}`))
+	fake.on("pane read", func([]string) (string, error) {
+		if menu {
+			return "2 background tasks\n❯ 1. Exit and stop tasks\n  2. Move to background\nand exit\n  3. Stay", nil
+		}
+		return "❯ \n", nil
+	})
+	fake.on("agent send-keys", func(args []string) (string, error) {
+		keys := args[3:]
+		if !menu && slices.Equal(keys, []string{"ctrl+c", "ctrl+c"}) {
+			menu = true
+			return "{}", nil
+		}
+		if menu && slices.Equal(keys, []string{"2"}) {
+			menu, exited = false, true
+			return "{}", nil
+		}
+		t.Errorf("unsafe or ineffective exit keys: %v", keys)
+		return "{}", nil
+	})
+	fake.on("agent wait", func(args []string) (string, error) {
+		if slices.Contains(args, "unknown") {
+			if exited {
+				return herdrErr(herdr.CodeAgentNotRunning)(args)
+			}
+			return status("blocked")(args)
+		}
+		return status("working")(args)
+	})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := r.Store.Get(tk.ID)
+	if !exited || cur.Status != task.Running || task.AttemptOf(cur) != 2 {
+		t.Fatalf("handoff failed: exited=%v status=%s", exited, cur.Status)
+	}
+}

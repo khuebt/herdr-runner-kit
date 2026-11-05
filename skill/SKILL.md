@@ -7,7 +7,7 @@ description: Main-agent rules for herdr-runner-kit. Answer questions yourself; o
 
 **If `$HRK_TASK` is set, you are a runner. Ignore this skill and follow your runner contract.**
 
-You are the main agent. You talk with the user and delegate the work. Runners do the work in herdr tabs that the user can watch. Claude, pi and omp runner tabs take prompts only from the kit by default (`runnerInput: locked`), so steer runners from here, with `hrk send` or `hrk answer`, or from Telegram. Keep your own turns short, so news and Telegram replies reach you quickly.
+You are the main agent. You talk with the user and delegate the work. Runners do the work in herdr tabs that the user can watch. Claude, Codex, pi and omp runner tabs take prompts only from the kit by default (`runnerInput: locked`), so steer runners from here, with `hrk send` or `hrk answer`, or from Telegram. Keep your own turns short, so news and Telegram replies reach you quickly.
 
 ## Route every request
 
@@ -78,7 +78,7 @@ Implement the plan from the previous task
 EOF
 ```
 
-`spawn` returns at once with one line such as `t4 starting · claude:… · fix · Fix the typo`. Tell the user the id and title in one sentence, then end your turn.
+`spawn` returns at once with one line such as `t4 starting · claude:… · fix · Fix the typo`. Tell the user the id and title in one sentence, then end your turn. Leave out `--owner`: a spawn from this session reports here from any folder, and `--owner main` is refused. A line with `reports to <owner>` names where the news goes. `notified` confirms Telegram only; main news follows that owner. Background waiting is informational until the watchdog reports `stalled`; do not interrupt it just because it is idle.
 
 Plans: for an AgentKit plan with phase files, put the waves from `hrk plan run <plan> --dry-run` in the brief and run `plan run <plan>` on yes; a plan without phase files gets one `--skill ak:cook` runner. A `held` that names files outside a phase's scope: ask the user before `release`. `plan-done`: relay the report path, the verified count and the review verdict; a single task's review `done` starts with its verdict, and on `fix` offer `send <writer id>` with the report. Details: [references/commands.md#plans](references/commands.md#plans).
 
@@ -121,7 +121,7 @@ In the session `hrk main` started, news can also arrive as Stop hook feedback st
 - The user wants to steer a runner, or give a done or failed one more work while its tab is open: `hrk send <id> --stdin`. It runs again and reports again; a stopped task cannot be reopened.
 - Reuse a runner: before spawning a follow-up on the same topic, check `list`. If a recent runner's TAB is open, propose `send <id>` in the brief instead of a new runner.
 - The user asks to merge main into a runner's branch, or its branch is behind the default branch: `hrk sync <id>`. On a conflict, offer to `send` the printed text to the runner.
-- Never assume user input you cannot see, such as "the user typed into your tab"; ask the user first. `hrk focus <id>` switches to a runner's tab, to watch it or answer a dialog with keys. A locked Claude, pi or omp tab refuses typed prompts and names `hrk send <id>`; only Codex tabs, and every tab under `runnerInput: open`, take them.
+- Never assume user input you cannot see, such as "the user typed into your tab"; ask the user first. `hrk focus <id>` switches to a runner's tab, to watch it or answer a dialog with keys. A locked Claude, Codex, pi or omp tab refuses typed prompts and names `hrk send <id>`; tabs under `runnerInput: open` take them.
 - `stop <id>...` (several ids in one call) only when the user asks. Branches stay local; merge or open a PR only when asked.
 
 ## Clean up

@@ -658,6 +658,11 @@ func truncate(s string, n int) string {
 }
 
 func currentOwner(cmd *cobra.Command) string {
+	if s, err := openStore(); err == nil {
+		if owner := runner.MainOwner(s, os.Getenv); owner != "" {
+			return owner
+		}
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ""

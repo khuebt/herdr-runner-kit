@@ -73,7 +73,7 @@ func (r *Runner) WatchAgent(ctx context.Context, id string) {
 		if status == "blocked" {
 			r.onBlocked(ctx, t)
 		} else {
-			r.unstall(id)
+			r.unstall(t)
 		}
 	}
 }
@@ -114,11 +114,11 @@ func (r *Runner) onBlocked(ctx context.Context, t *task.Task) {
 		p, self = harness.MatchSelfResolving(adapter, screen)
 	}
 	if !self {
-		r.markStalled(t.ID, "stalled", blockedSummary(screen))
+		r.markStalled(t, "stalled", blockedSummary(screen))
 		return
 	}
 	note := fmt.Sprintf("%s prompt; auto-denies in %d min", p.Name, int(p.Timeout.Round(time.Minute).Minutes()))
-	r.markStalled(t.ID, "blocked", note)
+	r.markStalled(t, "blocked", note)
 }
 
 // selfResolveDeadline returns when a stalled task's self-resolving prompt
@@ -156,7 +156,7 @@ wait:
 		case isGone(err):
 			return err
 		case err == nil && status != "blocked":
-			r.unstall(t.ID)
+			r.unstall(t)
 			return nil
 		case herdr.HasCode(err, herdr.CodeTimeout):
 			break wait
@@ -165,8 +165,16 @@ wait:
 		}
 	}
 	screen, _ := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, 40)
+	// Hold the task lock through recording: a handoff must not turn an old
+	// prompt timeout into news for the next attempt.
+	unlock, err := r.Store.LockFile(t.ID, "task.lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	cur, err := r.Store.Get(t.ID)
-	if ev, ok := r.lastBlock(t.ID); err == nil && ok && ev.Type == "blocked" && cur.Stalled && !cur.Status.Terminal() {
+	if ev, ok := r.lastBlock(t.ID); err == nil && ok && ev.Type == "blocked" && cur.Stalled &&
+		cur.Status == task.Running && task.AttemptOf(cur) == task.AttemptOf(t) {
 		r.emit(cur, "stalled", blockedSummary(screen), "")
 	}
 	return nil
@@ -175,10 +183,10 @@ wait:
 // markStalled marks the task blocked and emits typ with summary. It reports
 // whether this call marked it: false when the task was marked already or
 // has finished.
-func (r *Runner) markStalled(id, typ, summary string) bool {
+func (r *Runner) markStalled(observed *task.Task, typ, summary string) bool {
 	errSame := errors.New("unchanged")
-	t, err := r.Store.Update(id, func(t *task.Task) error {
-		if t.Stalled || t.Status.Terminal() {
+	t, err := r.Store.Update(observed.ID, func(t *task.Task) error {
+		if t.Stalled || t.Status != task.Running || task.AttemptOf(t) != task.AttemptOf(observed) {
 			return errSame
 		}
 		t.Stalled = true
@@ -192,10 +200,10 @@ func (r *Runner) markStalled(id, typ, summary string) bool {
 }
 
 // unstall clears a block and emits unstalled with how long it lasted.
-func (r *Runner) unstall(id string) {
+func (r *Runner) unstall(observed *task.Task) {
 	errSame := errors.New("unchanged")
-	t, err := r.Store.Update(id, func(t *task.Task) error {
-		if !t.Stalled || t.Status.Terminal() {
+	t, err := r.Store.Update(observed.ID, func(t *task.Task) error {
+		if !t.Stalled || t.Status != task.Running || task.AttemptOf(t) != task.AttemptOf(observed) {
 			return errSame
 		}
 		t.Stalled = false
@@ -205,7 +213,7 @@ func (r *Runner) unstall(id string) {
 		return
 	}
 	summary := "unblocked"
-	if ev, ok := r.lastBlock(id); ok {
+	if ev, ok := r.lastBlock(observed.ID); ok {
 		summary += " after " + shortSpan(time.Since(ev.TS))
 	}
 	r.emit(t, "unstalled", summary, "")
