@@ -686,13 +686,6 @@ def run_tui(args):
         wait_for(lambda: state().get("lease", {}).get("pid") == process.pid, "public main lease")
         assert len(children()) == 1, "expected one production news child"
         pump(0.8)
-        if args.harness == "omp":
-            # Omp exposes focus only after setFocus; dismiss a real selector to
-            # establish it without bypassing the production extension's gate.
-            command("/settings")
-            pump(0.5)
-            send(b"\x1b")
-            pump(0.5)
 
     def stop_tui():
         nonlocal master
@@ -740,6 +733,8 @@ def run_tui(args):
         result["checks"]["public_launch_registers_runtime"] = True
         assert transcript.stat().st_mode & 0o777 == 0o600
         result["checks"]["private_transcript"] = True
+        committed(emit())
+        result["checks"]["fresh_idle_delivery_without_input"] = True
         for label, draft in [("normal", "UNSENT_DRAFT"), ("whitespace", "   ")]:
             send(draft.encode())
             editor(draft)

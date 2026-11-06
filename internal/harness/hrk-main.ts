@@ -19,7 +19,7 @@ export default function (api) {
   shared.dispose?.();
   const epoch = ++shared.epoch;
   let ctx, child, generation = 0, sequence = 0, registerID, receiptID;
-  let timer, unsubscribe, tui, editor = shared.editor, closeReply, disposing, removeAbort, restoreFocus, observedFocus;
+  let timer, unsubscribe, tui, editor = shared.editor, closeReply, disposing, removeAbort;
   let stopped = false, transitioning = false, connected = false, fault = false, reconciled = false;
   let busy = false, submitting = false, retry = false, autoCompact = false, manualCompact = false, compactIsAuto = false, prompts = 0;
   let lastInput = Date.now(), lastNotice = 0, lastStatus, nextReceipt = 0, receiptDelay = 500;
@@ -118,9 +118,8 @@ export default function (api) {
     });
     registerID = request("register", { harness: HARNESS, ...shared.target, parentPID: pid, nonce: env.HRK_MAIN_NONCE, quiesced: true });
   };
-  // shortcut: Omp lacks an initial focus query; hold until input/setFocus, use a getter when available.
   const observeUI = host => {
-    restoreFocus?.(); tui = host; observedFocus = undefined;
+    tui = host;
     const found = [];
     const walk = (node, depth = 0) => {
       if (!node || depth > 12 || found.length > 1) return;
@@ -128,20 +127,10 @@ export default function (api) {
       if (Array.isArray(node.children)) for (const item of node.children) walk(item, depth + 1);
     };
     walk(host);
-    const focus = host.getFocusedComponent?.();
+    const focus = host.getFocusedComponent?.() ?? host.getFocused?.();
     if (found.length === 1) editor = found[0];
     else if (focus?.constructor?.name === "CustomEditor") editor = focus;
     shared.editor = editor;
-    if (typeof host.getFocusedComponent !== "function" && typeof host.setFocus === "function") {
-      const original = host.setFocus;
-      function observed(...args) {
-        const result = Reflect.apply(original, this, args);
-        if (current()) { observedFocus = args[0]; schedule(); }
-        return result;
-      }
-      host.setFocus = observed;
-      restoreFocus = () => { if (host.setFocus === observed) host.setFocus = original; };
-    }
     return { render: () => [], invalidate() {} };
   };
   const safe = () => {
@@ -149,7 +138,7 @@ export default function (api) {
         typeof tui.hasOverlay !== "function") return false;
     return !busy && !submitting && !retry && !autoCompact && !manualCompact && prompts === 0 &&
       ctx.isIdle() === true && ctx.hasPendingMessages() === false &&
-      !tui.hasOverlay() && (typeof tui.getFocusedComponent === "function" ? tui.getFocusedComponent() : observedFocus) === editor &&
+      !tui.hasOverlay() && (tui.getFocusedComponent?.() ?? tui.getFocused?.()) === editor &&
       ctx.ui.getEditorText().length === 0 && Date.now() - lastInput >= DEBOUNCE;
   };
   function tick() {
@@ -203,7 +192,7 @@ export default function (api) {
   const dispose = () => {
     if (disposing) return disposing;
     transitioning = true; clearTimeout(timer); timer = undefined;
-    unsubscribe?.(); unsubscribe = undefined; removeAbort?.(); restoreFocus?.(); restoreFocus = undefined;
+    unsubscribe?.(); unsubscribe = undefined; removeAbort?.();
     ctx?.ui?.setWidget?.("hrk-news-observer", undefined); ctx?.ui?.setStatus?.("hrk-news", undefined);
     disposing = shared.closing = stopChild().then(closed => { if (closed) shared.released = true; }).finally(() => { stopped = true; });
     return disposing;
@@ -263,7 +252,6 @@ export default function (api) {
   });
   on("input", (event, context) => {
     if (event.source === "extension") return;
-    if (event.source === "interactive") observedFocus = editor;
     // Omp reloads plugins without recreating extensions; also recover a cancelled switch.
     const command = event.text?.trim();
     if ((command === "/reload" || (HARNESS === "omp" && command === "/reload-plugins")) && transitioning && shared.released && !shared.pending && sameTarget(target(context), shared.target)) transitioning = false;

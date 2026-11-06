@@ -120,7 +120,7 @@ env.HRK_MAIN=String(pid);env.HRK_MAIN_OWNER='/owner';env.HRK_MAIN_NONCE='fixture
 let text='',idle=true,queued=false,focus,overlay=false,listeners=new Set(),notices=[],statuses=[],sent=[];
 class CustomEditor {getText(){return text;} onSubmit(){} }
 const editor=new CustomEditor();focus=editor;
-const tui={getFocusedComponent:harness==='pi'?()=>focus:undefined,hasOverlay:()=>overlay,children:[editor],setFocus(value){focus=value;return 'focus-return';}};
+const tui={getFocusedComponent:harness==='pi'?()=>focus:undefined,getFocused:harness==='omp'?()=>focus:undefined,hasOverlay:()=>overlay,children:[editor],setFocus(value){focus=value;return 'focus-return';}};
 const originalFocus=tui.setFocus;
 function setFocus(value){assert.equal(tui.setFocus(value),'focus-return');}
 let session={sessionId:'one',sessionFile:'/sessions/one.jsonl',cwd:'/cwd'};
@@ -130,7 +130,7 @@ const ctx={mode:'tui',hasUI:true,model:{},isIdle:()=>idle,hasPendingMessages:()=
  setWidget:(_k,fn)=>{if(fn)fn(tui);},setStatus:(_k,v)=>statuses.push(v),notify:v=>notices.push(v)}};
 function make(){const h={};extension({on:(name,f)=>h[name]=f,sendMessage:(m,o)=>{assert.equal(idle,true);assert.equal(text,'');assert.equal(queued,false);assert.equal(focus,editor);assert.equal(overlay,false);assert.deepEqual(o,{deliverAs:'followUp',triggerTurn:true});sent.push(m);}});return h;}
 function key(data){for(const f of listeners)assert.equal(f(data),undefined,'input consumed');}
-async function start(h){h.session_start({},ctx);setFocus(editor);await advance(600);}
+async function start(h){h.session_start({},ctx);await advance(600);}
 async function stop(h){const promise=h.session_shutdown({reason:'reload'},ctx);await advance(1800);await promise;assert.equal(children.filter(c=>c.signalCode===null).length,0);assert.equal(listeners.size,0);assert.equal(tui.setFocus,originalFocus);}
 let batchSeq=0;
 function deliver(c=children.at(-1)){disk=false;saved={batchId:'b'+(++batchSeq),digest:'digest',lines:['t1 done','second line'],target:{...session,owner:'/owner',harness},attempt:'appending'};c.reply(c.register,'batch',{batchId:saved.batchId,batch:saved});return saved;}
@@ -140,6 +140,9 @@ env.HRK_TASK='runner';assert.deepEqual(Object.keys(make()),[]);delete env.HRK_TA
 env.HRK_MAIN_INTERACTIVE='0';assert.deepEqual(Object.keys(make()),[]);env.HRK_MAIN_INTERACTIVE='1';
 let h=make();ctx.mode='rpc';h.session_start({},ctx);await advance(1000);assert.equal(children.length,0);ctx.mode='tui';
 await start(h);assert.equal(children.length,1);assert.equal(sent.length,0);assert.equal(requests[0].type,'register');assert.equal(requests[0].cwd,'/cwd');
+// An idle fresh main needs no input or focus transition to receive news.
+deliver();await advance(600);assert.equal(sent.length,1,'fresh idle main did not deliver');
+disk=true;h.message_end({},ctx);await advance(600);sent.length=0;batchSeq=0;
 const activityCount=()=>requests.filter(q=>q.type==='activity').length;
 const quiet=activityCount();await advance(10000);assert.equal(activityCount(),quiet,'technical time marked activity');
 h.session_start({},ctx);await advance();assert.equal(children.length,1);assert.equal(listeners.size,1);
