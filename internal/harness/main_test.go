@@ -3,6 +3,7 @@ package harness
 import (
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,3 +204,37 @@ h.session_before_compact({},ctx);await advance(600);assert.equal(sent.length,5);
 stubborn=true;const began=now;await stop(h);assert.ok(now-began<=1800);assert.equal(timers.size,0);
 console.log('main lifecycle passed: guards, drafts/paste, debounce, queues, retry/compaction, modal, receipts, reload, stale callbacks, child death, transition race, bounded cleanup');
 `
+
+func TestMainSpecAndArgs(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  []string
+	}{
+		{"claude", []string{"claude", "--resume", "session"}},
+		{"claude:opus:high", []string{"claude", "--model", "opus", "--effort", "high", "--resume", "session"}},
+		{"pi", []string{"pi", "-e", "/extension", "--append-system-prompt", "/prompt", "--session", "session"}},
+		{"omp", []string{"omp", "--hook", "/extension", "--append-system-prompt", "/prompt", "--resume", "session"}},
+		{"pi:ollama/qwen3:8b:high", []string{"pi", "-e", "/extension", "--append-system-prompt", "/prompt", "--model", "ollama/qwen3:8b", "--thinking", "high", "--session", "session"}},
+		{"omp:provider/model:auto", []string{"omp", "--hook", "/extension", "--append-system-prompt", "/prompt", "--model", "provider/model", "--thinking", "auto", "--resume", "session"}},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			spec, err := ParseMainSpec(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := MainArgs(spec, "/extension", "/prompt", "session"); !slices.Equal(got, tc.want) {
+				t.Fatalf("%q, want %q", got, tc.want)
+			}
+		})
+	}
+	for _, input := range []string{"codex", "codex:model:high", "pi::high", "omp::auto", "pi:model:auto", "unknown", "claude:model:off"} {
+		if _, err := ParseMainSpec(input); err == nil {
+			t.Errorf("accepted %q", input)
+		}
+	}
+	for _, input := range []string{"pi", "omp"} {
+		if _, err := task.ParseAgentSpec(input); err == nil {
+			t.Errorf("runner parser accepted bare %s", input)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package herdr
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -198,6 +199,33 @@ func TestPaneClaudeSession(t *testing.T) {
 		out = o
 		if id, err := c.PaneClaudeSession(context.Background(), "w1:p2"); err != nil || id != "" {
 			t.Errorf("%s: id = %q, %v", o, id, err)
+		}
+	}
+}
+
+func TestPaneAgentSession(t *testing.T) {
+	for _, agent := range []string{"pi", "omp"} {
+		for _, kind := range []string{"id", "path"} {
+			t.Run(agent+"/"+kind, func(t *testing.T) {
+				value := "session-id"
+				if kind == "path" {
+					value = "/session file's/main.jsonl"
+				}
+				body, _ := json.Marshal(map[string]any{"result": map[string]any{"pane": map[string]any{"agent_session": PaneSession{Agent: agent, Kind: kind, Value: value}}}})
+				c := &Client{Bin: "herdr", Exec: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+					if strings.Join(args, " ") != "pane get isolated:p1" {
+						t.Fatalf("args %q", args)
+					}
+					return body, nil, nil
+				}}
+				got, err := c.PaneAgentSession(context.Background(), "isolated:p1")
+				if err != nil || got != (PaneSession{Agent: agent, Kind: kind, Value: value}) {
+					t.Fatalf("%+v %v", got, err)
+				}
+				if legacy, err := c.PaneClaudeSession(context.Background(), "isolated:p1"); err != nil || legacy != "" {
+					t.Fatalf("legacy adopted other harness: %q %v", legacy, err)
+				}
+			})
 		}
 	}
 }

@@ -26,7 +26,7 @@ All packages live under `internal/`, except `cmd/hrk` and `skill` at the reposit
 
 ### Claude-only features
 
-The Claude config folder and the main session are features of one harness, not per-harness switches, so they keep their `task.Claude` checks. Each allowlist entry in the boundary test carries its reason; a new entry needs one too.
+Claude configuration remains a harness-specific feature. Each allowlist entry in the boundary test carries its reason; a new entry needs one too. Main launch decisions live in `harness/main.go`, without extending this allowlist or using runner launch policy.
 
 | Where | Why |
 |---|---|
@@ -36,7 +36,13 @@ The Claude config folder and the main session are features of one harness, not p
 | `cli/doctor.go` `runnerClaudeConfigs` | Doctor checks the Claude config folders that Claude tasks recorded. |
 | `project/templates.go` `RenderOutputs` | Output paths render no skill, so any harness gives the same paths. |
 
-The public main-session launcher (`hrk main`) still runs Claude Code and names the `claude` command directly. Typed metadata and usage support below prepare the state boundary for other main harnesses; they do not enable launching them.
+The public main-session launcher (`hrk main`) defaults to Claude Code and also accepts `--agent pi` or `--agent omp`, with optional model and effort in the existing agent-spec syntax. Bare pi/omp use runtime defaults only for main sessions; runner specs still require a model. Codex main and effort-only pi/omp specs are rejected. `harness.ParseMainSpec` and `harness.MainArgs` own these decisions, including pi's `-e`/`--session` and omp's `--hook`/`--resume`. The CLI composes paths and environment and uses `LookPath` and `syscall.Exec`. Claude keeps its settings, channels, installed prompt and Telegram credential resolution. Main launch never uses runner approval flags, input locks or the omp runner overlay.
+
+Pi/omp mains require terminal stdin and stdout. Both launch and print materialize the embedded extension, main prompt and references under a content-versioned `main-runtime` directory in kit state, independently of Claude setup. A new launch reserves an exclusive empty `main-transcripts` file with mode 0600; the runtime creates its ID and header. Pi/omp run with umask 077 so runtime replacements and child-created files stay private. Failed exec removes only its still-empty reservation. The bridge verifies the runtime header and syncs the file and parent directory before recording the session. Resume never recreates a missing transcript.
+
+The selected harness, fixed owner and a fresh per-launch nonce travel in `HRK_MAIN_HARNESS`, `HRK_MAIN_OWNER` and `HRK_MAIN_NONCE`. Reconnects and extension reloads retain that nonce; leases also verify PID and process-start identity. Printed commands quote each argument and establish the actual runtime PID when executed. Pi/omp discard inherited `CLAUDE_CODE_SESSION_ID` so child commands cannot select a Claude owner accidentally. Existing owner context survives shell directory changes; `--project` attachments use that same owner. Outgoing Telegram stays in the kit resolver, without injecting its configured token into pi/omp. Incoming Telegram remains unsupported there.
+
+Explicit pi/omp resume resolves a registered ID or path first, then a matching harness identity from `herdr pane get`, then the newest registration for the same harness, owner and canonical cwd. Pane IDs and paths retain their `kind` discriminator. Unmatched or wrong-harness pane metadata falls back to the registry; explicit unknown or ambiguous references fail. The selected file must exist and pass header ID/cwd validation and sync before launch. Every resume reloads the selected spec and embedded assets. No resume argv is sent to Herdr, and automatic Herdr restore is outside this contract.
 
 `main-sessions` retains Claude main sessions as tab-separated id, transcript path and owner; old id-only and id/transcript records remain readable. Its records keep an empty harness discriminator, and Claude registration, membership, owner lookup and newest-session resume only use those legacy records. `HRK_MAIN_OWNER` carries the owner before registration, and the hook preserves it when its shell changes directories.
 
