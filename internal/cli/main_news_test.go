@@ -307,6 +307,84 @@ func TestMainNewsRecoveryScansReceiptBeforeReplay(t *testing.T) {
 	p.finish(t)
 }
 
+func TestMainNewsPartialAppendRetainsPendingAcrossReconnect(t *testing.T) {
+	for _, boundary := range []string{"partial-json", "missing-newline"} {
+		t.Run(boundary, func(t *testing.T) {
+			s, register := newsFixture(t)
+			p := startNewsProcess(t, s, register.Cwd, register.Nonce, false)
+			p.send(t, register)
+			p.read(t, "ready")
+			newsEvent(t, s, register.Cwd)
+			batch := p.read(t, "batch").Batch
+			entry := map[string]any{"type": "custom_message", "id": "partial-receipt", "customType": "hrk-news", "content": strings.Join(batch.Lines, "\n"), "details": map[string]string{"batchId": batch.BatchID, "owner": batch.Target.Owner, "digest": batch.Digest}}
+			data, err := json.Marshal(entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = append(data, '\n')
+			cut := len(data) - 1
+			if boundary == "partial-json" {
+				cut /= 2
+			}
+			appendPart := func(part []byte) {
+				t.Helper()
+				f, err := os.OpenFile(register.SessionFile, os.O_APPEND|os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, writeErr := f.Write(part)
+				closeErr := f.Close()
+				if err := errors.Join(writeErr, closeErr); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertPending := func() {
+				t.Helper()
+				n, err := s.ReadMainNews(register.Cwd)
+				if err != nil || n == nil || n.Pending == nil || n.Pending.BatchID != batch.BatchID || n.Pending.Digest != batch.Digest || n.LastAck != nil {
+					t.Fatalf("partial append lost or acknowledged pending: %+v %v", n, err)
+				}
+				if offset, _, err := s.Cursor(state.CursorName(register.Cwd)); err != nil || offset != batch.From {
+					t.Fatalf("partial append advanced cursor: %d %v", offset, err)
+				}
+			}
+			appendPart(data[:cut])
+			p.send(t, mainNewsRequest{Type: "receipt", BatchID: batch.BatchID})
+			if response := p.read(t, "error"); !strings.Contains(response.Message, "incomplete transcript") {
+				t.Fatalf("unexpected partial receipt error: %+v", response)
+			}
+			assertPending()
+			_ = p.cmd.Process.Kill()
+			p.finish(t)
+			p = startNewsProcess(t, s, register.Cwd, register.Nonce, false)
+			p.send(t, register)
+			// An incomplete file cannot even establish a safe registration target.
+			p.read(t, "error")
+			p.finish(t)
+			assertPending()
+			appendPart(data[cut:]) // The old runtime completes the same entry, without fsync.
+			p = startNewsProcess(t, s, register.Cwd, register.Nonce, false)
+			p.send(t, register)
+			p.read(t, "ready")
+			if response := p.read(t, "committed"); response.BatchID != batch.BatchID {
+				t.Fatalf("reconnect acknowledged a different batch: %+v", response)
+			}
+			p.finish(t)
+			n, err := s.ReadMainNews(register.Cwd)
+			if err != nil || n == nil || n.Pending != nil || n.LastAck == nil || n.LastAck.BatchID != batch.BatchID {
+				t.Fatalf("completed append not recovered: %+v %v", n, err)
+			}
+			if offset, _, err := s.Cursor(state.CursorName(register.Cwd)); err != nil || offset != batch.To {
+				t.Fatalf("completed receipt cursor: %d %v", offset, err)
+			}
+			transcript, err := os.ReadFile(register.SessionFile)
+			if err != nil || strings.Count(string(transcript), `"customType":"hrk-news"`) != 1 {
+				t.Fatalf("expected one physical receipt: %v", err)
+			}
+		})
+	}
+}
+
 func TestMainNewsProtocolRejectsInvalidInput(t *testing.T) {
 	for _, raw := range []string{"not-json\n", `{"version":1,"type":"register","requestId":"x","owner":"/spoof"}` + "\n", `{"version":1}` + "\n", strings.Repeat("x", 70<<10) + "\n", `{"version":1,"type":"register","requestId":"x"}`} {
 		t.Run(fmt.Sprint(len(raw)), func(t *testing.T) {

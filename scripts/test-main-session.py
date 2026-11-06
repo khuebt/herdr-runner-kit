@@ -2,9 +2,11 @@
 """Probe installed main runtimes with isolated profiles and a loopback provider.
 
 No SDK mocks, global extensions, user credentials, or user state are used.
-The runtime writes its own header into a launcher-allocated empty path. Its
-probe extension starts the real news child; receipts must precede cursor commit.
-A failed or incomplete gate exits nonzero and retains evidence under --out.
+The transcript-contract case drives the real news child through RPC. The TUI
+case uses the public kit launcher and production extension in a real PTY.
+Both use runtime-owned headers and receipts that must precede cursor commit.
+Any failed check exits nonzero and retains evidence under --out. The all case
+runs the implemented suites, not the separate live-model release gate.
 """
 
 import argparse
@@ -14,8 +16,15 @@ import http.server
 import json
 import os
 from pathlib import Path
+import pty
+import select
+import shlex
 import shutil
+import signal
+import struct
 import subprocess
+import sys
+import termios
 import threading
 import time
 
@@ -113,6 +122,32 @@ export default function(pi) {
 '''
 
 
+# Observation only: the production extension owns all delivery and input gates.
+TUI_EXTENSION = r'''
+import { appendFileSync } from "node:fs";
+const root = process.env.HRK_PROBE_OUT;
+const log = data => appendFileSync(root + "/observer.jsonl", JSON.stringify({at:Date.now(),...data}) + "\n");
+export default function(api) {
+  api.registerProvider("hrk-probe", {
+    baseUrl:process.env.HRK_PROBE_URL, apiKey:"local-fixture", api:"openai-completions",
+    models:[{id:"probe",name:"Local acceptance fixture",reasoning:false,input:["text"],
+      cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32000,maxTokens:2048}]
+  });
+  let timer;
+  api.on("session_start", (_event,ctx) => {
+    clearInterval(timer);
+    log({event:"start",pid:process.pid,id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile()});
+    timer=setInterval(() => log({event:"snapshot",editor:ctx.ui.getEditorText(),idle:ctx.isIdle(),
+      queued:ctx.hasPendingMessages()}),100);
+  });
+  for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_compact_failed"]) {
+    api.on(name, () => log({event:name}));
+  }
+  api.on("session_shutdown", () => { clearInterval(timer); log({event:"shutdown"}); });
+}
+'''
+
+
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
@@ -161,6 +196,10 @@ def stop(process, reader):
 def process_alive(pid):
     result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True, check=False)
     return bool(result.stdout.strip()) and not result.stdout.strip().startswith("Z")
+
+
+def interrupt(_signum, _frame):
+    raise InterruptedError("received SIGTERM")
 
 
 def run(args):
@@ -222,6 +261,7 @@ def run(args):
 
     # Deterministic per output directory. A busy port fails, never steals an owner.
     port = 20000 + int(hashlib.sha256(str(out).encode()).hexdigest()[:4], 16) % 20000
+    result["provider"] = {"pid": os.getpid(), "port": port, "command": [sys.executable, *sys.argv], "worktree": str(Path.cwd())}
     env["HRK_PROBE_URL"] = f"http://127.0.0.1:{port}/v1"
     argv = [binary, "--mode", "rpc", "--no-extensions", "--no-skills", "--no-tools", "--session-dir", str(out / "sessions"), "--append-system-prompt", str(out / "system.txt"), "--model", "hrk-probe/probe", "--thinking", "off"]
     if args.harness == "pi":
@@ -458,6 +498,8 @@ def run(args):
         result["checks"]["quiesced_close_releases_lease"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
+        if isinstance(error, InterruptedError):
+            raise
     finally:
         provider_release.set()
         if process is not None and reader is not None:
@@ -485,13 +527,324 @@ def run(args):
     return 1 if result.get("error") or result["blockers"] or any(value is not True for value in result["checks"].values()) else 0
 
 
+def run_tui(args):
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    binary = shutil.which(args.harness)
+    if binary is None or not args.kit_bin.is_file():
+        raise RuntimeError("installed harness and built --kit-bin are required")
+    env = {key: os.environ[key] for key in ("HOME", "PATH", "LANG", "LC_ALL", "TZ") if key in os.environ}
+    env.update({
+        "HRK_PROBE_OUT": str(out), "HRK_STATE_DIR": str(out / "kit-state"),
+        "HRK_TELEGRAM": "off", "TERM": "xterm-256color",
+        "PI_CODING_AGENT_DIR": str(out / "agent"),
+        "PI_CODING_AGENT_SESSION_DIR": str(out / "sessions"),
+        "PI_CONFIG_DIR": os.path.relpath(out / "omp-root", Path.home()), "PI_OFFLINE": "1",
+        "XDG_CONFIG_HOME": str(out / "config"), "XDG_STATE_HOME": str(out / "state"),
+        "XDG_CACHE_HOME": str(out / "cache"),
+    })
+    (out / "agent").mkdir()
+    (out / "bin").mkdir()
+    write_json(out / "agent/settings.json", {"compaction": {"enabled": False, "reserveTokens": 512, "keepRecentTokens": 100}})
+    (out / "observer.ts").write_text(TUI_EXTENSION)
+    flags = ["--no-extensions", "--no-skills", "--no-tools", "--session-dir", str(out / "sessions")]
+    if args.harness == "pi":
+        flags += ["--no-mcp", "--no-context-files", "--no-prompt-templates", "--no-themes", "--offline", "-e", str(out / "observer.ts")]
+    else:
+        (out / "omp.yml").write_text("setupVersion: 2\ncompaction:\n  enabled: false\n  reserveTokens: 512\n  keepRecentTokens: 100\ntui:\n  titleState: false\n")
+        flags += ["--no-rules", "--no-lsp", "--no-title", "--config", str(out / "omp.yml"), "--hook", str(out / "observer.ts")]
+    # The public launcher has no arbitrary runtime flags. This executable only
+    # adds profile isolation and the observer, then execs the installed runtime.
+    launcher = out / "bin" / args.harness
+    launcher.write_text("#!/bin/sh\nexec " + shlex.join([binary, *flags]) + ' "$@"\n')
+    launcher.chmod(0o700)
+    env["PATH"] = str(out / "bin") + os.pathsep + env["PATH"]
+    port = 20000 + int(hashlib.sha256(str(out).encode()).hexdigest()[:4], 16) % 20000
+    env["HRK_PROBE_URL"] = f"http://127.0.0.1:{port}/v1"
+    result = {"harness": args.harness, "case": "tui", "kitBin": str(args.kit_bin.resolve()), "checks": {}, "blockers": []}
+    result["provider"] = {"pid": os.getpid(), "port": port, "command": [sys.executable, *sys.argv], "worktree": str(Path.cwd())}
+    result["version"] = subprocess.check_output([binary, "--version"], cwd=out, env=env, text=True, timeout=15).strip()
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 4 * 1024 * 1024:
+                self.send_error(413)
+                return
+            payload = json.loads(self.rfile.read(length))
+            with (out / "provider.jsonl").open("a") as log:
+                log.write(json.dumps(payload) + "\n")
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for delta, finish in [({"role": "assistant", "content": "Local fixture complete."}, None), ({}, "stop")]:
+                    chunk = {"id": "probe", "object": "chat.completion.chunk", "created": int(time.time()), "model": "probe", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+                    self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    process = master = server = worker = None
+    screen = bytearray()
+    processes = []
+    bridges = set()
+    transcript = None
+
+    def events():
+        return jsonl(out / "observer.jsonl", live_log=True)
+
+    def state():
+        paths = list((out / "kit-state").glob("main-news-*.json"))
+        return json.loads(paths[0].read_text()) if paths else {}
+
+    def children():
+        rows = subprocess.check_output(["ps", "-eo", "pid=,pgid=,args="], text=True)
+        current = []
+        for row in rows.splitlines():
+            fields = row.split(None, 2)
+            if len(fields) == 3 and int(fields[1]) == process.pid and fields[2] == str(args.kit_bin.resolve()) + " main __news":
+                child = int(fields[0])
+                current.append(child)
+                if child not in bridges:
+                    processes.append({"pid": child, "argv": [str(args.kit_bin.resolve()), "main", "__news"],
+                                      "cwd": str(out), "worktree": str(Path.cwd()), "parentPID": process.pid})
+                    bridges.add(child)
+                    write_json(out / "processes.json", processes)
+        return current
+
+    def entries(batch):
+        return [entry for path in (out / "kit-state/main-transcripts").glob("*.jsonl")
+                for entry in jsonl(path, live_log=True) if entry.get("customType") == "hrk-news" and
+                entry.get("details", {}).get("batchId") == batch]
+
+    def pump(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            ready, _, _ = select.select([master], [], [], min(0.05, max(0, end - time.monotonic())))
+            if ready:
+                try:
+                    screen.extend(os.read(master, 65536))
+                except OSError:
+                    break
+
+    def wait_for(predicate, label, timeout=20):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if predicate():
+                return
+            if process.poll() is not None:
+                raise RuntimeError(f"runtime exited ({process.returncode}): {label}")
+            pump(0.05)
+        raise TimeoutError(label)
+
+    def send(data):
+        with (out / "input.jsonl").open("a") as log:
+            log.write(json.dumps({"at": time.time_ns() // 1000000, "bytes": data.decode("utf8")}) + "\n")
+        os.write(master, data)
+
+    def command(value):
+        send(value.encode())
+        pump(0.2)
+        send(b"\r")
+
+    def snapshot():
+        return next((e for e in reversed(events()) if e["event"] == "snapshot"), {})
+
+    def editor(value):
+        wait_for(lambda: snapshot().get("editor") == value, "editor bytes " + repr(value))
+
+    def start(resume=None):
+        nonlocal process, master, transcript
+        argv = [str(args.kit_bin.resolve()), "main", "--agent", args.harness + ":hrk-probe/probe:off", "--exec"]
+        if resume:
+            argv += ["--resume", str(resume)]
+        master, slave = pty.openpty()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
+            process = subprocess.Popen(argv, cwd=out, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        finally:
+            os.close(slave)
+        processes.append({"pid": process.pid, "argv": argv, "cwd": str(out), "worktree": str(Path.cwd()), "port": port})
+        write_json(out / "processes.json", processes)
+        offset = len(screen)
+        trusted = False
+
+        def started():
+            nonlocal trusted
+            if not trusted and b"Trust project folder?" in screen[offset:]:
+                send(b"\x1b[B\x1b[B\r")
+                trusted = True
+            return any(e.get("pid") == process.pid and e["event"] == "start" for e in events())
+
+        wait_for(started, "public main session start", 35)
+        identity = next(e for e in reversed(events()) if e["event"] == "start")
+        transcript = Path(identity["file"])
+        wait_for(lambda: state().get("lease", {}).get("pid") == process.pid, "public main lease")
+        assert len(children()) == 1, "expected one production news child"
+        pump(0.8)
+        if args.harness == "omp":
+            # Omp exposes focus only after setFocus; dismiss a real selector to
+            # establish it without bypassing the production extension's gate.
+            command("/settings")
+            pump(0.5)
+            send(b"\x1b")
+            pump(0.5)
+
+    def stop_tui():
+        nonlocal master
+        if process is not None:
+            # Only this probe's process group, including any surviving bridge.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=3)
+        if master is not None:
+            os.close(master)
+            master = None
+
+    def emit():
+        event = {"v": 1, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                 "owner": str(out), "task": "t1", "type": "needs-human", "question": "Local PTY acceptance fixture"}
+        with (out / "kit-state/events.jsonl").open("ab") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            handle.write((json.dumps(event) + "\n").encode())
+            handle.flush()
+            os.fsync(handle.fileno())
+        wait_for(lambda: state().get("pending"), "pending batch")
+        value = state()
+        batch = value["pending"]["batchId"]
+        write_json(out / (batch + "-prepared.json"), value)
+        return batch
+
+    def committed(batch):
+        wait_for(lambda: state().get("lastAck", {}).get("batchId") == batch and not state().get("pending"), "durable receipt commit")
+        assert len(entries(batch)) == 1, "delivery count across transcripts is not one"
+        write_json(out / (batch + "-committed.json"), state())
+        wait_for(lambda: snapshot().get("idle") is True and snapshot().get("queued") is False, "agent idle")
+        pump(0.6)
+
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        worker = threading.Thread(target=server.serve_forever)
+        worker.start()
+        start()
+        result["checks"]["public_launch_registers_runtime"] = True
+        assert transcript.stat().st_mode & 0o777 == 0o600
+        result["checks"]["private_transcript"] = True
+        for label, draft in [("normal", "UNSENT_DRAFT"), ("whitespace", "   ")]:
+            send(draft.encode())
+            editor(draft)
+            batch = emit()
+            pump(1)
+            assert snapshot()["editor"] == draft and not entries(batch), "news changed or bypassed draft"
+            send(b"\x15")
+            editor("")
+            committed(batch)
+            result["checks"][label + "_draft_preserved"] = True
+        # A paste remains incomplete across multiple drain ticks.
+        send(b"\x1b[200~first line\n")
+        batch = emit()
+        pump(0.7)
+        premature = bool(entries(batch))
+        send(b"second line\x1b[201~")
+        editor("first line\nsecond line")
+        write_json(out / "paste-evidence.json", {"batchId": batch, "injectedBeforePasteEnd": premature,
+                                                "editorAfterPaste": snapshot(), "entries": entries(batch)})
+        assert not premature, "news injected inside bracketed paste"
+        pump(0.7)
+        assert not entries(batch) and snapshot()["editor"] == "first line\nsecond line"
+        send(b"\x15\x7f\x15")
+        editor("")
+        committed(batch)
+        result["checks"]["chunked_multiline_paste_preserved"] = True
+        command("/settings")
+        pump(0.5)
+        batch = emit()
+        pump(1)
+        assert not entries(batch), "news injected into settings selector"
+        send(b"\x1b")
+        committed(batch)
+        result["checks"]["modal_holds_until_escape"] = True
+        send(b"resume draft")
+        editor("resume draft")
+        batch = emit()
+        original = transcript
+        child, = children()
+        process.kill()
+        process.wait(timeout=3)
+        deadline = time.monotonic() + 7
+        while process_alive(child) and time.monotonic() < deadline:
+            pump(0.05)
+        assert not process_alive(child), "bridge survived parent SIGKILL"
+        result["checks"]["parent_sigkill_child_cleanup"] = True
+        stop_tui()
+        start(original)
+        assert transcript == original, "explicit resume changed transcript"
+        committed(batch)
+        result["checks"]["public_explicit_resume_pending_once"] = True
+    except Exception as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+        if isinstance(error, InterruptedError):
+            raise
+    finally:
+        stop_tui()
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if worker is not None:
+            worker.join()
+        deadline = time.monotonic() + 7
+        while any(process_alive(pid) for pid in bridges) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        remaining = [pid for pid in bridges if process_alive(pid)]
+        if remaining:
+            result["blockers"].append("news children required SIGKILL during cleanup")
+            for pid in remaining:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + 2
+            while any(process_alive(pid) for pid in remaining) and time.monotonic() < deadline:
+                time.sleep(0.05)
+        result["checks"]["owned_processes_exited"] = all(not process_alive(p["pid"]) for p in processes) and all(not process_alive(pid) for pid in bridges)
+        result["bridgePIDs"] = sorted(bridges)
+        (out / "screen.txt").write_bytes(screen)
+        write_json(out / "result.json", result)
+    print(json.dumps({"harness": args.harness, "version": result.get("version"), "checks": result["checks"],
+                      "blockers": result["blockers"], "error": result.get("error"), "out": str(out)}))
+    return 1 if result.get("error") or result["blockers"] or any(v is not True for v in result["checks"].values()) else 0
+
+
 def main():
+    signal.signal(signal.SIGTERM, interrupt)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=["transcript-contract"], required=True)
+    parser.add_argument("--case", choices=["all", "transcript-contract", "tui"], default="all")
     parser.add_argument("--harness", choices=["pi", "omp"], required=True)
     parser.add_argument("--kit-bin", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    return run(parser.parse_args())
+    args = parser.parse_args()
+    if args.case == "transcript-contract":
+        return run(args)
+    if args.case == "tui":
+        return run_tui(args)
+    args.out.mkdir(parents=True, exist_ok=False)
+    outcomes = {}
+    for name, check in [("transcript-contract", run), ("tui", run_tui)]:
+        case = argparse.Namespace(**vars(args))
+        case.out = args.out / name
+        outcomes[name] = check(case)
+    write_json(args.out / "result.json", outcomes)
+    return int(any(outcomes.values()))
 
 
 if __name__ == "__main__":
