@@ -1,7 +1,9 @@
 package harness
 
 import (
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,3 +30,176 @@ func TestMainUsageSupport(t *testing.T) {
 		t.Fatalf("missing transcript confused with unsupported: %+v, %v, %v", u, supported, err)
 	}
 }
+
+func TestMainExtensionFiles(t *testing.T) {
+	for _, h := range []task.Harness{task.Pi, task.Omp} {
+		file, err := MainExtension("/opt/kit quoted/\"hrk\\binary", h)
+		if err != nil || file.Name != "hrk-main.ts" {
+			t.Fatalf("%s: %v %+v", h, err, file)
+		}
+		checkScript(t, string(file.Data))
+		if strings.Contains(string(file.Data), "__HRK_") {
+			t.Fatal("unrendered placeholder")
+		}
+	}
+	for _, tc := range []struct {
+		bin string
+		h   task.Harness
+	}{{"relative", task.Pi}, {"/bin/hrk", task.Claude}, {"/bin/hrk", task.Codex}} {
+		if _, err := MainExtension(tc.bin, tc.h); err == nil {
+			t.Fatalf("accepted %+v", tc)
+		}
+	}
+}
+
+func TestMainExtensionLifecycle(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required to verify the main extension")
+	}
+	for _, h := range []task.Harness{task.Pi, task.Omp} {
+		t.Run(string(h), func(t *testing.T) {
+			dir := t.TempDir()
+			file, err := MainExtension("/opt/hrk", h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(dir, "main.mjs"), string(file.Data))
+			writeFile(t, filepath.Join(dir, "driver.mjs"), mainLifecycleDriver)
+			cmd := exec.Command(node, filepath.Join(dir, "driver.mjs"), string(h))
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("node lifecycle: %v\n%s", err, out)
+			} else {
+				t.Log(string(out))
+			}
+		})
+	}
+}
+
+const mainLifecycleDriver = `import assert from 'node:assert/strict';
+import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {EventEmitter} from 'node:events';
+import {env,pid} from 'node:process';
+const harness=process.argv[2];
+let now=100000, serial=0, timers=new Map();
+Date.now=()=>now;
+globalThis.setTimeout=(fn,ms=0)=>{ const id=++serial;timers.set(id,{fn,at:now+ms});return id; };
+globalThis.clearTimeout=id=>timers.delete(id);
+async function advance(ms=0) {
+  const end=now+ms;
+  for(let count=0;count<1000;count++) {
+    await Promise.resolve();await Promise.resolve();
+    const next=[...timers].filter(([,v])=>v.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];
+    if(!next){now=end;await Promise.resolve();return;}
+    now=next[1].at;timers.delete(next[0]);next[1].fn();
+  }
+  throw Error('timer hot loop');
+}
+let generation=0, children=[], requests=[], disk=false, saved=null, closeRace=false, stubborn=false;
+class Child extends EventEmitter {
+ constructor(){super();this.exitCode=null;this.signalCode=null;this.stdout=new EventEmitter();this.stdout.setEncoding=()=>{};
+ this.stdin=new EventEmitter();this.stdin.writable=true;this.stdin.end=()=>{};
+ this.stdin.write=line=>{const q=JSON.parse(line);requests.push(q);setTimeout(()=>this.handle(q),0);return true;};}
+ reply(q,type,more={}){this.stdout.emit('data',JSON.stringify({version:1,type,requestId:q.requestId,generation:this.generation,...more})+'\n');}
+ handle(q){if(this.exitCode!==null||this.signalCode!==null)return;
+  if(q.type==='register') {this.register=q;this.generation=++generation;this.reply(q,'ready');
+   if(saved) this.reply(q,disk?'committed':'conflict',{batchId:saved.batchId,message:'prior append may still finish; verify its receipt or exit the main process and explicitly resume'});
+  } else if(q.type==='receipt') {this.reply(q,disk?'committed':'error',{batchId:q.batchId,message:'receipt not on disk; retain pending and do not resend'});if(disk)saved=null;}
+  else if(q.type==='activity')this.reply(q,'ready');
+  else if(q.type==='close') {if(closeRace){closeRace=false;deliver(this);this.reply(q,'conflict',{message:'pending batch'});}
+   else this.reply(q,'ready',{message:'closed'});}
+ }
+ kill(signal){if(stubborn&&signal!=='SIGKILL')return;this.signalCode=signal;setTimeout(()=>{this.emit('exit');this.emit('close');},0);}
+}
+cp.spawn=(bin,args,options)=>{assert.equal(bin,'/opt/hrk');assert.deepEqual(args,['main','__news']);assert.equal(options.detached,undefined);const c=new Child();children.push(c);return c;};
+syncBuiltinESMExports();
+const {default:extension}=await import('./main.mjs');
+env.HRK_MAIN=String(pid);env.HRK_MAIN_OWNER='/owner';env.HRK_MAIN_NONCE='fixture-nonce';env.HRK_MAIN_HARNESS=harness;env.HRK_MAIN_INTERACTIVE='1';delete env.HRK_TASK;
+let text='',idle=true,queued=false,focus,overlay=false,listeners=new Set(),notices=[],statuses=[],sent=[];
+class CustomEditor {getText(){return text;} onSubmit(){} }
+const editor=new CustomEditor();focus=editor;
+const tui={getFocusedComponent:harness==='pi'?()=>focus:undefined,hasOverlay:()=>overlay,children:[editor],setFocus(value){focus=value;return 'focus-return';}};
+const originalFocus=tui.setFocus;
+function setFocus(value){assert.equal(tui.setFocus(value),'focus-return');}
+let session={sessionId:'one',sessionFile:'/sessions/one.jsonl',cwd:'/cwd'};
+const ctx={mode:'tui',hasUI:true,model:{},isIdle:()=>idle,hasPendingMessages:()=>queued,
+ sessionManager:{getSessionId:()=>session.sessionId,getSessionFile:()=>session.sessionFile,getCwd:()=>session.cwd},
+ ui:{getEditorText:()=>text,onTerminalInput:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
+ setWidget:(_k,fn)=>{if(fn)fn(tui);},setStatus:(_k,v)=>statuses.push(v),notify:v=>notices.push(v)}};
+function make(){const h={};extension({on:(name,f)=>h[name]=f,sendMessage:(m,o)=>{assert.equal(idle,true);assert.equal(text,'');assert.equal(queued,false);assert.equal(focus,editor);assert.equal(overlay,false);assert.deepEqual(o,{deliverAs:'followUp',triggerTurn:true});sent.push(m);}});return h;}
+function key(data){for(const f of listeners)assert.equal(f(data),undefined,'input consumed');}
+async function start(h){h.session_start({},ctx);setFocus(editor);await advance(600);}
+async function stop(h){const promise=h.session_shutdown({reason:'reload'},ctx);await advance(1800);await promise;assert.equal(children.filter(c=>c.signalCode===null).length,0);assert.equal(listeners.size,0);assert.equal(tui.setFocus,originalFocus);}
+let batchSeq=0;
+function deliver(c=children.at(-1)){disk=false;saved={batchId:'b'+(++batchSeq),digest:'digest',lines:['t1 done','second line'],target:{...session,owner:'/owner',harness},attempt:'appending'};c.reply(c.register,'batch',{batchId:saved.batchId,batch:saved});return saved;}
+function end(h){idle=true;if(harness==='pi')h.agent_settled({},ctx);else h.agent_end({willContinue:false},ctx);}
+// Guards must not register hooks or spawn outside a launched main TUI.
+env.HRK_TASK='runner';assert.deepEqual(Object.keys(make()),[]);delete env.HRK_TASK;
+env.HRK_MAIN_INTERACTIVE='0';assert.deepEqual(Object.keys(make()),[]);env.HRK_MAIN_INTERACTIVE='1';
+let h=make();ctx.mode='rpc';h.session_start({},ctx);await advance(1000);assert.equal(children.length,0);ctx.mode='tui';
+await start(h);assert.equal(children.length,1);assert.equal(sent.length,0);assert.equal(requests[0].type,'register');assert.equal(requests[0].cwd,'/cwd');
+const activityCount=()=>requests.filter(q=>q.type==='activity').length;
+const quiet=activityCount();await advance(10000);assert.equal(activityCount(),quiet,'technical time marked activity');
+h.session_start({},ctx);await advance();assert.equal(children.length,1);assert.equal(listeners.size,1);
+// Exact whitespace, chunked paste, debounce, queues, busy/retry and modal gates.
+text=' \n\t';deliver();await advance(1500);assert.equal(sent.length,0);assert.equal(text,' \n\t');
+key('\x1b[200~');text='draft\n';key('chunk');await advance(900);assert.equal(sent.length,0);
+text='';key('\x1b[201~');await advance(499);assert.equal(sent.length,0);queued=true;await advance(600);assert.equal(sent.length,0);
+queued=false;h.input({source:'interactive',text:'user prompt'},ctx);await advance(600);assert.equal(sent.length,0);idle=false;h.agent_start({},ctx);await advance(600);assert.equal(sent.length,0);
+if(harness==='omp'){h.session_stop({},ctx);h.agent_end({willContinue:true},ctx);await advance(600);assert.equal(sent.length,0);}
+h.auto_retry_start({},ctx);end(h);await advance(600);assert.equal(sent.length,0);h.auto_retry_end({},ctx);
+setFocus({});await advance(600);assert.equal(sent.length,0);setFocus(editor);overlay=true;await advance(600);assert.equal(sent.length,0);overlay=false;
+h.ui_prompt_start({},ctx);await advance(600);assert.equal(sent.length,0);h.ui_prompt_end({},ctx);
+const abort=new AbortController();h.session_before_compact({signal:abort.signal},ctx);await advance(600);assert.equal(sent.length,0);abort.abort();
+h.auto_compaction_start({},ctx);await advance(600);assert.equal(sent.length,0);h.auto_compaction_end({},ctx);await advance(600);assert.equal(sent.length,1);
+assert.equal(sent[0].content,'t1 done\nsecond line');assert.deepEqual(sent[0].details,{batchId:'b1',owner:'/owner',digest:'digest'});
+// Receipt retries and duplicate lifecycle events never resend an attempted batch.
+for(let i=0;i<4;i++){h.message_end({},ctx);end(h);await advance(2000);}
+assert.equal(sent.length,1);assert.deepEqual(await h.session_before_switch({},ctx),{cancel:true});
+disk=true;h.message_end({},ctx);await advance(600);assert.equal(sent.length,1);
+// Never-sent handover survives teardown and reconnect, but old callbacks cannot drain.
+text='keep this exact draft';deliver();await advance(600);const old=h;await stop(h);h=make();await start(h);
+assert.equal(sent.length,1);assert.equal(text,'keep this exact draft');assert.equal(listeners.size,1);
+old.agent_settled({},ctx);old.message_end({},ctx);await advance(600);assert.equal(sent.length,1);
+text='';key('clear');await advance(600);assert.equal(sent.length,2);
+// Inflight without receipt remains receipt-only across repeated reloads.
+await stop(h);h=make();await start(h);await advance(60000);assert.equal(sent.length,2);
+await stop(h);h=make();await start(h);assert.equal(sent.length,2);
+disk=true;h.message_end({},ctx);await advance(600);assert.equal(sent.length,2);
+// Receipt persisted before reload is committed without another send.
+deliver();await advance(600);assert.equal(sent.length,3);disk=true;await stop(h);saved=null;h=make();await start(h);assert.equal(sent.length,3);
+// Child death reconnects on the same nonce and cannot replay an uncertain append.
+deliver();await advance(600);assert.equal(sent.length,4);children.at(-1).kill('SIGKILL');await advance(4000);assert.equal(sent.length,4);
+disk=true;h.message_end({},ctx);await advance(600);
+// Close racing a new batch cancels transition, preserving its original target.
+closeRace=true;const transition=h.session_before_fork({},ctx);await advance(2000);assert.deepEqual(await transition,{cancel:true});
+await advance(4000);assert.equal(sent.length,5);disk=true;h.message_end({},ctx);await advance(600);
+// Tree abort/failure emits no session_tree, but runtime idle ends that operation.
+for (const aborted of [true,false]) {
+ idle=false;const signal=new AbortController();const navigation=h.session_before_tree({signal:signal.signal},ctx);
+ await advance(2000);assert.equal(await navigation,undefined);
+ const count=children.length;await advance(1000);assert.equal(children.length,count,'reconnected during navigation');
+ if(aborted)signal.abort();idle=true;await advance(1000);
+ assert.equal(children.length,count+1,'cancelled/failed tree left delivery suspended');
+ assert.equal(children.at(-1).register.sessionId,'one');
+}
+// Later hooks may cancel switch/fork without a completion event. Show explicit recovery.
+for(const name of ['session_before_switch','session_before_fork']) {
+ const cancelled=h[name]({},ctx);await advance(2000);assert.equal(await cancelled,undefined);
+ assert.ok(statuses.some(s=>s?.includes('/reload to reconnect')));
+ const previous=children.length;await advance(2000);assert.equal(children.length,previous);
+ h.input({source:'interactive',text:harness==='omp'&&name==='session_before_fork'?'/reload-plugins':'/reload'},ctx);await advance(1000);
+ assert.equal(children.length,previous+1);assert.equal(children.at(-1).register.sessionId,'one');
+}
+// A successful quiesced close permits new identity and repeated session_start.
+const change=h.session_before_switch({},ctx);await advance(2000);assert.equal(await change,undefined);
+session={sessionId:'two',sessionFile:'/sessions/two.jsonl',cwd:'/cwd'};await start(h);
+assert.equal(children.at(-1).register.sessionId,'two');assert.equal(sent.length,5);
+// Unknown UI APIs fail closed, with pending visible and no input changes.
+const savedOverlay=tui.hasOverlay;tui.hasOverlay=undefined;deliver();await advance(1000);assert.equal(sent.length,5);tui.hasOverlay=savedOverlay;
+h.session_before_compact({},ctx);await advance(600);assert.equal(sent.length,5);h.session_compact_failed({aborted:true},ctx);await advance(600);assert.equal(sent.length,6);
+// A stuck child is force-stopped within the shutdown budget.
+stubborn=true;const began=now;await stop(h);assert.ok(now-began<=1800);assert.equal(timers.size,0);
+console.log('main lifecycle passed: guards, drafts/paste, debounce, queues, retry/compaction, modal, receipts, reload, stale callbacks, child death, transition race, bounded cleanup');
+`
