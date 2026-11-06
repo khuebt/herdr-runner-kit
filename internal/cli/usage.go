@@ -29,7 +29,8 @@ func newUsageCommand() *cobra.Command {
 			"the usage stored at its finish. Only Claude runners have usage; the others show -. " +
 			"Tasks of the current folder's main session and every project are listed, as by list, " +
 			"and --since and --until keep those that finished in the window, or started in it while " +
-			"running. --main adds the recorded main sessions, counting their calls in the window. " +
+			"running. --main adds recorded main sessions, counting supported calls in the window; " +
+			"unsupported main usage stays visible and makes totals partial. " +
 			"UNITS weigh tokens by list-price ratios to an input token: input 1, cache read 0.1, " +
 			"5-minute cache write 1.25, 1-hour cache write 2, output 5. They compare runs; they are " +
 			"not money. MAX-CTX is the largest context one call of the task's own sessions carried.",
@@ -67,7 +68,11 @@ func newUsageCommand() *cobra.Command {
 			}
 			rows := taskUsage(tasks, o)
 			if withMain {
-				rows = append(rows, mainUsage(r.Store.MainSessions(), o)...)
+				sessions, err := r.Store.ReadMainSessions()
+				if err != nil {
+					return err
+				}
+				rows = append(rows, mainUsage(sessions, o)...)
 			}
 			if by == "owner" {
 				rows = byOwner(rows)
@@ -99,13 +104,14 @@ type usageOptions struct {
 // usageRow is one line of usage: a task, a main session, or an owner's
 // sum. Usage is nil when none could be read.
 type usageRow struct {
-	Task   string      `json:"task,omitempty"`
-	Kind   string      `json:"kind,omitempty"`
-	Agent  string      `json:"agent,omitempty"`
-	Status string      `json:"status,omitempty"`
-	Owner  string      `json:"owner"`
-	Tasks  int         `json:"tasks,omitempty"` // in a per-owner row
-	Usage  *task.Usage `json:"usage"`
+	Task        string      `json:"task,omitempty"`
+	Kind        string      `json:"kind,omitempty"`
+	Agent       string      `json:"agent,omitempty"`
+	Status      string      `json:"status,omitempty"`
+	Owner       string      `json:"owner"`
+	Tasks       int         `json:"tasks,omitempty"` // in a per-owner row
+	Usage       *task.Usage `json:"usage"`
+	Unsupported int         `json:"unsupported,omitempty"` // main sessions without a usage parser
 }
 
 // mainOwner is the owner of main session rows: one main session serves
@@ -141,15 +147,22 @@ func taskUsage(tasks []*task.Task, o usageOptions) []usageRow {
 }
 
 // mainUsage reads the calls in o's window of each recorded main session.
-// hrk main starts Claude, so its transcripts are Claude's.
+// Unsupported sessions stay visible because their calls cannot be windowed.
 func mainUsage(sessions []state.MainSession, o usageOptions) []usageRow {
 	var rows []usageRow
 	for _, m := range sessions {
-		if m.Transcript == "" {
+		if m.Transcript == "" && m.Harness == "" {
 			continue // recorded before transcripts were kept
 		}
 		row := usageRow{Task: "main " + m.ID[:min(8, len(m.ID))], Kind: "main", Owner: mainOwner}
-		row.Usage, _ = harness.ClaudeUsage([]string{m.Transcript}, o.from, o.to)
+		var supported bool
+		row.Usage, supported, _ = harness.MainUsage(m.Harness, m.Transcript, o.from, o.to)
+		if m.Harness != "" {
+			row.Agent = string(m.Harness)
+		}
+		if !supported {
+			row.Status, row.Unsupported = "not supported", 1
+		}
 		if row.Usage != nil && row.Usage.Calls == 0 {
 			continue // no call in the window
 		}
@@ -170,6 +183,7 @@ func byOwner(rows []usageRow) []usageRow {
 			out = append(out, usageRow{Owner: r.Owner})
 		}
 		out[i].Tasks++
+		out[i].Unsupported += r.Unsupported
 		if r.Usage != nil {
 			if out[i].Usage == nil {
 				out[i].Usage = &task.Usage{}
@@ -177,21 +191,41 @@ func byOwner(rows []usageRow) []usageRow {
 			out[i].Usage.Add(r.Usage)
 		}
 	}
+	for i := range out {
+		out[i].Status = usageStatus(out[i].Usage, out[i].Unsupported)
+	}
 	return out
 }
 
-func usageTotal(rows []usageRow) task.Usage {
+func usageStatus(u *task.Usage, unsupported int) string {
+	if unsupported == 0 {
+		return ""
+	}
+	if u == nil {
+		return "not supported"
+	}
+	return "partial"
+}
+
+func usageTotal(rows []usageRow) (*task.Usage, int) {
 	var total task.Usage
+	unsupported, measured := 0, false
 	for _, r := range rows {
+		unsupported += r.Unsupported
 		if r.Usage != nil {
+			measured = true
 			total.Add(r.Usage)
 		}
 	}
-	return total
+	if unsupported > 0 && !measured {
+		return nil, unsupported
+	}
+	return &total, unsupported
 }
 
 func printUsage(out io.Writer, rows []usageRow, owners bool) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	total, unsupported := usageTotal(rows)
 	numbers := func(u *task.Usage) string {
 		if u == nil {
 			return "-\t-\t-\t-"
@@ -199,9 +233,17 @@ func printUsage(out io.Writer, rows []usageRow, owners bool) error {
 		return fmt.Sprintf("%d\t%s\t%d\t%s", u.Calls, task.Count(float64(u.MaxContext)), u.Subagents, task.Count(u.Units))
 	}
 	if owners {
-		fmt.Fprintln(w, "OWNER\tTASKS\tCALLS\tMAX-CTX\tSUBAGENTS\tUNITS")
+		if unsupported > 0 {
+			fmt.Fprintln(w, "OWNER\tTASKS\tSTATUS\tCALLS\tMAX-CTX\tSUBAGENTS\tUNITS")
+		} else {
+			fmt.Fprintln(w, "OWNER\tTASKS\tCALLS\tMAX-CTX\tSUBAGENTS\tUNITS")
+		}
 		for _, r := range rows {
-			fmt.Fprintf(w, "%s\t%d\t%s\n", r.Owner, r.Tasks, numbers(r.Usage))
+			fmt.Fprintf(w, "%s\t%d\t", r.Owner, r.Tasks)
+			if unsupported > 0 {
+				fmt.Fprintf(w, "%s\t", orDash(r.Status))
+			}
+			fmt.Fprintln(w, numbers(r.Usage))
 		}
 	} else {
 		fmt.Fprintln(w, "TASK\tKIND\tAGENT\tSTATUS\tCALLS\tMAX-CTX\tSUBAGENTS\tUNITS")
@@ -209,25 +251,39 @@ func printUsage(out io.Writer, rows []usageRow, owners bool) error {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Task, r.Kind, orDash(r.Agent), orDash(r.Status), numbers(r.Usage))
 		}
 	}
-	total := usageTotal(rows)
+	status := usageStatus(total, unsupported)
 	if owners {
-		fmt.Fprintf(w, "total\t\t%s\n", numbers(&total))
+		fmt.Fprint(w, "total\t\t")
+		if unsupported > 0 {
+			fmt.Fprintf(w, "%s\t", status)
+		}
+		fmt.Fprintln(w, numbers(total))
 	} else {
-		fmt.Fprintf(w, "total\t\t\t\t%s\n", numbers(&total))
+		fmt.Fprintf(w, "total\t\t\t%s\t%s\n", status, numbers(total))
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if unsupported > 0 {
+		_, err := fmt.Fprintf(out, "%d main session(s): usage not supported; totals include only measured usage.\n", unsupported)
+		return err
+	}
+	return nil
 }
 
 func printUsageJSON(out io.Writer, rows []usageRow) error {
 	if rows == nil {
 		rows = []usageRow{}
 	}
+	total, unsupported := usageTotal(rows)
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(struct {
-		Rows  []usageRow `json:"rows"`
-		Total task.Usage `json:"total"`
-	}{rows, usageTotal(rows)})
+		Rows        []usageRow  `json:"rows"`
+		Total       *task.Usage `json:"total"`
+		Unsupported int         `json:"unsupported,omitempty"`
+		Status      string      `json:"status,omitempty"`
+	}{rows, total, unsupported, usageStatus(total, unsupported)})
 }
 
 // parseWhen reads a --since or --until value: empty for none, an age such

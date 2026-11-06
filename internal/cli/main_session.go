@@ -170,7 +170,7 @@ func newestMainSession(sessions []state.MainSession, dir string) string {
 		return '-'
 	}, dir)
 	for _, m := range slices.Backward(sessions) {
-		if m.Transcript != "" && filepath.Base(filepath.Dir(m.Transcript)) == name {
+		if m.Harness == "" && m.Transcript != "" && filepath.Base(filepath.Dir(m.Transcript)) == name {
 			return m.ID
 		}
 	}
