@@ -150,6 +150,19 @@ type Result struct {
 // in this process or another, finds it again.
 func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	derived := o.Cursor == "" && len(o.Tasks) > 0
+	o = waitOptions(o)
+	unlock, err := r.Store.LockCursor(o.Cursor, o.Holder)
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
+	if err := legacyDeliveryAllowed(r.Store, o); err != nil {
+		return Result{}, err
+	}
+	return runLocked(ctx, r, o, derived, nil)
+}
+
+func waitOptions(o Options) Options {
 	o.Cursor = o.cursor()
 	if o.Timeout <= 0 {
 		o.Timeout = DefaultTimeout
@@ -160,12 +173,18 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	if o.Holder == "" {
 		o.Holder = "wait"
 	}
-	unlock, err := r.Store.LockCursor(o.Cursor, o.Holder)
-	if err != nil {
-		return Result{}, err
-	}
-	defer unlock()
+	return o
+}
 
+// lockedDelivery reuses selection while the bridge owns the cursor lock.
+type lockedDelivery struct {
+	deliver      func(from, to int64, news []state.Event) (Result, error)
+	check        func() error
+	saveProgress func(int64) error
+	activeSince  time.Time
+}
+
+func runLocked(ctx context.Context, r *runner.Runner, o Options, derived bool, delivery *lockedDelivery) (Result, error) {
 	// Watch before reading, so an event written in between is never missed.
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -198,15 +217,26 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 		return Result{}, err
 	}
 	saved := cursor
+	saveProgress := func(offset int64) error { return r.Store.SaveCursor(o.Cursor, offset) }
+	if delivery != nil {
+		saveProgress = delivery.saveProgress
+	}
 	hold := !o.AllNews && len(o.Tasks) == 0 && r.Config.WakeOn != config.WakeAll
 	var held []state.Event // quiet news not delivered yet, in log order
 	var heldFrom int64     // where the read that found the first held news started
 	began := time.Now()
+	if delivery != nil {
+		began = delivery.activeSince
+	}
 	deliver := func(news []state.Event) (Result, error) {
+		news = append(held, news...)
+		if delivery != nil {
+			return delivery.deliver(saved, cursor, news)
+		}
 		if err := r.Store.SaveCursor(o.Cursor, cursor); err != nil {
 			return Result{}, err
 		}
-		return Result{Lines: wake(r, o.Owner, append(held, news...))}, nil
+		return Result{Lines: wake(r, o.Owner, news)}, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
@@ -233,6 +263,11 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 	}(o.owners(tasks))
 
 	for {
+		if delivery != nil {
+			if err := delivery.check(); err != nil {
+				return Result{}, err
+			}
+		}
 		from := cursor
 		var news []state.Event
 		news, cursor, err = readNews(r.Store, cursor, o)
@@ -263,7 +298,7 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			save = heldFrom
 		}
 		if save != saved {
-			if err := r.Store.SaveCursor(o.Cursor, save); err != nil {
+			if err := saveProgress(save); err != nil {
 				return Result{}, err
 			}
 			saved = save
@@ -291,7 +326,9 @@ func Run(ctx context.Context, r *runner.Runner, o Options) (Result, error) {
 			if len(held) > 0 {
 				return deliver(nil)
 			}
-			return Result{Idle: idle}, nil
+			if delivery == nil {
+				return Result{Idle: idle}, nil
+			}
 		}
 		b.scan(ctx, tasks)
 		// tasks holds only the watched owners' tasks.

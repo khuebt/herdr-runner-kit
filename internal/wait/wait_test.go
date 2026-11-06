@@ -136,7 +136,9 @@ func TestBurstWakesOnce(t *testing.T) {
 	for range 5 {
 		ids = append(ids, addTask(t, r, task.Running, owner).ID)
 	}
-	ch := start(r, Options{Owner: owner})
+	// Each report now syncs durable task/event state; allow the burst fixture
+	// enough time on slower filesystems to finish producing all five reports.
+	ch := start(r, Options{Owner: owner, Window: time.Second})
 	waitBlocked()
 	for _, id := range ids {
 		report(t, r, id, "ok")
