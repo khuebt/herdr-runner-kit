@@ -681,3 +681,54 @@ func TestMainNewsSignalAndMissingState(t *testing.T) {
 		})
 	}
 }
+
+func TestMainNewsShutdownWithEventLogContention(t *testing.T) {
+	for _, action := range []string{"sigterm", "eof", "close"} {
+		t.Run(action, func(t *testing.T) {
+			s, register := newsFixture(t)
+			p := startNewsProcess(t, s, register.Cwd, register.Nonce, false)
+			p.send(t, register)
+			p.read(t, "ready")
+			log, err := os.OpenFile(s.EventsPath(), os.O_CREATE|os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = log.Close() }()
+			if err := syscall.Flock(int(log.Fd()), syscall.LOCK_EX); err != nil {
+				t.Fatal(err)
+			}
+			// A real writer wakes Prepare but cannot publish until it drops the lock.
+			event, err := json.Marshal(state.Event{V: state.EventVersion, TS: time.Now().UTC(), Owner: register.Cwd, Type: "needs-human", Task: "t1", Question: "pending writer"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := log.Write(append(event, '\n')); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(200 * time.Millisecond)
+			switch action {
+			case "sigterm":
+				if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatal(err)
+				}
+			case "eof":
+				_ = p.input.Close()
+			case "close":
+				p.send(t, mainNewsRequest{Type: "close", Quiesced: true})
+			}
+			select {
+			case <-p.ended:
+			case <-time.After(2 * time.Second):
+				t.Fatal("event-log contention prevented bounded child shutdown")
+			}
+			unlock, err := s.LockCursor(state.CursorName(register.Cwd), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			unlock()
+			if off, _, err := s.Cursor(state.CursorName(register.Cwd)); err != nil || off != 0 {
+				t.Fatalf("unfinished writer advanced cursor: %d %v", off, err)
+			}
+		})
+	}
+}

@@ -160,7 +160,7 @@ func AcquireDelivery(r *runner.Runner, o Options, lease state.MainNewsLease, tar
 		if err != nil {
 			return nil, err
 		}
-		n.Log, err = logCheckpoint(r.Store, off)
+		n.Log, err = logCheckpoint(context.Background(), r.Store, off)
 		if err != nil {
 			return nil, err
 		}
@@ -170,7 +170,7 @@ func AcquireDelivery(r *runner.Runner, o Options, lease state.MainNewsLease, tar
 	}
 	n.Lease = &lease
 	d := &Delivery{r: r, options: o, target: target, news: n, unlock: unlock}
-	if err := d.checkLog(); err != nil {
+	if err := d.checkLog(context.Background()); err != nil {
 		return nil, err
 	}
 	if n.Generation == ^uint64(0) {
@@ -216,7 +216,7 @@ func (d *Delivery) Close() error {
 	return nil
 }
 
-func (d *Delivery) checkLog() error {
+func (d *Delivery) checkLog(ctx context.Context) error {
 	if d.unlock == nil {
 		return fmt.Errorf("delivery disconnected")
 	}
@@ -227,7 +227,7 @@ func (d *Delivery) checkLog() error {
 	if d.news.Lease != nil && !alive {
 		return fmt.Errorf("delivery parent exited; reconnect to reconcile pending news")
 	}
-	checkpoint, err := logCheckpoint(d.r.Store, d.news.Log.Offset)
+	checkpoint, err := logCheckpoint(ctx, d.r.Store, d.news.Log.Offset)
 	if err != nil {
 		return err
 	}
@@ -258,14 +258,16 @@ func (d *Delivery) checkLog() error {
 // for events, attachments and periodic backstop/GC work, including when idle.
 // A technical timeout returns nil, nil and does not count as parent activity.
 func (d *Delivery) Prepare(ctx context.Context) (*state.MainNewsBatch, error) {
-	if err := d.checkLog(); err != nil {
+	if err := d.checkLog(ctx); err != nil {
 		return nil, err
 	}
 	if d.news.Pending == nil {
 		_, err := runLocked(ctx, d.r, d.options, false, &lockedDelivery{
-			check: d.checkLog, saveProgress: d.saveProgress, activeSince: d.news.ActiveSince,
+			check:        func() error { return d.checkLog(ctx) },
+			saveProgress: func(offset int64) error { return d.saveProgress(ctx, offset) },
+			activeSince:  d.news.ActiveSince,
 			deliver: func(from, to int64, events []state.Event) (Result, error) {
-				if err := d.checkLog(); err != nil {
+				if err := d.checkLog(ctx); err != nil {
 					return Result{}, err
 				}
 				lines := make([]string, 0, len(events))
@@ -273,7 +275,7 @@ func (d *Delivery) Prepare(ctx context.Context) (*state.MainNewsBatch, error) {
 					tk, _ := d.r.Store.Get(ev.Task)
 					lines = append(lines, Line(ev, tk, d.r.Config.KeepFor))
 				}
-				checkpoint, err := logCheckpoint(d.r.Store, to)
+				checkpoint, err := logCheckpoint(ctx, d.r.Store, to)
 				if err != nil {
 					return Result{}, err
 				}
@@ -309,8 +311,8 @@ func (d *Delivery) Prepare(ctx context.Context) (*state.MainNewsBatch, error) {
 
 // Checkpoint progress before moving its cursor, so even an idle owner pins the
 // log identity before a later replacement can reuse the same byte offsets.
-func (d *Delivery) saveProgress(offset int64) error {
-	checkpoint, err := logCheckpoint(d.r.Store, offset)
+func (d *Delivery) saveProgress(ctx context.Context, offset int64) error {
+	checkpoint, err := logCheckpoint(ctx, d.r.Store, offset)
 	if err != nil {
 		return err
 	}
@@ -337,7 +339,7 @@ func randomBatchID() string {
 // BeginAttempt must persist before requesting an append. Both states require
 // disk transcript reconciliation on recovery; appending is never a receipt.
 func (d *Delivery) BeginAttempt(batchID string) error {
-	if err := d.checkLog(); err != nil {
+	if err := d.checkLog(context.Background()); err != nil {
 		return err
 	}
 	if d.news.Pending == nil || d.news.Pending.BatchID != batchID {
@@ -358,7 +360,7 @@ func (d *Delivery) BeginAttempt(batchID string) error {
 // Commit accepts only a receipt already verified against durable transcript
 // content. It saves the cursor before clearing pending, then retains one ACK.
 func (d *Delivery) Commit(ack state.MainNewsAck) error {
-	if err := d.checkLog(); err != nil {
+	if err := d.checkLog(context.Background()); err != nil {
 		return err
 	}
 	// An exact retained ACK is already committed. It may be retried after a
@@ -412,7 +414,7 @@ func legacyDeliveryAllowed(s *state.Store, o Options) error {
 	if n.Pending != nil || alive {
 		return &DeliveryConflict{Owner: o.Owner, Reason: "durable delivery is reserved or pending"}
 	}
-	checkpoint, err := logCheckpoint(s, n.Log.Offset)
+	checkpoint, err := logCheckpoint(context.Background(), s, n.Log.Offset)
 	if err != nil {
 		return err
 	}
@@ -425,7 +427,7 @@ func legacyDeliveryAllowed(s *state.Store, o Options) error {
 // logCheckpoint takes the writer's log lock so a published batch cannot depend
 // on an event still being written or synced. It detects replacement, truncation
 // and changes to the prefix even if a replacement has the same byte length.
-func logCheckpoint(s *state.Store, offset int64) (state.MainNewsLog, error) {
+func logCheckpoint(ctx context.Context, s *state.Store, offset int64) (state.MainNewsLog, error) {
 	checkpoint := state.MainNewsLog{Offset: offset}
 	f, err := os.Open(s.EventsPath())
 	if errors.Is(err, fs.ErrNotExist) && offset == 0 {
@@ -437,8 +439,25 @@ func logCheckpoint(s *state.Store, offset int64) (state.MainNewsLog, error) {
 		return checkpoint, fmt.Errorf("open delivery event log: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
-		return checkpoint, err
+	// Register/receipt checks also need a bound outside cancellable Prepare.
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			return checkpoint, fmt.Errorf("lock delivery event log: %w", err)
+		}
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			return checkpoint, err
+		}
+		select {
+		case <-ctx.Done():
+			return checkpoint, fmt.Errorf("lock delivery event log: %w", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	info, err := f.Stat()
 	if err != nil {
