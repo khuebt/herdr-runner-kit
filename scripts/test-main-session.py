@@ -746,11 +746,19 @@ def run_tui(args):
             committed(batch)
             result["checks"][label + "_draft_preserved"] = True
         # A paste remains incomplete across multiple drain ticks.
-        send(b"\x1b[200~first line\n")
+        send(b"\x1b[20")
+        pump(0.01)
+        send(b"0~first line\n")
         batch = emit()
-        pump(0.7)
+        pump(0.3)
         premature = bool(entries(batch))
-        send(b"second line\x1b[201~")
+        send(b"second ")
+        pump(0.3)
+        premature |= bool(entries(batch))
+        send(b"line\x1b[20")
+        pump(0.01)
+        premature |= bool(entries(batch))
+        send(b"1~")
         editor("first line\nsecond line")
         write_json(out / "paste-evidence.json", {"batchId": batch, "injectedBeforePasteEnd": premature,
                                                 "editorAfterPaste": snapshot(), "entries": entries(batch)})
@@ -761,6 +769,26 @@ def run_tui(args):
         editor("")
         committed(batch)
         result["checks"]["chunked_multiline_paste_preserved"] = True
+        # Even Omp's native paste timeout cannot replace an observed raw END.
+        warning_start = len(screen)
+        send(b"\x1b[200~")
+        batch = emit()
+        pump(10.3)
+        assert not entries(batch), "unterminated paste timeout released news"
+        assert b"Paste incomplete or unknown" in screen[warning_start:], "missing paste recovery warning"
+        editor("")
+        send(b"\x1b[201~")
+        editor("")
+        committed(batch)
+        result["checks"]["unterminated_paste_warns_and_waits_for_real_end"] = True
+        command("/reload" if args.harness == "pi" else "/reload-plugins")
+        pump(1.5)
+        # A reload gap is unknown until a real paste END re-establishes input state.
+        send(b"\x1b[200~\x1b[201~")
+        editor("")
+        committed(emit())
+        assert len(children()) == 1, "reload duplicated the news child"
+        result["checks"]["reload_keeps_one_news_child"] = True
         command("/settings")
         pump(0.5)
         batch = emit()
@@ -769,23 +797,27 @@ def run_tui(args):
         send(b"\x1b")
         committed(batch)
         result["checks"]["modal_holds_until_escape"] = True
-        send(b"resume draft")
-        editor("resume draft")
-        batch = emit()
-        original = transcript
-        child, = children()
-        process.kill()
-        process.wait(timeout=3)
-        deadline = time.monotonic() + 7
-        while process_alive(child) and time.monotonic() < deadline:
-            pump(0.05)
-        assert not process_alive(child), "bridge survived parent SIGKILL"
-        result["checks"]["parent_sigkill_child_cleanup"] = True
-        stop_tui()
-        start(original)
-        assert transcript == original, "explicit resume changed transcript"
-        committed(batch)
-        result["checks"]["public_explicit_resume_pending_once"] = True
+        for label, draft in [("draft", b"resume draft"), ("unterminated_paste", b"\x1b[200~")]:
+            send(draft)
+            if label == "draft":
+                editor("resume draft")
+            batch = emit()
+            pump(1.2)
+            assert not entries(batch), "news bypassed input before exit/resume"
+            original = transcript
+            child, = children()
+            process.kill()
+            process.wait(timeout=3)
+            deadline = time.monotonic() + 7
+            while process_alive(child) and time.monotonic() < deadline:
+                pump(0.05)
+            assert not process_alive(child), "bridge survived parent SIGKILL"
+            result["checks"]["parent_sigkill_child_cleanup"] = True
+            stop_tui()
+            start(original)
+            assert transcript == original, "explicit resume changed transcript"
+            committed(batch)
+            result["checks"]["public_explicit_resume_" + label + "_pending_once"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         if isinstance(error, InterruptedError):

@@ -114,6 +114,9 @@ class Child extends EventEmitter {
  kill(signal){if(stubborn&&signal!=='SIGKILL')return;this.signalCode=signal;setTimeout(()=>{this.emit('exit');this.emit('close');},0);}
 }
 cp.spawn=(bin,args,options)=>{assert.equal(bin,'/opt/hrk');assert.deepEqual(args,['main','__news']);assert.equal(options.detached,undefined);const c=new Child();children.push(c);return c;};
+const raw=new EventEmitter();raw.isTTY=true;raw.isRaw=false;raw.readableFlowing=false;
+const runtimeInput=()=>{};const observers=()=>raw.listeners('data').filter(f=>f!==runtimeInput).length;
+Object.defineProperty(process,'stdin',{value:raw});
 syncBuiltinESMExports();
 const {default:extension}=await import('./main.mjs');
 env.HRK_MAIN=String(pid);env.HRK_MAIN_OWNER='/owner';env.HRK_MAIN_NONCE='fixture-nonce';env.HRK_MAIN_HARNESS=harness;env.HRK_MAIN_INTERACTIVE='1';delete env.HRK_TASK;
@@ -129,23 +132,51 @@ const ctx={mode:'tui',hasUI:true,model:{},isIdle:()=>idle,hasPendingMessages:()=
  ui:{getEditorText:()=>text,onTerminalInput:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
  setWidget:(_k,fn)=>{if(fn)fn(tui);},setStatus:(_k,v)=>statuses.push(v),notify:v=>notices.push(v)}};
 function make(){const h={};extension({on:(name,f)=>h[name]=f,sendMessage:(m,o)=>{assert.equal(idle,true);assert.equal(text,'');assert.equal(queued,false);assert.equal(focus,editor);assert.equal(overlay,false);assert.deepEqual(o,{deliverAs:'followUp',triggerTurn:true});sent.push(m);}});return h;}
-function key(data){for(const f of listeners)assert.equal(f(data),undefined,'input consumed');}
-async function start(h){h.session_start({},ctx);await advance(600);}
-async function stop(h){const promise=h.session_shutdown({reason:'reload'},ctx);await advance(1800);await promise;assert.equal(children.filter(c=>c.signalCode===null).length,0);assert.equal(listeners.size,0);assert.equal(tui.setFocus,originalFocus);}
+function rawInput(data){const original=Buffer.isBuffer(data)?Buffer.from(data):data;raw.emit('data',data);assert.deepEqual(data,original,'raw input changed');}
+function key(data){rawInput(data);for(const f of listeners)assert.equal(f(data),undefined,'input consumed');}
+async function start(h,proveInput=false){if(!raw.listeners('data').includes(runtimeInput))raw.on('data',runtimeInput);raw.readableFlowing=true;raw.isRaw=true;h.session_start({},ctx);if(proveInput)rawInput('\x1b[201~');await advance(600);}
+async function stop(h){const promise=h.session_shutdown({reason:'reload'},ctx);await advance(1800);await promise;assert.equal(children.filter(c=>c.signalCode===null).length,0);assert.equal(listeners.size,0);assert.equal(observers(),0);assert.equal(raw.listenerCount('newListener'),0);assert.equal(raw.listenerCount('removeListener'),0);assert.equal(tui.setFocus,originalFocus);}
 let batchSeq=0;
 function deliver(c=children.at(-1)){disk=false;saved={batchId:'b'+(++batchSeq),digest:'digest',lines:['t1 done','second line'],target:{...session,owner:'/owner',harness},attempt:'appending'};c.reply(c.register,'batch',{batchId:saved.batchId,batch:saved});return saved;}
 function end(h){idle=true;if(harness==='pi')h.agent_settled({},ctx);else h.agent_end({willContinue:false},ctx);}
 // Guards must not register hooks or spawn outside a launched main TUI.
 env.HRK_TASK='runner';assert.deepEqual(Object.keys(make()),[]);delete env.HRK_TASK;
 env.HRK_MAIN_INTERACTIVE='0';assert.deepEqual(Object.keys(make()),[]);env.HRK_MAIN_INTERACTIVE='1';
-let h=make();ctx.mode='rpc';h.session_start({},ctx);await advance(1000);assert.equal(children.length,0);ctx.mode='tui';
+let h=make();assert.equal(raw.listenerCount('data'),0,'observer started stdin before the runtime');ctx.mode='rpc';h.session_start({},ctx);await advance(1000);assert.equal(children.length,0);ctx.mode='tui';
 await start(h);assert.equal(children.length,1);assert.equal(sent.length,0);assert.equal(requests[0].type,'register');assert.equal(requests[0].cwd,'/cwd');
 // An idle fresh main needs no input or focus transition to receive news.
 deliver();await advance(600);assert.equal(sent.length,1,'fresh idle main did not deliver');
+disk=true;h.message_end({},ctx);await advance(600);
+// Raw chunks are hidden from the runtime listener/editor until paste END.
+rawInput('\x1b[200~');deliver();await advance(1500);assert.equal(sent.length,1,'injected inside raw paste');
+const beforeWarning=notices.length;
+rawInput('held');await advance(9999);assert.equal(notices.length,beforeWarning,'warned before 10s without bytes');
+await advance(1);assert.ok(statuses.at(-1)?.includes('Paste incomplete'),'missing paste warning');
+await advance(20000);assert.equal(sent.length,1,'timeout opened paste guard');
+// Omp may emit a synthetic completed paste after its timeout; raw END is still required.
+for(const f of listeners)f('\x1b[200~held\x1b[201~');await advance(600);assert.equal(sent.length,1);
+// Reload cannot reopen an unfinished paste and disposes the old raw listener.
+await stop(h);h=make();await start(h);assert.equal(observers(),1);assert.equal(sent.length,1);
+rawInput('\x1b[20');await advance(600);assert.equal(sent.length,1);
+rawInput('1~');await advance(600);assert.equal(sent.length,2,'real END did not release paste');
+disk=true;h.message_end({},ctx);await advance(600);
+// Split START, multiple markers in one chunk, Buffer input and delayed prefixes.
+rawInput(Buffer.from('\x1b[20'));deliver();await advance(600);assert.equal(sent.length,2);
+rawInput('0~first\x1b[201~\x1b[200~second');await advance(600);assert.equal(sent.length,2);
+rawInput('\x1b[201~');await advance(600);assert.equal(sent.length,3);
+disk=true;h.message_end({},ctx);await advance(600);
+// An unobserved reload gap cannot assume the parser is idle, even with an empty editor.
+await stop(h);rawInput('unobserved');h=make();await start(h);deliver();await advance(12000);assert.equal(sent.length,3);
+key('a');await advance(600);assert.equal(sent.length,3,'parsed key cleared unknown paste state');
+rawInput('\x1b[201~');await advance(600);assert.equal(sent.length,4);
+disk=true;h.message_end({},ctx);await advance(600);
+// Ordinary Escape is a partial marker until the runtime confirms it was a key.
+key('\x1b');deliver();await advance(600);assert.equal(sent.length,5,'Escape wedged delivery');
 disk=true;h.message_end({},ctx);await advance(600);sent.length=0;batchSeq=0;
 const activityCount=()=>requests.filter(q=>q.type==='activity').length;
 const quiet=activityCount();await advance(10000);assert.equal(activityCount(),quiet,'technical time marked activity');
-h.session_start({},ctx);await advance();assert.equal(children.length,1);assert.equal(listeners.size,1);
+rawInput('\x1b[?1;2c');await advance(600);assert.equal(activityCount(),quiet,'terminal reply marked user activity');
+const connections=children.length;h.session_start({},ctx);await advance();assert.equal(children.length,connections);assert.equal(listeners.size,1);
 // Exact whitespace, chunked paste, debounce, queues, busy/retry and modal gates.
 text=' \n\t';deliver();await advance(1500);assert.equal(sent.length,0);assert.equal(text,' \n\t');
 key('\x1b[200~');text='draft\n';key('chunk');await advance(900);assert.equal(sent.length,0);
@@ -163,16 +194,16 @@ for(let i=0;i<4;i++){h.message_end({},ctx);end(h);await advance(2000);}
 assert.equal(sent.length,1);assert.deepEqual(await h.session_before_switch({},ctx),{cancel:true});
 disk=true;h.message_end({},ctx);await advance(600);assert.equal(sent.length,1);
 // Never-sent handover survives teardown and reconnect, but old callbacks cannot drain.
-text='keep this exact draft';deliver();await advance(600);const old=h;await stop(h);h=make();await start(h);
+text='keep this exact draft';deliver();await advance(600);const old=h;await stop(h);h=make();await start(h,true);
 assert.equal(sent.length,1);assert.equal(text,'keep this exact draft');assert.equal(listeners.size,1);
 old.agent_settled({},ctx);old.message_end({},ctx);await advance(600);assert.equal(sent.length,1);
 text='';key('clear');await advance(600);assert.equal(sent.length,2);
 // Inflight without receipt remains receipt-only across repeated reloads.
-await stop(h);h=make();await start(h);await advance(60000);assert.equal(sent.length,2);
-await stop(h);h=make();await start(h);assert.equal(sent.length,2);
+await stop(h);h=make();await start(h,true);await advance(60000);assert.equal(sent.length,2);
+await stop(h);h=make();await start(h,true);assert.equal(sent.length,2);
 disk=true;h.message_end({},ctx);await advance(600);assert.equal(sent.length,2);
 // Receipt persisted before reload is committed without another send.
-deliver();await advance(600);assert.equal(sent.length,3);disk=true;await stop(h);saved=null;h=make();await start(h);assert.equal(sent.length,3);
+deliver();await advance(600);assert.equal(sent.length,3);disk=true;await stop(h);saved=null;h=make();await start(h,true);assert.equal(sent.length,3);
 // Child death reconnects on the same nonce and cannot replay an uncertain append.
 deliver();await advance(600);assert.equal(sent.length,4);children.at(-1).kill('SIGKILL');await advance(4000);assert.equal(sent.length,4);
 disk=true;h.message_end({},ctx);await advance(600);
@@ -205,6 +236,8 @@ const savedOverlay=tui.hasOverlay;tui.hasOverlay=undefined;deliver();await advan
 h.session_before_compact({},ctx);await advance(600);assert.equal(sent.length,5);h.session_compact_failed({aborted:true},ctx);await advance(600);assert.equal(sent.length,6);
 // A stuck child is force-stopped within the shutdown budget.
 stubborn=true;const began=now;await stop(h);assert.ok(now-began<=1800);assert.equal(timers.size,0);
+// Some hosts reuse the extension instance after a shutdown/session start.
+await start(h);assert.equal(observers(),1);await stop(h);assert.equal(timers.size,0);
 console.log('main lifecycle passed: guards, drafts/paste, debounce, queues, retry/compaction, modal, receipts, reload, stale callbacks, child death, transition race, bounded cleanup');
 `
 

@@ -2,12 +2,14 @@
 // @ts-nocheck
 import { spawn } from "node:child_process";
 import { isAbsolute } from "node:path";
-import { env, pid } from "node:process";
+import { env, pid, stdin } from "node:process";
 
 const BIN = "__HRK_BIN__";
 const HARNESS = "__HRK_HARNESS__";
 const KEY = Symbol.for("herdr-runner-kit.main.v1");
 const DEBOUNCE = 500;
+const PASTE_START = "\x1b[200~", PASTE_END = "\x1b[201~";
+const PASTE_WARNING = "Paste incomplete or unknown. News paused; finish pasting or exit and resume.";
 
 export default function (api) {
   if (env.HRK_TASK || env.HRK_MAIN !== String(pid) || env.HRK_MAIN_HARNESS !== HARNESS ||
@@ -16,10 +18,11 @@ export default function (api) {
   let shared = globalThis[KEY];
   if (shared && shared.identity !== identity) return;
   if (!shared) shared = globalThis[KEY] = { identity, epoch: 0, pending: null, target: null, closing: Promise.resolve() };
+  const previousPaste = stdin.listeners("data").includes(shared.rawInput) ? { ...shared.paste } : null;
   shared.dispose?.();
   const epoch = ++shared.epoch;
   let ctx, child, generation = 0, sequence = 0, registerID, receiptID;
-  let timer, unsubscribe, tui, editor = shared.editor, closeReply, disposing, removeAbort;
+  let timer, pasteTimer, unsubscribe, tui, editor = shared.editor, closeReply, disposing, removeAbort;
   let stopped = false, transitioning = false, connected = false, fault = false, reconciled = false;
   let busy = false, submitting = false, retry = false, autoCompact = false, manualCompact = false, compactIsAuto = false, prompts = 0;
   let lastInput = Date.now(), lastNotice = 0, lastStatus, nextReceipt = 0, receiptDelay = 500;
@@ -38,6 +41,50 @@ export default function (api) {
     if (!current() || transitioning) return;
     clearTimeout(timer); timer = setTimeout(tick, delay);
   };
+  // Observe before the runtime buffers paste; retain only marker state, never draft bytes.
+  const paste = shared.paste ||= { active: stdin.isTTY === true && stdin.isRaw === false ? false : null,
+    tail: "", lastByte: Date.now() };
+  if (previousPaste) Object.assign(paste, previousPaste);
+  const attachInput = (subscribing = false) => {
+    if (stdin.listeners("data").includes(observeInput)) return;
+    // Adding the first data listener would start reading before the runtime owns input.
+    if (!subscribing && (stdin.readableFlowing !== true || stdin.listenerCount("data") === 0)) return;
+    stdin.prependListener("data", observeInput);
+  };
+  const inputSubscription = (name, listener) => {
+    // newListener runs synchronously before the runtime installs its reader.
+    if (name === "data" && listener !== observeInput) attachInput(true);
+  };
+  const inputRemoval = (name, listener) => {
+    if (name === "data" && listener === observeInput) { paste.active = null; paste.tail = ""; }
+  };
+  const inputSafe = () => stdin.isTTY === true && stdin.readableFlowing === true && stdin.listeners("data").includes(observeInput) && paste.active === false && paste.tail === "";
+  const warnPaste = () => {
+    clearTimeout(pasteTimer); pasteTimer = undefined;
+    if (inputSafe()) { if (lastStatus === PASTE_WARNING) status(undefined); return; }
+    pasteTimer = setTimeout(() => {
+      pasteTimer = undefined;
+      if (current() && ctx?.hasUI === true && !inputSafe()) status(PASTE_WARNING, true);
+    }, Math.max(0, 10000 - (Date.now() - paste.lastByte)));
+  };
+  function observeInput(data) {
+    if (!current()) return;
+    if (typeof data !== "string" && !Buffer.isBuffer(data)) { paste.active = null; warnPaste(); return; }
+    if (data.length === 0) return;
+    const chunk = paste.tail + data.toString();
+    paste.tail = "";
+    for (const match of chunk.matchAll(/\x1b\[20[01]~/g)) paste.active = match[0] === PASTE_START;
+    for (let size = 1; size < PASTE_START.length && size <= chunk.length; size++) {
+      const tail = chunk.slice(-size);
+      if (PASTE_START.startsWith(tail) || PASTE_END.startsWith(tail)) paste.tail = tail;
+    }
+    lastInput = paste.lastByte = Date.now();
+    if (paste.active === true) activityDue = true;
+    warnPaste(); if (ctx) schedule(DEBOUNCE);
+  }
+  shared.rawInput = observeInput;
+  stdin.on("newListener", inputSubscription); stdin.on("removeListener", inputRemoval);
+  attachInput();
   const request = (type, more = {}) => {
     if (!child || child.exitCode !== null || child.signalCode !== null || !child.stdin.writable) return;
     const requestId = `${epoch}-${++sequence}`;
@@ -136,7 +183,7 @@ export default function (api) {
   const safe = () => {
     if (!ctx || ctx.mode !== "tui" || ctx.hasUI !== true || !ctx.model || !tui || !editor ||
         typeof tui.hasOverlay !== "function") return false;
-    return !busy && !submitting && !retry && !autoCompact && !manualCompact && prompts === 0 &&
+    return inputSafe() && !busy && !submitting && !retry && !autoCompact && !manualCompact && prompts === 0 &&
       ctx.isIdle() === true && ctx.hasPendingMessages() === false &&
       !tui.hasOverlay() && (tui.getFocusedComponent?.() ?? tui.getFocused?.()) === editor &&
       ctx.ui.getEditorText().length === 0 && Date.now() - lastInput >= DEBOUNCE;
@@ -145,6 +192,7 @@ export default function (api) {
     timer = undefined;
     if (!current() || transitioning) return;
     try {
+      attachInput();
       if (!sameTarget(target(ctx), shared.target)) { fault = true; status("News paused: resume the original session before changing its target.", true); return; }
       if (!child && Date.now() >= nextConnect) connect();
       if (!connected) { schedule(Math.max(500, nextConnect - Date.now())); return; }
@@ -157,7 +205,8 @@ export default function (api) {
       }
       if (fault || !reconciled) { receipt(); schedule(Math.max(500, nextReceipt - Date.now())); return; }
       if (!safe()) {
-        status("News pending: finish setup or dismiss a dialog, then leave the editor empty."); schedule(500); return;
+        status(!inputSafe() && Date.now() - paste.lastByte >= 10000 ? PASTE_WARNING :
+          "News pending: finish setup or dismiss a dialog, then leave the editor empty."); schedule(500); return;
       }
       pending.attempted = true;
       const b = pending.batch;
@@ -192,6 +241,11 @@ export default function (api) {
   const dispose = () => {
     if (disposing) return disposing;
     transitioning = true; clearTimeout(timer); timer = undefined;
+    clearTimeout(pasteTimer); pasteTimer = undefined;
+    stdin.removeListener("newListener", inputSubscription);
+    stdin.removeListener("data", observeInput);
+    stdin.removeListener("removeListener", inputRemoval);
+    paste.active = null; paste.tail = "";
     unsubscribe?.(); unsubscribe = undefined; removeAbort?.();
     ctx?.ui?.setWidget?.("hrk-news-observer", undefined); ctx?.ui?.setStatus?.("hrk-news", undefined);
     disposing = shared.closing = stopChild().then(closed => { if (closed) shared.released = true; }).finally(() => { stopped = true; });
@@ -241,12 +295,21 @@ export default function (api) {
     if (shared.target && !sameTarget(shared.target, next) && (!shared.released || shared.pending)) { status("News paused: explicitly resume the original session.", true); return; }
     if (child) return;
     stopped = false; disposing = undefined; transitioning = false; shared.target = next;
+    if (!stdin.listeners("newListener").includes(inputSubscription)) stdin.on("newListener", inputSubscription);
+    if (!stdin.listeners("removeListener").includes(inputRemoval)) stdin.on("removeListener", inputRemoval);
+    attachInput();
     unsubscribe?.();
-    unsubscribe = ctx.ui.onTerminalInput(() => {
+    unsubscribe = ctx.ui.onTerminalInput(data => {
       if (!current()) return;
+      // A parsed key resolves a partial escape, never an open or unknown paste.
+      if (paste.active === false && typeof data === "string" && data.length > 0) {
+        if (data === paste.tail) paste.tail = "";
+        warnPaste();
+      }
       lastInput = Date.now(); activityDue = true; schedule(DEBOUNCE);
       // Return nothing: the runtime owns every key and every paste byte.
     });
+    warnPaste();
     ctx.ui.setWidget("hrk-news-observer", observeUI);
     shared.closing.then(() => { if (current()) { connect(); schedule(DEBOUNCE); } });
   });
