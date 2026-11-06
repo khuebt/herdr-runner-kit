@@ -2,13 +2,13 @@
 """Probe installed main runtimes with isolated profiles and a loopback provider.
 
 No SDK mocks, global extensions, user credentials, or user state are used.
-This first-stage gate does not launch the news child: its runtime prerequisites
-must be established first. The required --kit-bin names the scratch build for the
-later bridge probe. An incomplete gate exits nonzero and retains evidence under
---out, even when the proposed empty-file bootstrap experiment succeeds.
+The runtime writes its own header into a launcher-allocated empty path. Its
+probe extension starts the real news child; receipts must precede cursor commit.
+A failed or incomplete gate exits nonzero and retains evidence under --out.
 """
 
 import argparse
+import fcntl
 import hashlib
 import http.server
 import json
@@ -22,6 +22,7 @@ import time
 
 EXTENSION = r'''
 import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { spawn } from "node:child_process";
 const root = process.env.HRK_PROBE_OUT;
 const log = (data) => appendFileSync(root + "/extension.jsonl", JSON.stringify({at:Date.now(),...data}) + "\n");
 export default function(pi) {
@@ -30,36 +31,84 @@ export default function(pi) {
     models: [{id:"probe",name:"Local transcript probe",reasoning:false,input:["text"],
       cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32000,maxTokens:2048}]
   });
-  let timer;
-  pi.on("session_start", (_event, ctx) => {
-    clearInterval(timer);
-    log({event:"session_start", id:ctx.sessionManager.getSessionId(),
-      file:ctx.sessionManager.getSessionFile(), cwd:ctx.sessionManager.getCwd()});
-    timer = setInterval(async () => {
-      const file = root + "/inbox.json";
-      if (!existsSync(file)) return;
-      const action = JSON.parse(readFileSync(file, "utf8"));
-      unlinkSync(file);
-      if (action.kind === "snapshot") {
-        log({event:"snapshot",name:action.name,idle:ctx.isIdle(),entries:ctx.sessionManager.getEntries()});
-      } else if (action.kind === "abort") {
-        await ctx.abort();
-        log({event:"abort_returned",idle:ctx.isIdle()});
-      } else {
-        pi.sendMessage({customType:"hrk-news",content:action.content,display:true,
-          details:{batchId:action.batchId,owner:process.env.HRK_MAIN_OWNER,digest:action.digest}},
-          {triggerTurn:action.triggerTurn,deliverAs:"followUp"});
-        log({event:"send_returned",batchId:action.batchId,idle:ctx.isIdle()});
-      }
-    }, 20);
-  });
-  for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_shutdown"]) {
-    pi.on(name, (_event, ctx) => {
-      log({event:name,idle:ctx.isIdle()});
-      if (name === "session_shutdown") clearInterval(timer);
+  let timer, child, pending, generation;
+  let bridgeID = 0;
+  const send = (type, requestId, more={}) => {
+    child.stdin.write(JSON.stringify({version:1,type,requestId,generation,...more}) + "\n");
+  };
+  const stopBridge = async (signal="SIGTERM") => {
+    const previous = child;
+    child = undefined;
+    if (!previous || previous.exitCode !== null || previous.signalCode !== null) return;
+    await new Promise(resolve => {
+      const timeout = setTimeout(() => previous.kill("SIGKILL"), 1000);
+      previous.once("exit", () => { clearTimeout(timeout); resolve(); });
+      previous.kill(signal);
     });
+  };
+  const startBridge = (ctx) => {
+    const current = spawn(process.env.HRK_PROBE_KIT,["main","__news"], {
+      env:{...process.env,HRK_MAIN:String(process.pid),HRK_MAIN_HARNESS:process.env.HRK_PROBE_HARNESS}, stdio:["pipe","pipe","pipe"]
+    });
+    child = current;
+    const id = ++bridgeID;
+    let buffer = "";
+    log({event:"bridge_start",bridge:id,pid:current.pid,parentPID:process.pid});
+    current.stdin.on("error", error => log({event:"bridge_stdin_error",bridge:id,message:error.message}));
+    current.on("error", error => log({event:"bridge_error",bridge:id,message:error.message}));
+    current.on("exit", (code,signal) => log({event:"bridge_exit",bridge:id,code,signal}));
+    current.stderr.on("data", data => appendFileSync(root+"/bridge-stderr.txt",data));
+    current.stdout.on("data", data => {
+      buffer += data.toString();
+      if (buffer.length > 4*1024*1024) throw new Error("oversized bridge response");
+      let newline;
+      while ((newline=buffer.indexOf("\n")) >= 0) {
+        const response=JSON.parse(buffer.slice(0,newline)); buffer=buffer.slice(newline+1);
+        log({event:"bridge_message",bridge:id,response});
+        if (child !== current) continue;
+        generation=response.generation;
+        if(response.type === "batch") pending=response.batch;
+        if(response.type === "committed" && pending?.batchId === response.batchId) pending=undefined;
+      }
+    });
+    current.stdin.write(JSON.stringify({version:1,type:"register",requestId:"register-"+id,
+      harness:process.env.HRK_PROBE_HARNESS,sessionId:ctx.sessionManager.getSessionId(),
+      sessionFile:ctx.sessionManager.getSessionFile(),cwd:ctx.sessionManager.getCwd(),
+      parentPID:process.pid,nonce:process.env.HRK_MAIN_NONCE,quiesced:true})+"\n");
+  };
+  pi.on("session_start", (_event, ctx) => {
+    log({event:"session_start",id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile(),cwd:ctx.sessionManager.getCwd(),pid:process.pid});
+    startBridge(ctx);
+    timer=setInterval(async () => {
+      const file=root+"/inbox.json";
+      if(!existsSync(file)) return;
+      const action=JSON.parse(readFileSync(file,"utf8")); unlinkSync(file);
+      try {
+        switch(action.kind) {
+          case "append":
+            if(!pending) throw new Error("no pending batch");
+            pi.sendMessage({customType:"hrk-news",content:pending.lines.join("\n"),display:true,
+              details:{batchId:pending.batchId,owner:process.env.HRK_MAIN_OWNER,digest:pending.digest}},
+              {deliverAs:"followUp",triggerTurn:true});
+            log({event:"append_requested",batchId:pending.batchId,idle:ctx.isIdle()});
+            break;
+          case "receipt": send("receipt",action.id,{batchId:action.batchId}); break;
+          case "restart": await stopBridge("SIGKILL"); startBridge(ctx); break;
+          case "abort": await ctx.abort(); break;
+          case "close": send("close",action.id,{quiesced:true}); break;
+          case "activity": send("activity",action.id); break;
+          case "snapshot": break;
+          default: throw new Error("unknown probe action");
+        }
+        log({event:"action_done",id:action.id,idle:ctx.isIdle()});
+      } catch(error) {log({event:"action_error",id:action.id,message:String(error)});}
+    },20);
+  });
+  for(const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact"]) {
+    pi.on(name,(_event,ctx)=>log({event:name,idle:ctx.isIdle()}));
   }
-  pi.on("message_end", (event) => log({event:"message_end",message:event.message}));
+  pi.on("session_shutdown",async () => {clearInterval(timer); await stopBridge();log({event:"session_shutdown"});});
+  pi.on("message_end",event=>log({event:"message_end",message:event.message}));
 }
 '''
 
@@ -109,6 +158,11 @@ def stop(process, reader):
     process.stdout.close()
 
 
+def process_alive(pid):
+    result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True, check=False)
+    return bool(result.stdout.strip()) and not result.stdout.strip().startswith("Z")
+
+
 def run(args):
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -119,6 +173,7 @@ def run(args):
     env = {key: os.environ[key] for key in ("HOME", "PATH", "LANG", "LC_ALL", "TZ", "TERM") if key in os.environ}
     env.update({
         "HRK_PROBE_OUT": str(out), "HRK_MAIN_OWNER": str(out),
+        "HRK_PROBE_KIT": str(args.kit_bin.resolve()), "HRK_PROBE_HARNESS": args.harness,
         "HRK_STATE_DIR": str(out / "kit-state"), "HRK_TELEGRAM": "off",
         "PI_CODING_AGENT_DIR": str(out / "agent"),
         "PI_CODING_AGENT_SESSION_DIR": str(out / "sessions"),
@@ -152,10 +207,10 @@ def run(args):
             if not provider_release.wait(30):
                 self.send_error(504)
                 return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.end_headers()
             try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
                 for delta, finish in [({"role": "assistant", "content": "Local fixture response."}, None), ({}, "stop")]:
                     chunk = {"id": "probe", "object": "chat.completion.chunk", "created": int(time.time()), "model": "probe", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
                     self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
@@ -182,7 +237,8 @@ def run(args):
     stderr = (out / "stderr.txt").open("w")
 
     def start(command):
-        child = subprocess.Popen(command, cwd=out, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1)
+        child_env = dict(env, HRK_MAIN_NONCE=os.urandom(16).hex())
+        child = subprocess.Popen(command, cwd=out, env=child_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1)
         try:
             with (out / "processes.jsonl").open("a") as log:
                 log.write(json.dumps({"pid": child.pid, "argv": command, "cwd": str(out), "port": port}) + "\n")
@@ -219,130 +275,205 @@ def run(args):
         write_json(temporary, action)
         temporary.replace(out / "inbox.json")
 
-    def inject(batch, trigger):
-        lines = ["Local news " + batch]
-        digest = hashlib.sha256(json.dumps(lines, separators=(",", ":")).encode()).hexdigest()
-        dispatch({"batchId": batch, "content": "\n".join(lines), "digest": digest, "triggerTurn": trigger})
-        until(lambda: any(e.get("batchId") == batch for e in events()), process, "sendMessage return")
+    action_sequence = 0
+
+    def action(kind, **values):
+        nonlocal action_sequence
+        action_sequence += 1
+        identity = "action-" + str(action_sequence)
+        dispatch({"kind": kind, "id": identity, **values})
+        until(lambda: any(e.get("id") == identity for e in events()), process, kind)
+        response = next(e for e in events() if e.get("id") == identity)
+        if response["event"] == "action_error":
+            raise RuntimeError(response["message"])
+        return response
+
+    def messages():
+        return [e["response"] for e in events() if e["event"] == "bridge_message"]
+
+    def wait_message(kind, *, batch=None, after=0, request=None):
+        def matching():
+            return [m for m in messages()[after:] if m["type"] == kind and
+                    (batch is None or m.get("batchId") == batch) and
+                    (request is None or m.get("requestId") == request)]
+        until(matching, process, "bridge " + kind)
+        return matching()[0]
+
+    def idle():
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            if action("snapshot")["idle"]:
+                return
+            time.sleep(0.05)
+        raise TimeoutError("runtime idle")
 
     def entries(path, batch):
-        return [entry for entry in jsonl(path) if entry.get("type") == "custom_message" and entry.get("customType") == "hrk-news" and entry.get("details", {}).get("batchId") == batch]
+        return [entry for entry in jsonl(path) if entry.get("type") == "custom_message" and
+                entry.get("customType") == "hrk-news" and entry.get("details", {}).get("batchId") == batch]
+
+    def news_state():
+        return json.loads(next((out / "kit-state").glob("main-news-*.json")).read_text())
+
+    def cursor():
+        name = hashlib.sha256(str(out).encode()).hexdigest()[:12]
+        return int((out / "kit-state" / ("cursor-" + name)).read_text())
+
+    def emit_news():
+        # Synthetic runner news enters the real on-disk event log under its flock.
+        offset = len(messages())
+        event = {"v": 1, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                 "owner": str(out), "task": "t1", "type": "needs-human", "question": "Local transcript probe"}
+        with (out / "kit-state/events.jsonl").open("ab") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            handle.write((json.dumps(event) + "\n").encode())
+            handle.flush()
+            os.fsync(handle.fileno())
+        return wait_message("batch", after=offset)["batch"]
+
+    def receipt(batch):
+        response = action("receipt", batchId=batch["batchId"])
+        wait_message("committed", batch=batch["batchId"], request=response["id"])
+        assert news_state().get("pending") is None, "pending survived verified commit"
+        assert cursor() == batch["to"], "cursor not at committed batch end"
 
     try:
         server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
-        process, reader = start(argv)
+        transcript = out / "bootstrap.jsonl"
+        transcript.touch(mode=0o600, exist_ok=False)
+        resume_flag = "--session" if args.harness == "pi" else "--resume"
+        command = argv + [resume_flag, str(transcript)]
+        process, reader = start(command)
         until(lambda: any(e["event"] == "session_start" for e in events()), process, "session start")
         identity = next(e for e in events() if e["event"] == "session_start")
-        transcript = Path(identity["file"])
         result["identity"] = identity
-        inject("fresh-no-turn", False)
-        dispatch({"kind": "snapshot", "name": "fresh"})
-        until(lambda: any(e.get("name") == "fresh" for e in events()), process, "fresh snapshot")
-        snapshot = next(e for e in events() if e.get("name") == "fresh")
-        result["checks"]["fresh_memory_entry"] = any(e.get("details", {}).get("batchId") == "fresh-no-turn" for e in snapshot["entries"])
-        result["checks"]["fresh_disk_entry"] = bool(entries(transcript, "fresh-no-turn"))
-        inject("fresh-trigger-turn", True)
-        until(provider_started.is_set, process, "provider request")
-        result["checks"]["before_assistant_disk_entry"] = bool(entries(transcript, "fresh-trigger-turn"))
-        write_json(out / "before-assistant.json", {"fileExists": transcript.exists(), "entries": jsonl(transcript)})
+        wait_message("ready")
+        header = next(e for e in jsonl(transcript) if e.get("type") == "session")
+        assert (header["id"], header["cwd"], identity["file"]) == (identity["id"], str(out), str(transcript))
+        result["checks"]["bootstrap_header_before_registration"] = True
+        activity = action("activity")
+        wait_message("ready", request=activity["id"])
+        result["checks"]["activity_while_waiting"] = True
+
+        batch = emit_news()
+        assert cursor() == batch["from"], "cursor advanced before append"
+        attempt = action("receipt", batchId=batch["batchId"])
+        wait_message("error", request=attempt["id"])
+        assert news_state()["pending"]["batchId"] == batch["batchId"]
+        action("append")
+        until(provider_started.is_set, process, "first provider request")
+        until(lambda: len(entries(transcript, batch["batchId"])) == 1, process, "disk custom entry")
+        receipt(batch)
+        assert not provider_release.is_set(), "provider completed before receipt check"
+        result["checks"]["disk_receipt_before_model_reply"] = True
+        receipt(batch)
+        result["checks"]["duplicate_receipt"] = True
         provider_release.set()
-        until(lambda: any(e["event"] == "agent_end" for e in events()), process, "first turn end")
-        until(lambda: bool(entries(transcript, "fresh-trigger-turn")), process, "transcript persistence")
-        with transcript.open("rb") as handle:
-            os.fsync(handle.fileno())
-        directory = os.open(transcript.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-        result["checks"]["file_and_directory_fsync"] = True
+        idle()
+
+        # Persisted append without ACK: same-parent reconnect ACKs, never re-emits.
+        batch = emit_news()
+        action("append")
+        until(lambda: len(entries(transcript, batch["batchId"])) == 1, process, "append before lost receipt")
+        offset = len(messages())
+        action("restart")
+        wait_message("committed", batch=batch["batchId"], after=offset)
+        assert not any(m["type"] == "batch" for m in messages()[offset:]), "duplicate append after receipt recovery"
+        result["checks"]["append_before_ack_recovery"] = True
+        idle()
         shutil.copyfile(transcript, out / "persisted.jsonl")
-        send({"id": "padding", "type": "prompt", "message": "padding " * 1500})
-        until(lambda: sum(e["event"] == "agent_end" for e in events()) >= 2, process, "padding turn")
-        send({"id": "compact", "type": "compact", "customInstructions": "Preserve news."})
-        until(lambda: any(r.get("id") == "compact" for r in records), process, "compact")
-        result["checks"]["compact_succeeded"] = any(r.get("id") == "compact" and r.get("success") for r in records)
-        result["checks"]["compact_retained_entry"] = len(entries(transcript, "fresh-trigger-turn")) == 1
-        stop(process, reader)
-        resume_flag = "--session" if args.harness == "pi" else "--resume"
-        process, reader = start(argv + [resume_flag, str(transcript)])
-        until(lambda: sum(e["event"] == "session_start" for e in events()) == 2, process, "resume")
-        resumed = [e for e in events() if e["event"] == "session_start"][-1]
-        result["checks"]["resume_same_identity"] = (resumed["id"], resumed["file"]) == (identity["id"], identity["file"])
-        inject("resumed", False)
-        until(lambda: bool(entries(transcript, "resumed")), process, "resumed append")
-        result["checks"]["resume_retained_entry"] = len(entries(transcript, "fresh-trigger-turn")) == 1
-        result["checks"]["resumed_append"] = len(entries(transcript, "resumed")) == 1
-        stop(process, reader)
+
+        # A real busy followUp remains inside the old runtime while its child dies.
         provider_started.clear()
         provider_release.clear()
-        starts = sum(e["event"] == "session_start" for e in events())
-        process, reader = start(argv)
-        until(lambda: sum(e["event"] == "session_start" for e in events()) > starts, process, "fresh crash session")
-        crash_identity = [e for e in events() if e["event"] == "session_start"][-1]
-        crash_file = Path(crash_identity["file"])
-        inject("crash-before-assistant", True)
-        until(provider_started.is_set, process, "crash boundary provider request")
-        result["checks"]["crash_target_exists_before_kill"] = crash_file.exists()
+        send({"id": "busy", "type": "prompt", "message": "Hold this local provider response."})
+        until(provider_started.is_set, process, "busy provider request")
+        batch = emit_news()
+        action("append")
+        assert not entries(transcript, batch["batchId"]), "busy followUp was not queued"
+        offset = len(messages())
+        action("restart")
+        wait_message("conflict", batch=batch["batchId"], after=offset)
+        assert not any(m["type"] == "batch" for m in messages()[offset:]), "live-parent replay"
+        assert cursor() == batch["from"], "cursor advanced on uncertain queued append"
+        provider_release.set()
+        until(lambda: len(entries(transcript, batch["batchId"])) == 1, process, "late runtime append")
+        receipt(batch)
+        idle()
+        result["checks"]["living_parent_late_append_fenced"] = True
+
+        send({"id": "padding", "type": "prompt", "message": "padding " * 1500})
+        until(lambda: any(r.get("id") == "padding" for r in records), process, "padding prompt")
+        idle()
+        send({"id": "compact", "type": "compact", "customInstructions": "Preserve news."})
+        until(lambda: any(r.get("id") == "compact" for r in records), process, "compact")
+        assert any(r.get("id") == "compact" and r.get("success") for r in records), "compaction failed"
+        assert len(entries(transcript, batch["batchId"])) == 1
+        result["checks"]["compact_retains_physical_receipt"] = True
+
+        # Cancel with an uncertain append, then kill the owning runtime. Only a
+        # new parent may replay, and only if the original transcript has no receipt.
+        provider_started.clear()
+        provider_release.clear()
+        send({"id": "cancel-busy", "type": "prompt", "message": "Cancel this held response."})
+        until(provider_started.is_set, process, "cancel provider request")
+        batch = emit_news()
+        action("append")
+        action("abort")
+        old_child = [e for e in events() if e["event"] == "bridge_start"][-1]["pid"]
         process.kill()
         process.wait(timeout=3)
         stop(process, reader)
-        result["checks"]["crash_target_exists_after_kill"] = crash_file.exists()
-        write_json(out / "crash-target.json", crash_identity)
         provider_release.set()
+        deadline = time.monotonic() + 7
+        while process_alive(old_child):
+            if time.monotonic() > deadline:
+                raise TimeoutError("orphan child cleanup")
+            time.sleep(0.02)
+        result["checks"]["parent_sigkill_child_cleanup"] = True
+        offset = len(messages())
         starts = sum(e["event"] == "session_start" for e in events())
-        process, reader = start(argv + [resume_flag, str(crash_file)])
-        try:
-            until(lambda: sum(e["event"] == "session_start" for e in events()) > starts, process, "resume crashed target", timeout=10)
-            crash_resumed = [e for e in events() if e["event"] == "session_start"][-1]
-            write_json(out / "crash-resumed.json", crash_resumed)
-            result["checks"]["crash_resume_same_identity"] = (crash_resumed["id"], crash_resumed["file"]) == (crash_identity["id"], crash_identity["file"])
-        except (RuntimeError, TimeoutError) as error:
-            result["checks"]["crash_resume_same_identity"] = False
-            result["crashResumeError"] = str(error)
-        stop(process, reader)
-        bootstrap_file = out / "bootstrap.jsonl"
-        bootstrap_file.touch(exist_ok=False)
-        starts = sum(e["event"] == "session_start" for e in events())
-        process, reader = start(argv + [resume_flag, str(bootstrap_file)])
-        try:
-            until(lambda: sum(e["event"] == "session_start" for e in events()) > starts, process, "bootstrap empty session", timeout=10)
-            boot_identity = [e for e in events() if e["event"] == "session_start"][-1]
-            boot_header = next((entry for entry in jsonl(bootstrap_file) if entry.get("type") == "session"), {})
-            result["checks"]["bootstrap_header_persisted"] = boot_header.get("id") == boot_identity["id"] and boot_identity["file"] == str(bootstrap_file)
-            write_json(out / "bootstrap-identity.json", boot_identity)
-            if result["checks"]["bootstrap_header_persisted"]:
-                provider_started.clear()
-                provider_release.clear()
-                inject("bootstrap-crash", True)
-                until(provider_started.is_set, process, "bootstrap provider request")
-                result["checks"]["bootstrap_custom_before_assistant"] = len(entries(bootstrap_file, "bootstrap-crash")) == 1
-                process.kill()
-                process.wait(timeout=3)
-                stop(process, reader)
-                provider_release.set()
-                starts = sum(e["event"] == "session_start" for e in events())
-                process, reader = start(argv + [resume_flag, str(bootstrap_file)])
-                until(lambda: sum(e["event"] == "session_start" for e in events()) > starts, process, "bootstrap crash resume")
-                boot_resumed = [e for e in events() if e["event"] == "session_start"][-1]
-                result["checks"]["bootstrap_crash_resume_identity"] = (boot_identity["id"], boot_identity["file"]) == (boot_resumed["id"], boot_resumed["file"])
-                result["checks"]["bootstrap_crash_retained_entry"] = len(entries(bootstrap_file, "bootstrap-crash")) == 1
-        except (RuntimeError, TimeoutError, ValueError) as error:
-            result["checks"]["bootstrap_header_persisted"] = False
-            result["bootstrapError"] = str(error)
-        if not result["checks"]["before_assistant_disk_entry"]:
-            result["blockers"].append("A fresh custom-triggered turn reaches the provider before its transcript exists. A parent crash here leaves an immutable pending target with no file to verify or explicitly resume.")
-        # These require a safe fresh-session persistence strategy before bridge work.
-        result["checks"]["bridge_protocol"] = "not run: runtime durability gate first"
-        result["checks"]["late_append_fencing"] = "not yet proven"
+        process, reader = start(command)
+        until(lambda: sum(e["event"] == "session_start" for e in events()) > starts, process, "resume")
+        resumed = [e for e in events() if e["event"] == "session_start"][-1]
+        assert (resumed["id"], resumed["file"]) == (identity["id"], identity["file"]), "resume changed target"
+        wait_message("ready", after=offset)
+        until(lambda: any(m["type"] in ("batch", "committed") for m in messages()[offset:]), process, "recovery resolution")
+        resolution = next(m for m in messages()[offset:] if m["type"] in ("batch", "committed"))
+        assert resolution["batchId"] == batch["batchId"], "recovery changed batch"
+        if resolution["type"] == "batch":
+            assert not entries(transcript, batch["batchId"]), "replayed persisted entry"
+            action("append")
+            until(lambda: len(entries(transcript, batch["batchId"])) == 1, process, "replayed disk entry")
+            receipt(batch)
+        assert len(entries(transcript, batch["batchId"])) == 1, "recovery duplicated custom entry"
+        assert cursor() == batch["to"]
+        result["checks"]["cancel_and_dead_parent_same_target_recovery"] = True
+        result["recoveryResolution"] = resolution["type"]
+        idle()
+        close = action("close")
+        wait_message("ready", request=close["id"])
+        assert news_state().get("lease") is None, "quiesced close kept lease"
+        result["checks"]["quiesced_close_releases_lease"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
     finally:
         provider_release.set()
         if process is not None and reader is not None:
             stop(process, reader)
+        for event in events():
+            if event["event"] != "bridge_start" or not process_alive(event["pid"]):
+                continue
+            try:
+                os.kill(event["pid"], 15)
+                deadline = time.monotonic() + 2
+                while process_alive(event["pid"]) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                if process_alive(event["pid"]):
+                    os.kill(event["pid"], 9)
+            except ProcessLookupError:
+                pass
         if server is not None:
             server.shutdown()
             server.server_close()

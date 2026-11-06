@@ -120,6 +120,7 @@ func newMainCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&projects, "project", nil, "also get this project's news, by name or by a path inside its repository (repeatable); replaces the attached projects")
 	cmd.Flags().BoolVar(&noProjects, "no-projects", false, "clear the attached projects")
 	cmd.MarkFlagsMutuallyExclusive("project", "no-projects")
+	cmd.AddCommand(newMainNewsCommand())
 	return cmd
 }
 
