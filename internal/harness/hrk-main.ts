@@ -22,7 +22,7 @@ export default function (api) {
   shared.dispose?.();
   const epoch = ++shared.epoch;
   let ctx, child, generation = 0, sequence = 0, registerID, receiptID;
-  let timer, pasteTimer, unsubscribe, tui, editor = shared.editor, closeReply, disposing, removeAbort;
+  let timer, pasteTimer, unsubscribe, tui, editor = shared.editor, closeReply, disposing, removeAbort, compactErrors;
   let stopped = false, transitioning = false, connected = false, fault = false, reconciled = false;
   let busy = false, submitting = false, retry = false, autoCompact = false, manualCompact = false, compactIsAuto = false, prompts = 0;
   let lastInput = Date.now(), lastNotice = 0, lastStatus, nextReceipt = 0, receiptDelay = 500;
@@ -180,9 +180,23 @@ export default function (api) {
     shared.editor = editor;
     return { render: () => [], invalidate() {} };
   };
+  const compactionErrors = () => {
+    const found = new Set();
+    const walk = (node, depth = 0) => {
+      if (!node || depth > 12 || node === editor) return;
+      const text = node.getText?.();
+      // Omp reports manual failures only in the TUI, after compaction's finally.
+      if (typeof text === "string" && text.startsWith("Error: Compaction failed: ") &&
+          text !== "Error: Compaction failed: Compaction already in progress") found.add(node);
+      if (Array.isArray(node.children)) for (const item of node.children) walk(item, depth + 1);
+    };
+    walk(tui); return found;
+  };
   const safe = () => {
     if (!ctx || ctx.mode !== "tui" || ctx.hasUI !== true || !ctx.model || !tui || !editor ||
         typeof tui.hasOverlay !== "function") return false;
+    if (manualCompact && compactErrors && ctx.isIdle() === true &&
+        [...compactionErrors()].some(node => !compactErrors.has(node))) endCompact();
     return inputSafe() && !busy && !submitting && !retry && !autoCompact && !manualCompact && prompts === 0 &&
       ctx.isIdle() === true && ctx.hasPendingMessages() === false &&
       !tui.hasOverlay() && (tui.getFocusedComponent?.() ?? tui.getFocused?.()) === editor &&
@@ -336,9 +350,10 @@ export default function (api) {
   on("ui_prompt_end", () => { prompts = Math.max(0, prompts - 1); schedule(); });
   on("auto_compaction_start", () => { autoCompact = true; });
   on("auto_compaction_end", () => { autoCompact = false; if (compactIsAuto) endCompact(); schedule(); });
-  const endCompact = () => { manualCompact = false; compactIsAuto = false; removeAbort?.(); removeAbort = undefined; schedule(); };
+  const endCompact = () => { manualCompact = false; compactIsAuto = false; compactErrors = undefined; removeAbort?.(); removeAbort = undefined; schedule(); };
   on("session_before_compact", event => {
     removeAbort?.(); manualCompact = true; compactIsAuto = autoCompact || event.reason === "threshold" || event.reason === "overflow";
+    compactErrors = HARNESS === "omp" && !compactIsAuto ? compactionErrors() : undefined;
     const aborted = () => { if (current()) endCompact(); };
     event.signal?.addEventListener("abort", aborted, { once: true });
     removeAbort = () => event.signal?.removeEventListener("abort", aborted);

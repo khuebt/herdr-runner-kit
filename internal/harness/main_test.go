@@ -245,6 +245,22 @@ assert.equal(children.filter(c=>c.signalCode===null).length,1);assert.equal(list
 // Unknown UI APIs fail closed, with pending visible and no input changes.
 const savedOverlay=tui.hasOverlay;tui.hasOverlay=undefined;deliver();await advance(1000);assert.equal(sent.length,5);tui.hasOverlay=savedOverlay;
 h.session_before_compact({},ctx);await advance(600);assert.equal(sent.length,5);h.session_compact_failed({aborted:true},ctx);await advance(600);assert.equal(sent.length,6);
+disk=true;h.message_end({},ctx);await advance(600);
+// Omp is idle even during manual compaction and only presents a TUI error on failure.
+const failure=()=>({getText:()=> 'Error: Compaction failed: HTTP 400'});
+const staleFailure=failure();tui.children.push(staleFailure);
+h.session_before_compact({},ctx);deliver();await advance(60000);assert.equal(sent.length,6,'stale error or idle released running compaction');
+tui.children.push({getText:()=> 'Error: Compaction failed: Compaction already in progress'});
+await advance(600);assert.equal(sent.length,6,'rejected overlapping compaction released running compaction');
+tui.children.push({getText:()=> 'Error: Unrelated failure'});
+await advance(600);assert.equal(sent.length,6,'unrelated error released running compaction');
+idle=false;tui.children.push(failure());await advance(600);assert.equal(sent.length,6,'compaction failure bypassed busy runtime');
+idle=true;await advance(600);
+if(harness==='pi') {
+ assert.equal(sent.length,6,'Omp error fallback affected Pi');h.session_compact_failed({},ctx);await advance(600);
+}
+assert.equal(sent.length,7,'manual provider failure left news pending');
+await advance(2000);assert.equal(sent.length,7,'failure resent news');
 // A stuck child is force-stopped within the shutdown budget.
 stubborn=true;const began=now;await stop(h);assert.ok(now-began<=1800);assert.equal(timers.size,0);
 // Some hosts reuse the extension instance after a shutdown/session start.
