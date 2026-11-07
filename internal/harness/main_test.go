@@ -194,6 +194,10 @@ h.auto_retry_start({},ctx);end(h);await advance(600);assert.equal(sent.length,0)
 setFocus({});await advance(600);assert.equal(sent.length,0);setFocus(editor);overlay=true;await advance(600);assert.equal(sent.length,0);overlay=false;
 h.ui_prompt_start({},ctx);await advance(600);assert.equal(sent.length,0);h.ui_prompt_end({},ctx);
 const abort=new AbortController();h.session_before_compact({signal:abort.signal},ctx);await advance(600);assert.equal(sent.length,0);abort.abort();
+if(harness==='omp') {
+ await advance(600);assert.equal(sent.length,0,'abort signal released unfinished manual compaction');
+ tui.children.push({getText:()=> 'Error: Compaction cancelled'});
+}
 h.auto_compaction_start({},ctx);await advance(600);assert.equal(sent.length,0);h.auto_compaction_end({},ctx);await advance(600);assert.equal(sent.length,1);
 assert.equal(sent[0].content,'t1 done\nsecond line');assert.deepEqual(sent[0].details,{batchId:'b1',owner:'/owner',digest:'digest'});
 // Receipt retries and duplicate lifecycle events never resend an attempted batch.
@@ -261,6 +265,50 @@ if(harness==='pi') {
 }
 assert.equal(sent.length,7,'manual provider failure left news pending');
 await advance(2000);assert.equal(sent.length,7,'failure resent news');
+disk=true;h.message_end({},ctx);await advance(600);
+if(harness==='omp') {
+ // An extension veto throws CompactionCancelledError without aborting the signal.
+ const before=sent.length, signal=new AbortController();
+ const cancelled=()=>({getText:()=> 'Error: Compaction cancelled'});
+ tui.children.push(cancelled());h.session_before_compact({signal:signal.signal},ctx);deliver();
+ await advance(600);assert.equal(sent.length,before,'stale cancellation released compaction');
+ tui.children.push(cancelled());await advance(600);
+ assert.equal(signal.signal.aborted,false);assert.equal(sent.length,before+1,'extension veto left compaction blocked');
+ disk=true;h.message_end({},ctx);await advance(600);
+}
+// Omp's threshold maintenance follows agent_end(willContinue), with no later agent_end.
+for(const outcome of ['success','cancel','failure']) {
+ const before=sent.length, signal=new AbortController();
+ idle=false;h.agent_start({},ctx);
+ if(harness==='omp') {
+  h.auto_compaction_start({reason:'threshold'},ctx);idle=true;h.agent_end({willContinue:true},ctx);
+ } else h.agent_end({},ctx);
+ h.session_before_compact({signal:signal.signal,reason:'threshold'},ctx);deliver();
+ await advance(1000);assert.equal(sent.length,before,'delivered during automatic compaction');
+ if(outcome==='success')h.session_compact({},ctx);
+ if(outcome==='cancel')signal.abort();
+ if(harness==='pi'&&outcome!=='success')h.session_compact_failed({aborted:outcome==='cancel'},ctx);
+ await advance(1000);assert.equal(sent.length,before,'released before automatic maintenance finished');
+ if(harness==='omp')h.auto_compaction_end({aborted:outcome==='cancel'},ctx);
+ if(harness==='pi')end(h);
+ await advance(600);assert.equal(sent.length,before+1,'automatic compaction left idle news blocked: '+outcome);
+ disk=true;h.message_end({},ctx);await advance(600);
+}
+// Overflow/retry or a queued continuation can outlive maintenance's end event.
+for(const kind of ['continuation','retry','queued']) {
+ const before=sent.length;
+ idle=false;h.agent_start({},ctx);deliver();
+ if(harness==='omp')h.agent_end({willContinue:true},ctx);else h.agent_end({},ctx);
+ if(kind==='retry')h.auto_retry_start({},ctx);
+ if(kind==='queued')queued=true;
+ h.session_before_compact({reason:'overflow'},ctx);h.session_compact({},ctx);
+ if(harness==='omp')h.auto_compaction_end({aborted:false,willRetry:true},ctx);
+ await advance(600);assert.equal(sent.length,before,'maintenance end bypassed '+kind);
+ if(kind==='retry')h.auto_retry_end({success:true},ctx);
+ if(kind==='queued')queued=false;
+ end(h);await advance(600);assert.equal(sent.length,before+1,'continuation did not settle');
+ disk=true;h.message_end({},ctx);await advance(600);
+}
 // A stuck child is force-stopped within the shutdown budget.
 stubborn=true;const began=now;await stop(h);assert.ok(now-began<=1800);assert.equal(timers.size,0);
 // Some hosts reuse the extension instance after a shutdown/session start.

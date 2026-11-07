@@ -133,8 +133,23 @@ export default function(api) {
     models:[{id:"probe",name:"Local acceptance fixture",reasoning:false,input:["text"],
       cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32000,maxTokens:2048}]
   });
+  api.registerTool({
+    name:"hrk_probe_hold", label:"Acceptance hold", description:"Hold a real tool execution until released by the acceptance driver.",
+    parameters:{type:"object",properties:{},additionalProperties:false},
+    async execute(_id,_params,signal) {
+      log({event:"probe_tool_start"});
+      try {
+        while (!existsSync(root + "/release-tool")) {
+          if (signal?.aborted) throw new Error("Acceptance tool cancelled");
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        return {content:[{type:"text",text:"Acceptance tool completed."}],details:{}};
+      } finally { log({event:"probe_tool_end"}); }
+    }
+  });
   let timer, tui;
   api.on("session_start", (_event,ctx) => {
+    api.setActiveTools(["hrk_probe_hold"]);
     clearInterval(timer);
     ctx.ui.setWidget("hrk-probe-observer", host => {
       tui = host;
@@ -150,7 +165,7 @@ export default function(api) {
   });
   for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_compact_failed","auto_compaction_start","auto_compaction_end","auto_retry_start","auto_retry_end"]) {
     api.on(name, event => {
-      log({event:name,aborted:event.aborted,reason:event.reason,willContinue:event.willContinue});
+      log({event:name,aborted:event.aborted,reason:event.reason,willContinue:event.willContinue,errorMessage:event.errorMessage});
       if (name === "session_before_compact") event.signal?.addEventListener("abort",
         () => log({event:"compaction_aborted"}), {once:true});
     });
@@ -559,12 +574,12 @@ def run_tui(args):
     (out / "bin").mkdir()
     write_json(out / "agent/settings.json", {"compaction": {"enabled": True, "reserveTokens": 512, "keepRecentTokens": 100}})
     (out / "observer.ts").write_text(TUI_EXTENSION)
-    flags = ["--no-extensions", "--no-skills", "--no-tools", "--session-dir", str(out / "sessions")]
+    flags = ["--no-extensions", "--no-skills", "--session-dir", str(out / "sessions")]
     if args.harness == "pi":
-        flags += ["--no-mcp", "--no-context-files", "--no-prompt-templates", "--no-themes", "--offline", "-e", str(out / "observer.ts")]
+        flags += ["--no-builtin-tools", "--no-mcp", "--no-context-files", "--no-prompt-templates", "--no-themes", "--offline", "-e", str(out / "observer.ts")]
     else:
         (out / "omp.yml").write_text("setupVersion: 2\ncompaction:\n  enabled: true\n  reserveTokens: 512\n  keepRecentTokens: 100\ntui:\n  titleState: false\n")
-        flags += ["--no-rules", "--no-lsp", "--no-title", "--config", str(out / "omp.yml"), "--hook", str(out / "observer.ts")]
+        flags += ["--no-tools", "--no-rules", "--no-lsp", "--no-title", "--config", str(out / "omp.yml"), "--hook", str(out / "observer.ts")]
     # The public launcher has no arbitrary runtime flags. This executable only
     # adds profile isolation and the observer, then execs the installed runtime.
     launcher = out / "bin" / args.harness
@@ -582,12 +597,13 @@ def run_tui(args):
     provider_status = 200
     provider_usage = 0
     compaction_status = 200
+    provider_tool = False
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
 
         def do_POST(self):
-            nonlocal provider_usage, provider_status
+            nonlocal provider_usage, provider_status, provider_tool
             length = int(self.headers.get("Content-Length", "0"))
             if length > 4 * 1024 * 1024:
                 self.send_error(413)
@@ -598,13 +614,18 @@ def run_tui(args):
             status = provider_status
             usage = provider_usage
             provider_usage = 0
+            tool = provider_tool
+            provider_tool = False
             provider_started.set()
             if not provider_release.wait(30):
                 self.send_error(504, "acceptance probe did not release provider")
                 return
             try:
                 if status != 200:
-                    self.send_error(status, "Local acceptance provider failure")
+                    self.send_response(status)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"Local acceptance provider failure")
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -614,7 +635,11 @@ def run_tui(args):
                     provider_status = compaction_status
                     provider_release.clear()
                     provider_started.clear()
-                for delta, finish in [({"role": "assistant", "content": "Local fixture complete."}, None), ({}, "stop")]:
+                deltas = [({"role": "assistant", "content": "Local fixture complete."}, None), ({}, "stop")]
+                if tool:
+                    deltas = [({"role": "assistant", "tool_calls": [{"index": 0, "id": "probe-hold", "type": "function",
+                               "function": {"name": "hrk_probe_hold", "arguments": "{}"}}]}, None), ({}, "tool_calls")]
+                for delta, finish in deltas:
                     chunk = {"id": "probe", "object": "chat.completion.chunk", "created": int(time.time()), "model": "probe", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
                     self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
                 if usage:
@@ -926,6 +951,18 @@ def run_tui(args):
         receipt = next(i for i, e in enumerate(history) if e.get("details", {}).get("batchId") == batch)
         assert queued < receipt, "news overtook queued user input"
         result["checks"]["busy_queue_and_later_draft_precede_news"] = True
+        offset = len(events())
+        provider_tool = True
+        command("Run the local acceptance hold tool.")
+        wait_for(lambda: any(e["event"] == "probe_tool_start" for e in events()[offset:]), "real tool starts")
+        batch = emit()
+        pump(0.8)
+        assert not entries(batch), "news entered the runtime during tool execution"
+        assert snapshot().get("idle") is False, "running tool appeared idle"
+        (out / "release-tool").touch()
+        wait_for(lambda: any(e["event"] == "probe_tool_end" for e in events()[offset:]), "real tool finishes")
+        committed(batch)
+        result["checks"]["busy_tool_finishes_before_news"] = True
         requests_before_retry = len(jsonl(out / "provider.jsonl", live_log=True))
         provider_started.clear()
         provider_release.clear()
@@ -973,6 +1010,18 @@ def run_tui(args):
             committed(batch)
             result["checks"]["manual_compaction_" + outcome + "_releases_news_once"] = True
         for outcome in ("success", "cancel", "failure"):
+            # A cancelled compaction retains high usage; isolate the next outcome
+            # so its pre-prompt maintenance cannot consume the forced usage reply.
+            previous_id = snapshot()["id"]
+            command("/new")
+            wait_for(lambda: snapshot().get("id") not in (None, previous_id), "automatic compaction fresh session")
+            provider_started.clear()
+            command("Initialize automatic compaction history " + "padding " * 1500)
+            wait_for(provider_started.is_set, "automatic compaction initial history")
+            wait_for(lambda: snapshot().get("idle") is True, "automatic compaction initial turn settles")
+            send(b"\x1b[200~\x1b[201~")
+            editor("")
+            pump(0.6)
             offset = len(events())
             provider_started.clear()
             provider_usage = 31900

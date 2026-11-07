@@ -24,7 +24,7 @@ export default function (api) {
   let ctx, child, generation = 0, sequence = 0, registerID, receiptID;
   let timer, pasteTimer, unsubscribe, tui, editor = shared.editor, closeReply, disposing, removeAbort, compactErrors;
   let stopped = false, transitioning = false, connected = false, fault = false, reconciled = false;
-  let busy = false, submitting = false, retry = false, autoCompact = false, manualCompact = false, compactIsAuto = false, prompts = 0;
+  let submitting = false, retry = false, autoCompact = false, manualCompact = false, compactIsAuto = false, prompts = 0;
   let lastInput = Date.now(), lastNotice = 0, lastStatus, nextReceipt = 0, receiptDelay = 500;
   let nextConnect = 0, connectDelay = 1000, activityDue = false;
   const current = () => !stopped && shared.epoch === epoch;
@@ -186,7 +186,7 @@ export default function (api) {
       if (!node || depth > 12 || node === editor) return;
       const text = node.getText?.();
       // Omp reports manual failures only in the TUI, after compaction's finally.
-      if (typeof text === "string" && text.startsWith("Error: Compaction failed: ") &&
+      if (typeof text === "string" && (text.startsWith("Error: Compaction failed: ") || text === "Error: Compaction cancelled") &&
           text !== "Error: Compaction failed: Compaction already in progress") found.add(node);
       if (Array.isArray(node.children)) for (const item of node.children) walk(item, depth + 1);
     };
@@ -197,7 +197,8 @@ export default function (api) {
         typeof tui.hasOverlay !== "function") return false;
     if (manualCompact && compactErrors && ctx.isIdle() === true &&
         [...compactionErrors()].some(node => !compactErrors.has(node))) endCompact();
-    return inputSafe() && !busy && !submitting && !retry && !autoCompact && !manualCompact && prompts === 0 &&
+    // Runtime idle includes tool execution and continuation; agent_end is not a settlement contract.
+    return inputSafe() && !submitting && !retry && !autoCompact && !manualCompact && prompts === 0 &&
       ctx.isIdle() === true && ctx.hasPendingMessages() === false &&
       !tui.hasOverlay() && (tui.getFocusedComponent?.() ?? tui.getFocused?.()) === editor &&
       ctx.ui.getEditorText().length === 0 && Date.now() - lastInput >= DEBOUNCE;
@@ -338,8 +339,8 @@ export default function (api) {
     submitting = typeof event.text === "string" && event.text.length > 0 && !event.text.startsWith("/");
     lastInput = Date.now(); activityDue = true; schedule(DEBOUNCE);
   });
-  on("agent_start", () => { busy = true; submitting = false; });
-  const settled = () => { busy = false; submitting = false; activityDue = true; nextReceipt = 0; schedule(); };
+  on("agent_start", () => { submitting = false; });
+  const settled = () => { submitting = false; activityDue = true; nextReceipt = 0; schedule(); };
   on("agent_settled", () => { if (HARNESS === "pi") settled(); });
   on("agent_end", event => { if (HARNESS === "omp" && event.willContinue !== true) settled(); });
   on("session_stop", () => { if (HARNESS === "omp") schedule(); });
@@ -354,7 +355,8 @@ export default function (api) {
   on("session_before_compact", event => {
     removeAbort?.(); manualCompact = true; compactIsAuto = autoCompact || event.reason === "threshold" || event.reason === "overflow";
     compactErrors = HARNESS === "omp" && !compactIsAuto ? compactionErrors() : undefined;
-    const aborted = () => { if (current()) endCompact(); };
+    // Omp stays idle while manual compaction unwinds; its TUI result confirms cleanup.
+    const aborted = () => { if (current() && (HARNESS === "pi" || compactIsAuto)) endCompact(); };
     event.signal?.addEventListener("abort", aborted, { once: true });
     removeAbort = () => event.signal?.removeEventListener("abort", aborted);
     if (event.signal?.aborted) aborted();
