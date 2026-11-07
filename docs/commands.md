@@ -42,6 +42,14 @@ Commands that take text (`spawn`, `send`, `answer`) also accept `--stdin`, so th
 | `keep <id> [--off]` | Keeps a finished runner's tab open for the config's `keepFor` after it finished (4 hours by default; `0` means until `keep --off` or `stop`). `--off` lets `gc` close it again, at once when its close time has passed. Running a project stage again turns keep off for the stage's earlier finished runs. |
 | `cleanup [id]... [--yes] [--no-fetch] [--owner DIR]` | Fetches origin, then lists the finished worktree tasks of the current folder's owner and of every project (only `--owner` with that flag) whose worktree or branch is still there, as `merged`, `unmerged`, `dirty` or `kept`. `--yes` removes the worktree and deletes the local branch of each merged one, or of the given ids. See [Cleaning up](#cleaning-up). |
 
+### Pi and omp news recovery
+
+Pi and omp main sessions keep news pending when an operation has no reliable completion signal. Known cases include another extension handling submitted input without starting an agent run, Omp tree navigation being cancelled, vetoed or failing, a later hook cancelling a session switch or fork, and extension-triggered compaction without a completion event. The kit keeps the delivery gate closed in these cases; it does not infer completion from elapsed time or an empty editor.
+
+After known, unsent pending news has waited 10 seconds, a closed gate shows a recovery warning when the runtime reports idle, the editor is empty and there are no queued messages. This warning only changes the TUI: it does not deliver news, call a provider or reset a lifecycle guard. Finish or cancel the operation, then use `/reload` on Pi or `/reload-plugins` on Omp. If news remains paused, exit and explicitly resume the same session with `hrk main --agent <same-agent-spec> --exec --resume <session-id-or-file>`. An Omp plugin reload can reuse the extension instance, so full exit/resume may be necessary for an unknown compaction state.
+
+A cancelled or failed session/branch transition can pause the news child before a batch is known. Its immediate status already instructs you to use `/reload`; it does not wait for the pending-news warning. Incomplete or unobserved paste keeps its separate warning and requires the real paste ending or full exit/resume. A batch already submitted but missing its disk receipt remains receipt-only through reload; only a late receipt or full exit and explicit resume can recover it. Reload never authorizes replay of an uncertain append in the same process.
+
 ## Projects
 
 A project is a git repository the kit keeps a record for, so a main session can drive it from any folder; its news reaches the main sessions it is attached to (see Owners below).

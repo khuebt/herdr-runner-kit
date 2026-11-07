@@ -8,8 +8,10 @@ const BIN = "__HRK_BIN__";
 const HARNESS = "__HRK_HARNESS__";
 const KEY = Symbol.for("herdr-runner-kit.main.v1");
 const DEBOUNCE = 500;
+const WARNING_DELAY = 10000;
 const PASTE_START = "\x1b[200~", PASTE_END = "\x1b[201~";
 const PASTE_WARNING = "Paste incomplete or unknown. News paused; finish pasting or exit and resume.";
+const RECOVERY_WARNING = `News still paused. Finish or cancel the operation, then ${HARNESS === "omp" ? "/reload-plugins" : "/reload"}; if still paused, exit and explicitly resume.`;
 
 export default function (api) {
   if (env.HRK_TASK || env.HRK_MAIN !== String(pid) || env.HRK_MAIN_HARNESS !== HARNESS ||
@@ -65,7 +67,7 @@ export default function (api) {
     pasteTimer = setTimeout(() => {
       pasteTimer = undefined;
       if (current() && ctx?.hasUI === true && !inputSafe()) status(PASTE_WARNING, true);
-    }, Math.max(0, 10000 - (Date.now() - paste.lastByte)));
+    }, Math.max(0, WARNING_DELAY - (Date.now() - paste.lastByte)));
   };
   function observeInput(data) {
     if (!current()) return;
@@ -214,14 +216,18 @@ export default function (api) {
       if (activityDue) { request("activity"); activityDue = false; }
       const pending = shared.pending;
       if (!pending) return;
+      pending.waitingSince ??= Date.now();
       if (pending.attempted) {
         receipt(); if (!fault) status("News pending: waiting for a durable receipt. Exit and resume if the old append cannot finish.");
         schedule(Math.max(500, nextReceipt - Date.now())); return;
       }
       if (fault || !reconciled) { receipt(); schedule(Math.max(500, nextReceipt - Date.now())); return; }
       if (!safe()) {
-        status(!inputSafe() && Date.now() - paste.lastByte >= 10000 ? PASTE_WARNING :
-          "News pending: finish setup or dismiss a dialog, then leave the editor empty."); schedule(500); return;
+        const warnRecovery = inputSafe() && Date.now() - pending.waitingSince >= WARNING_DELAY &&
+          ctx.isIdle() === true && ctx.hasPendingMessages() === false && ctx.ui.getEditorText().length === 0;
+        status(!inputSafe() && Date.now() - paste.lastByte >= WARNING_DELAY ? PASTE_WARNING :
+          warnRecovery ? RECOVERY_WARNING : "News pending: finish setup or dismiss a dialog, then leave the editor empty.", warnRecovery);
+        schedule(500); return;
       }
       pending.attempted = true;
       const b = pending.batch;
@@ -281,8 +287,8 @@ export default function (api) {
     }
     shared.released = true;
     status("News paused for session change. If it is cancelled or fails, use /reload to reconnect.");
-    if (tree) {
-      // The runtime includes branch summarization in isIdle, even on abort/failure.
+    if (tree && HARNESS === "pi") {
+      // Only Pi exposes branch summarization in isIdle; Omp needs explicit recovery.
       let wasBusy = ctx.isIdle() === false;
       const settledTree = () => {
         if (!current() || !transitioning) return;

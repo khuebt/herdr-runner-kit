@@ -147,6 +147,12 @@ export default function(api) {
       } finally { log({event:"probe_tool_end"}); }
     }
   });
+  api.on("input", event => {
+    if (event.text === "Handled acceptance input") {
+      log({event:"input_handled"});
+      return {action:"handled",handled:true};
+    }
+  });
   let timer, tui;
   api.on("session_start", (_event,ctx) => {
     api.setActiveTools(["hrk_probe_hold"]);
@@ -583,7 +589,8 @@ def run_tui(args):
     # The public launcher has no arbitrary runtime flags. This executable only
     # adds profile isolation and the observer, then execs the installed runtime.
     launcher = out / "bin" / args.harness
-    launcher.write_text("#!/bin/sh\nexec " + shlex.join([binary, *flags]) + ' "$@"\n')
+    # Load the fixture after HRK so its handled input exercises HRK's closed gate.
+    launcher.write_text("#!/bin/sh\nexec " + shlex.quote(binary) + ' "$@" ' + shlex.join(flags) + "\n")
     launcher.chmod(0o700)
     env["PATH"] = str(out / "bin") + os.pathsep + env["PATH"]
     port = 20000 + int(hashlib.sha256(str(out).encode()).hexdigest()[:4], 16) % 20000
@@ -1026,7 +1033,6 @@ def run_tui(args):
             provider_started.clear()
             provider_usage = 31900
             compaction_status = 400 if outcome == "failure" else 200
-            screen_offset = len(screen)
             command("Automatic compaction history " + "padding " * 1500)
             wait_for(lambda: any(e["event"] == "session_before_compact" and e.get("reason") != "manual"
                                  for e in events()[offset:]), "automatic compaction starts")
@@ -1043,9 +1049,32 @@ def run_tui(args):
             if outcome == "success":
                 wait_for(lambda: any(e["event"] == "session_compact" for e in events()[offset:]), "automatic compaction completion")
             elif outcome == "failure":
-                wait_for(lambda: b"Local acceptance provider failure" in screen[screen_offset:], "automatic compaction failure notice")
+                wait_for(lambda: any(e["event"] in ("auto_compaction_end", "session_compact_failed") and
+                                     "Local acceptance provider failure" in e.get("errorMessage", "")
+                                     for e in events()[offset:]), "automatic compaction failure event")
             committed(batch)
             result["checks"]["automatic_compaction_" + outcome + "_releases_news_once"] = True
+        screen_offset = len(screen)
+        command("Handled acceptance input")
+        wait_for(lambda: any(e["event"] == "input_handled" for e in events()), "input handled without agent")
+        editor("")
+        requests_before_warning = len(jsonl(out / "provider.jsonl", live_log=True))
+        batch = emit()
+        pump(8)
+        assert b"News still paused." not in screen[screen_offset:], "recovery warning appeared before threshold"
+        wait_for(lambda: b"News still paused." in screen[screen_offset:], "pending news recovery warning", timeout=5)
+        assert not entries(batch) and state().get("pending", {}).get("batchId") == batch, "warning opened delivery gate"
+        assert len(jsonl(out / "provider.jsonl", live_log=True)) == requests_before_warning, "warning called provider"
+        assert snapshot().get("idle") is True and snapshot().get("queued") is False and snapshot().get("editor") == ""
+        result["checks"]["blocked_input_warns_without_delivery"] = True
+        reload_screen = len(screen)
+        command("/reload" if args.harness == "pi" else "/reload-plugins")
+        notice = b"Reloaded keybindings, extensions" if args.harness == "pi" else b"Plugins reloaded."
+        wait_for(lambda: notice in screen[reload_screen:], "explicit recovery reload")
+        send(b"\x1b[200~\x1b[201~")
+        editor("")
+        committed(batch)
+        result["checks"]["explicit_reload_recovers_blocked_input_once"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         write_json(out / "failure-state.json", {"delivery": state(), "runtime": snapshot()})

@@ -221,12 +221,17 @@ disk=true;h.message_end({},ctx);await advance(600);
 // Close racing a new batch cancels transition, preserving its original target.
 closeRace=true;const transition=h.session_before_fork({},ctx);await advance(2000);assert.deepEqual(await transition,{cancel:true});
 await advance(4000);assert.equal(sent.length,5);disk=true;h.message_end({},ctx);await advance(600);
-// Tree abort/failure emits no session_tree, but runtime idle ends that operation.
+// Only Pi includes tree summarization in idle; Omp needs explicit recovery.
 for (const aborted of [true,false]) {
- idle=false;const signal=new AbortController();const navigation=h.session_before_tree({signal:signal.signal},ctx);
+ idle=harness==='omp';const signal=new AbortController();const navigation=h.session_before_tree({signal:signal.signal},ctx);
  await advance(2000);assert.equal(await navigation,undefined);
  const count=children.length;await advance(1000);assert.equal(children.length,count,'reconnected during navigation');
  if(aborted)signal.abort();idle=true;await advance(1000);
+ if(harness==='omp') {
+  idle=false;await advance(600);idle=true;await advance(600);
+  assert.equal(children.length,count,'unrelated busy/idle reopened an unknown tree operation');
+  h.input({source:'interactive',text:'/reload-plugins'},ctx);await advance(1000);
+ }
  assert.equal(children.length,count+1,'cancelled/failed tree left delivery suspended');
  assert.equal(children.at(-1).register.sessionId,'one');
 }
@@ -308,6 +313,41 @@ for(const kind of ['continuation','retry','queued']) {
  if(kind==='queued')queued=false;
  end(h);await advance(600);assert.equal(sent.length,before+1,'continuation did not settle');
  disk=true;h.message_end({},ctx);await advance(600);
+}
+// A handled input has no terminal event. Warn locally without guessing it settled.
+const recoveryWarning=s=>s?.startsWith('News still paused.');
+for(const blocked of ['idle','busy','draft','queue']) {
+ const before=sent.length;
+ h.input({source:'interactive',text:'handled by another extension'},ctx);
+ let offset=statuses.length;await advance(31000);
+ assert.equal(statuses.slice(offset).some(recoveryWarning),false,'warned without pending news');
+ if(blocked==='busy')idle=false;
+ if(blocked==='draft')text=' ';
+ if(blocked==='queue')queued=true;
+ deliver();await advance(9999);
+ assert.equal(statuses.slice(offset).some(recoveryWarning),false,'warned before pending threshold');
+ const activity=activityCount();await advance(1);
+ assert.equal(statuses.slice(offset).some(recoveryWarning),blocked==='idle','warning ignored runtime/editor/queue state');
+ assert.equal(sent.length,before,'warning delivered news');
+ idle=true;text='';queued=false;await advance(500);
+ assert.ok(recoveryWarning(statuses.at(-1)));
+ assert.ok(statuses.at(-1).includes(harness==='omp'?'/reload-plugins':'/reload'));
+ assert.ok(statuses.at(-1).includes('exit and explicitly resume'));
+ await advance(30000);assert.equal(sent.length,before,'warning timeout opened gate');
+ assert.equal(activityCount(),activity,'warning marked technical activity as user activity');
+ await stop(h);h=make();await start(h,true);
+ assert.equal(sent.length,before+1,'explicit reload did not recover the never-sent batch');
+ disk=true;h.message_end({},ctx);await advance(600);
+}
+// Extension-owned compaction with no completion stays closed even when warning.
+if(harness==='omp') {
+ const before=sent.length;
+ h.session_before_compact({},ctx);deliver();await advance(10000);
+ assert.ok(recoveryWarning(statuses.at(-1)));assert.equal(sent.length,before);
+ h.input({source:'interactive',text:'/reload-plugins'},ctx);await advance(600);
+ assert.equal(sent.length,before,'same-instance reload cleared unknown compaction');
+ h.session_compact({},ctx);await advance(600);
+ assert.equal(sent.length,before+1);disk=true;h.message_end({},ctx);await advance(600);
 }
 // A stuck child is force-stopped within the shutdown budget.
 stubborn=true;const began=now;await stop(h);assert.ok(now-began<=1800);assert.equal(timers.size,0);
