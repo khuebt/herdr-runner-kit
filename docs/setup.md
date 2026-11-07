@@ -2,6 +2,8 @@
 
 ## setup
 
+`setup` installs the Claude main integration described below. Pi/omp mains materialize their own runtime assets at launch and need no Claude installation or skill setup; see [Pi and omp main sessions](#pi-and-omp-main-sessions).
+
 ```sh
 hrk setup
 hrk setup --claude-config ~/.claude --claude-config ~/.claude2
@@ -33,6 +35,34 @@ The skill tells the main agent to keep `hrk wait` running in the background. Mod
 - It names the binary by absolute path, and does nothing when that binary is gone. Run `setup` again after moving the binary.
 - Claude wakes the agent when a hook exits with 2, which is also how a crashed Go program exits. So `__autoarm` exits with 3 on news, and the hook turns only that into 2. A crash never wakes the agent.
 - Every other key and hook in `settings.json` stays in place. `--no-hook` removes the kit's hook. Setup does not lock `settings.json`, so avoid running it while another tool edits that file.
+
+## Pi and omp main sessions
+
+Install and authenticate the selected runtime, complete its own setup, and install its herdr integration (`herdr integration install pi` or `herdr integration install omp`). Start from the project folder in an interactive herdr terminal:
+
+```sh
+hrk main --agent pi --exec
+hrk main --agent omp --exec
+hrk main --agent omp:openai-codex/gpt-6-luna:high --exec
+```
+
+Terminal stdin and stdout are required. Main sessions retain normal trust/approval prompts; runner auto-approval flags and input locks do not apply. The kit loads a private, content-versioned extension, prompt and command references from `main-runtime/` in the [state directory](config.md#state). New transcripts start under `main-transcripts/`, and `main-sessions.json` records the real session file. Do not install the extension globally or edit these generated assets. Launch and resume recreate the required assets without Claude setup.
+
+News waits until the TUI can prove it is idle with an empty, focused editor, no queued input, paste or modal. RPC/headless mode does not deliver news. If setup or a modal prevents observation, delivery stays paused; finish setup or dismiss the dialog. On Omp, opening and dismissing `/settings` can re-establish observation after startup/resume. Follow [news recovery](commands.md#pi-and-omp-news-recovery) when a lifecycle operation lacks a completion signal.
+
+### Explicit recovery after a reboot
+
+Exit any agent herdr restored in the pane first, then return to the same owner and working directory and run the matching command:
+
+```sh
+hrk main --agent pi --exec --resume
+hrk main --agent omp --exec --resume
+hrk main --agent pi:openai-codex/gpt-6-luna:high --exec --resume <session-id-or-file>
+```
+
+Without a reference, resume tries matching herdr pane metadata, then the newest registered session for that harness, owner and canonical cwd. An explicit reference must be a registered ID or file for that same identity; unknown, ambiguous, missing or mismatched transcripts are refused. When recovering pending news, select its original session if the newest registration is different. Do not delete pending state or transcripts to bypass an error.
+
+Repeat an explicit model/effort spec on resume; bare `pi`/`omp` selects current runtime defaults. Resuming through the runtime CLI directly can omit the kit's extension, prompt, references and environment. Automatic herdr restore is not verified to retain them, and the kit does not register a replacement restore command. The supported recovery path is explicit `hrk main ... --exec --resume`. Process-restart checks do not establish physical power-loss guarantees.
 
 ## doctor
 

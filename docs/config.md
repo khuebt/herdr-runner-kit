@@ -73,7 +73,7 @@ wakeOn: all               # wake the main session for every news line
 | `heavySlots` | `2` | How many commands wrapped in `hrk heavy` run at once across every runner and the main session; the others wait for a free slot. From 0 to 64; `0` runs them at once and drops the rule from the runner contract. See [commands.md](commands.md#heavy-commands). |
 | `worktreeSetup` | none | Shell commands, per repository, that run in each new runner worktree before its agent starts. Each key is a repository's main checkout, as an absolute or `~/` path; each value a list of at least one command. See [Worktree setup](#worktree-setup). |
 | `runnerInput` | `locked` | `locked` lets a Claude, Codex, pi or omp runner take prompts only from the kit: `spawn`, `send`, `answer`, Telegram replies and the kit's own nudges. `open` lets text typed in the runner's tab reach its agent, as before this key existed. A change applies to runners spawned after it. Codex runners use a per-invocation prompt hook. See [Runner input](#runner-input). |
-| `wakeOn` | `actionable` | <a id="wake-on"></a>`actionable` wakes the main session, through its own `wait` and the auto re-arm hook, only for news it has to act on; quiet news, such as a chain step's `done` without decisions, `stopped`, `cleanable` or `processes-left`, comes with the next wake, and at the latest 50 minutes after the main session was last active. `all` wakes for every news line, as before this key existed. Telegram is unaffected. See [commands.md](commands.md#what-wait-reports). |
+| `wakeOn` | `actionable` | <a id="wake-on"></a>`actionable` wakes the main session, through Claude's `wait`/auto re-arm hook or the pi/omp news extension, only for news it has to act on; quiet news, such as a chain step's `done` without decisions, `stopped`, `cleanable` or `processes-left`, comes with the next wake, and at the latest 50 minutes after the main session was last active. `all` wakes for every news line. Pi/omp delivery still waits for a safe input state; the deadline does not override drafts or modal guards. Telegram is unaffected. See [commands.md](commands.md#what-wait-reports). |
 | `updateCheck` | `true` | Lets `doctor` look for a newer release, at most once a day. `version --check` always looks. See [upgrading.md](upgrading.md). |
 
 The token and chat ids are read when a message is sent. They are never copied into the kit's config or state.
@@ -95,12 +95,14 @@ An explicit `--agent` or `--worktree` / `--no-worktree` on `spawn` always wins o
 `harness[:model[:effort]]`
 
 - `harness` is `claude`, `codex`, `pi` or `omp` (oh-my-pi).
-- `model` is passed to the CLI as is (`--model` for Claude, pi and omp, `-m` for Codex). Leave it empty to use the CLI's own default. pi and omp require it, as `provider/model`, because without one omp picks whichever provider it finds first; a bare `pi` or `omp` is refused by `spawn` and by this file.
+- `model` is passed to the CLI as is (`--model` for Claude, pi and omp, `-m` for Codex). Leave it empty to use the CLI's own default. pi and omp runners require it, as `provider/model`, because without one omp picks whichever provider it finds first; a bare `pi` or `omp` is refused by `spawn` and by this file.
 - `effort` is optional. Claude accepts `low`, `medium`, `high`, `xhigh` and `max`. Codex accepts `minimal`, `low`, `medium`, `high` and `xhigh`. pi accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, and omp the same plus `auto`; both get it as `--thinking`.
 
 Examples: `codex`, `codex:gpt-6-astra:xhigh`, `claude::max`, `claude:claude-sonnet-5-5`, `pi:openai-codex/gpt-6-luna:high`, `omp:openai-codex/gpt-6-luna:max`.
 
 pi's own `--model provider/id:thinking` shorthand does not apply: the spec's third field replaces it, so write `pi:openai-codex/gpt-6-luna:high`. A pi or omp model id may contain colons, as in `pi:ollama/qwen3:8b` or `omp:openrouter/vendor/model:free:high`: the last part is read as the effort only when it is an effort name, and an effort name the harness does not accept is an error.
+
+`hrk main --agent` is separate from runner defaults in this file: it supports `claude` (default), `pi` and `omp`. Bare `pi` or `omp` uses that runtime's default model, while `pi:openai-codex/gpt-6-luna:high` selects one explicitly. Codex main and effort-only pi/omp specs such as `pi::high` are refused. Repeat your explicit spec on resume; the kit does not restore an earlier model selection. See [main launch](commands.md#main-launch-and-delivery).
 
 ## Worktree setup
 

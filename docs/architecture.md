@@ -36,6 +36,8 @@ Claude configuration remains a harness-specific feature. Each allowlist entry in
 | `cli/doctor.go` `runnerClaudeConfigs` | Doctor checks the Claude config folders that Claude tasks recorded. |
 | `project/templates.go` `RenderOutputs` | Output paths render no skill, so any harness gives the same paths. |
 
+### Main sessions
+
 The public main-session launcher (`hrk main`) defaults to Claude Code and also accepts `--agent pi` or `--agent omp`, with optional model and effort in the existing agent-spec syntax. Bare pi/omp use runtime defaults only for main sessions; runner specs still require a model. Codex main and effort-only pi/omp specs are rejected. `harness.ParseMainSpec` and `harness.MainArgs` own these decisions, including pi's `-e`/`--session` and omp's `--hook`/`--resume`. The CLI composes paths and environment and uses `LookPath` and `syscall.Exec`. Claude keeps its settings, channels, installed prompt and Telegram credential resolution. Main launch never uses runner approval flags, input locks or the omp runner overlay.
 
 Pi/omp mains require terminal stdin and stdout. Both launch and print materialize the embedded extension, main prompt and references under a content-versioned `main-runtime` directory in kit state, independently of Claude setup. A new launch reserves an exclusive empty `main-transcripts` file with mode 0600; the runtime creates its ID and header. Pi/omp run with umask 077 so runtime replacements and child-created files stay private. Failed exec removes only its still-empty reservation. The bridge verifies the runtime header and syncs the file and parent directory before recording the session. Resume never recreates a missing transcript.
@@ -49,6 +51,18 @@ Explicit pi/omp resume resolves a registered ID or path first, then a matching h
 Typed main identities use `(harness, sessionId)` in the version-1 `main-sessions.json` companion, guarded by `main-sessions.json.lock` and atomic writes. Each record stores `sessionFile` (the existing Go `Transcript` field), canonical `cwd`, fixed `owner`, `updatedAt`, and optional `paneId`. Registration validates harness names against `task.Harnesses`, absolute clean paths, owners and control characters, resolves cwd symlinks, and rejects changes to an existing identity's owner. A session file need not exist to retain its identity. Typed retention keeps the newest four per harness/owner/cwd and at most 64 overall, separately from the unchanged legacy 4/8/64 bounds. Old binaries ignore the companion file.
 
 `RecordTypedMainSession` upserts typed records; `TypedMainSessions` and `ReadMainSessions` return errors for malformed or unsupported-version metadata, so future resume/bridge callers cannot silently select another session. `MainSessions` keeps a best-effort merged projection for existing consumers, including runner owner validation; Claude-specific helpers remain isolated. Corrupt metadata is never rewritten or deleted by registration.
+
+## Durable main news
+
+Pi/omp delivery is separate from the runner input lock and Claude Stop hook. Its owners are the [delivery core](../internal/wait/delivery.go), [durable owner state](../internal/state/main_news.go), [child bridge](../internal/cli/main_news.go), [transcript verifier](../internal/harness/main_transcript.go) and [TUI extension](../internal/harness/hrk-main.ts). The [embedded main instructions](../skill/references/commands.md) define the model-facing contract.
+
+One lease per fixed owner prevents competing mains and legacy waits from consuming the same cursor. PID/start identity and the launch nonce fence stale children; a generation fences callbacks across session changes and reloads. The bridge exits when its parent dies and releases its cursor lock on shutdown. Idle maintenance does not start model turns or reset the quiet-news deadline.
+
+Preparing news persists an immutable batch ID, digest, lines and original transcript target before delivery. The cursor advances only after the bridge verifies the matching physical `hrk-news` entry and syncs the transcript and its directory. ACK loss reuses the same batch and receipt. An attempted append with no receipt cannot be replayed while its original process might still append; reconnect/reload stays receipt-only. Full exit and explicit resume permit reconciliation against the original target before retrying. Corrupt or uncertain pending state is an error, never permission to delete it and advance.
+
+Receipt checks cover physical history, including entries outside the active branch or compaction context. Branch/fork copies of a historical receipt do not constitute another delivery. A session switch cannot retarget pending news, and a branch change can leave delivered news out of the active model context without authorizing another append. This contract proves transcript persistence, not model consumption, relay or action.
+
+State locations under the kit state directory are `main-news-<cursor>.json` for lease/pending/ACK state, `main-sessions.json` for typed session registration, `main-transcripts/` for new transcripts and `main-runtime/` for content-versioned assets. The linked owners define formats and validation; these are not hand-editable recovery controls. Keep the target transcript and pending state together. User recovery instructions live in [setup](setup.md#explicit-recovery-after-a-reboot).
 
 ## The harness seam
 
