@@ -133,18 +133,24 @@ export default function(api) {
     models:[{id:"probe",name:"Local acceptance fixture",reasoning:false,input:["text"],
       cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32000,maxTokens:2048}]
   });
-  let timer;
+  let timer, tui;
   api.on("session_start", (_event,ctx) => {
     clearInterval(timer);
+    ctx.ui.setWidget("hrk-probe-observer", host => {
+      tui = host;
+      return {render:() => [],invalidate() {}};
+    });
     log({event:"start",pid:process.pid,id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile(),
       fileExists:existsSync(ctx.sessionManager.getSessionFile() || "")});
     timer=setInterval(() => log({event:"snapshot",editor:ctx.ui.getEditorText(),idle:ctx.isIdle(),
       queued:ctx.hasPendingMessages(),id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile(),
-      fileExists:existsSync(ctx.sessionManager.getSessionFile() || "")}),100);
+      fileExists:existsSync(ctx.sessionManager.getSessionFile() || ""),
+      focus:(tui?.getFocusedComponent?.() ?? tui?.getFocused?.())?.constructor?.name,
+      overlay:tui?.hasOverlay?.()}),100);
   });
-  for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_compact_failed"]) {
+  for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_compact_failed","auto_compaction_start","auto_compaction_end","auto_retry_start","auto_retry_end"]) {
     api.on(name, event => {
-      log({event:name,aborted:event.aborted,reason:event.reason});
+      log({event:name,aborted:event.aborted,reason:event.reason,willContinue:event.willContinue});
       if (name === "session_before_compact") event.signal?.addEventListener("abort",
         () => log({event:"compaction_aborted"}), {once:true});
     });
@@ -551,13 +557,13 @@ def run_tui(args):
     })
     (out / "agent").mkdir()
     (out / "bin").mkdir()
-    write_json(out / "agent/settings.json", {"compaction": {"enabled": False, "reserveTokens": 512, "keepRecentTokens": 100}})
+    write_json(out / "agent/settings.json", {"compaction": {"enabled": True, "reserveTokens": 512, "keepRecentTokens": 100}})
     (out / "observer.ts").write_text(TUI_EXTENSION)
     flags = ["--no-extensions", "--no-skills", "--no-tools", "--session-dir", str(out / "sessions")]
     if args.harness == "pi":
         flags += ["--no-mcp", "--no-context-files", "--no-prompt-templates", "--no-themes", "--offline", "-e", str(out / "observer.ts")]
     else:
-        (out / "omp.yml").write_text("setupVersion: 2\ncompaction:\n  enabled: false\n  reserveTokens: 512\n  keepRecentTokens: 100\ntui:\n  titleState: false\n")
+        (out / "omp.yml").write_text("setupVersion: 2\ncompaction:\n  enabled: true\n  reserveTokens: 512\n  keepRecentTokens: 100\ntui:\n  titleState: false\n")
         flags += ["--no-rules", "--no-lsp", "--no-title", "--config", str(out / "omp.yml"), "--hook", str(out / "observer.ts")]
     # The public launcher has no arbitrary runtime flags. This executable only
     # adds profile isolation and the observer, then execs the installed runtime.
@@ -574,11 +580,14 @@ def run_tui(args):
     provider_release = threading.Event()
     provider_release.set()
     provider_status = 200
+    provider_usage = 0
+    compaction_status = 200
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
 
         def do_POST(self):
+            nonlocal provider_usage, provider_status
             length = int(self.headers.get("Content-Length", "0"))
             if length > 4 * 1024 * 1024:
                 self.send_error(413)
@@ -587,6 +596,8 @@ def run_tui(args):
             with (out / "provider.jsonl").open("a") as log:
                 log.write(json.dumps(payload) + "\n")
             status = provider_status
+            usage = provider_usage
+            provider_usage = 0
             provider_started.set()
             if not provider_release.wait(30):
                 self.send_error(504, "acceptance probe did not release provider")
@@ -598,8 +609,17 @@ def run_tui(args):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
+                if usage:
+                    # Hold the next provider call, made by real auto-compaction.
+                    provider_status = compaction_status
+                    provider_release.clear()
+                    provider_started.clear()
                 for delta, finish in [({"role": "assistant", "content": "Local fixture complete."}, None), ({}, "stop")]:
                     chunk = {"id": "probe", "object": "chat.completion.chunk", "created": int(time.time()), "model": "probe", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+                    self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+                if usage:
+                    chunk = {"id": "probe", "object": "chat.completion.chunk", "created": int(time.time()), "model": "probe",
+                             "choices": [], "usage": {"prompt_tokens": usage, "completion_tokens": 10, "total_tokens": usage + 10}}
                     self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
@@ -855,6 +875,18 @@ def run_tui(args):
             committed(batch)
             result["checks"]["public_explicit_resume_" + label + "_pending_once"] = True
         previous = next(e for e in reversed(events()) if e["event"] == "start")
+        send(b"/new")
+        editor("/new")
+        batch = emit()
+        prepared = state()["pending"]
+        pump(0.7)
+        assert not entries(batch), "session command draft bypassed input gate"
+        transition_offset = len(events())
+        send(b"\r")
+        committed(batch)
+        assert all(e.get("id", previous["id"]) == previous["id"] for e in events()[transition_offset:]), "pending news switched session"
+        assert state()["lastAck"]["target"] == prepared["target"], "blocked transition changed delivery target"
+        result["checks"]["new_session_blocked_until_pending_committed"] = True
         command("/new")
         wait_for(lambda: snapshot().get("id") not in (None, previous["id"]), "new session identity")
         identity = snapshot()
@@ -894,6 +926,23 @@ def run_tui(args):
         receipt = next(i for i, e in enumerate(history) if e.get("details", {}).get("batchId") == batch)
         assert queued < receipt, "news overtook queued user input"
         result["checks"]["busy_queue_and_later_draft_precede_news"] = True
+        requests_before_retry = len(jsonl(out / "provider.jsonl", live_log=True))
+        provider_started.clear()
+        provider_release.clear()
+        provider_status = 503
+        command("Retry this local provider response before delivering news.")
+        wait_for(provider_started.is_set, "retryable provider request")
+        batch = emit()
+        pump(0.8)
+        assert not entries(batch), "news entered the runtime before retry"
+        provider_status = 200
+        provider_release.set()
+        wait_for(lambda: len(jsonl(out / "provider.jsonl", live_log=True)) >= requests_before_retry + 2,
+                 "runtime retries provider request")
+        requests = jsonl(out / "provider.jsonl", live_log=True)[requests_before_retry:]
+        assert requests[0]["messages"] == requests[1]["messages"], "next request was not a retry of the failed turn"
+        committed(batch)
+        result["checks"]["provider_retry_finishes_before_news"] = True
         for outcome in ("success", "cancel", "failure"):
             provider_started.clear()
             command("Compaction history " + "padding " * 1500)
@@ -923,6 +972,31 @@ def run_tui(args):
                 wait_for(lambda: b"Local acceptance provider failure" in screen[screen_offset:], "manual compaction failure notice")
             committed(batch)
             result["checks"]["manual_compaction_" + outcome + "_releases_news_once"] = True
+        for outcome in ("success", "cancel", "failure"):
+            offset = len(events())
+            provider_started.clear()
+            provider_usage = 31900
+            compaction_status = 400 if outcome == "failure" else 200
+            screen_offset = len(screen)
+            command("Automatic compaction history " + "padding " * 1500)
+            wait_for(lambda: any(e["event"] == "session_before_compact" and e.get("reason") != "manual"
+                                 for e in events()[offset:]), "automatic compaction starts")
+            wait_for(provider_started.is_set, "automatic compaction provider request")
+            batch = emit()
+            pump(0.8)
+            assert not entries(batch), "news entered the runtime during automatic compaction"
+            if outcome == "cancel":
+                send(b"\x1b")
+                wait_for(lambda: any(e["event"] == "compaction_aborted" for e in events()[offset:]),
+                         "automatic compaction cancellation")
+            provider_status = 200
+            provider_release.set()
+            if outcome == "success":
+                wait_for(lambda: any(e["event"] == "session_compact" for e in events()[offset:]), "automatic compaction completion")
+            elif outcome == "failure":
+                wait_for(lambda: b"Local acceptance provider failure" in screen[screen_offset:], "automatic compaction failure notice")
+            committed(batch)
+            result["checks"]["automatic_compaction_" + outcome + "_releases_news_once"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         write_json(out / "failure-state.json", {"delivery": state(), "runtime": snapshot()})
