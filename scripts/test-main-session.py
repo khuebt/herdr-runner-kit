@@ -124,7 +124,7 @@ export default function(pi) {
 
 # Observation only: the production extension owns all delivery and input gates.
 TUI_EXTENSION = r'''
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 const root = process.env.HRK_PROBE_OUT;
 const log = data => appendFileSync(root + "/observer.jsonl", JSON.stringify({at:Date.now(),...data}) + "\n");
 export default function(api) {
@@ -136,9 +136,11 @@ export default function(api) {
   let timer;
   api.on("session_start", (_event,ctx) => {
     clearInterval(timer);
-    log({event:"start",pid:process.pid,id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile()});
+    log({event:"start",pid:process.pid,id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile(),
+      fileExists:existsSync(ctx.sessionManager.getSessionFile() || "")});
     timer=setInterval(() => log({event:"snapshot",editor:ctx.ui.getEditorText(),idle:ctx.isIdle(),
-      queued:ctx.hasPendingMessages()}),100);
+      queued:ctx.hasPendingMessages(),id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile(),
+      fileExists:existsSync(ctx.sessionManager.getSessionFile() || "")}),100);
   });
   for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_compact_failed"]) {
     api.on(name, () => log({event:name}));
@@ -564,6 +566,9 @@ def run_tui(args):
     result = {"harness": args.harness, "case": "tui", "kitBin": str(args.kit_bin.resolve()), "checks": {}, "blockers": []}
     result["provider"] = {"pid": os.getpid(), "port": port, "command": [sys.executable, *sys.argv], "worktree": str(Path.cwd())}
     result["version"] = subprocess.check_output([binary, "--version"], cwd=out, env=env, text=True, timeout=15).strip()
+    provider_started = threading.Event()
+    provider_release = threading.Event()
+    provider_release.set()
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -576,6 +581,10 @@ def run_tui(args):
             payload = json.loads(self.rfile.read(length))
             with (out / "provider.jsonl").open("a") as log:
                 log.write(json.dumps(payload) + "\n")
+            provider_started.set()
+            if not provider_release.wait(30):
+                self.send_error(504, "acceptance probe did not release provider")
+                return
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -617,7 +626,8 @@ def run_tui(args):
         return current
 
     def entries(batch):
-        return [entry for path in (out / "kit-state/main-transcripts").glob("*.jsonl")
+        paths = {Path(e["file"]) for e in events() if e.get("file")}
+        return [entry for path in paths
                 for entry in jsonl(path, live_log=True) if entry.get("customType") == "hrk-news" and
                 entry.get("details", {}).get("batchId") == batch]
 
@@ -771,24 +781,41 @@ def run_tui(args):
         result["checks"]["chunked_multiline_paste_preserved"] = True
         # Even Omp's native paste timeout cannot replace an observed raw END.
         warning_start = len(screen)
+        requests_before_warning = len(jsonl(out / "provider.jsonl", live_log=True))
         send(b"\x1b[200~")
         batch = emit()
         pump(10.3)
         assert not entries(batch), "unterminated paste timeout released news"
         assert b"Paste incomplete or unknown" in screen[warning_start:], "missing paste recovery warning"
+        assert len(jsonl(out / "provider.jsonl", live_log=True)) == requests_before_warning, "paste warning woke the model"
         editor("")
         send(b"\x1b[201~")
         editor("")
         committed(batch)
         result["checks"]["unterminated_paste_warns_and_waits_for_real_end"] = True
-        command("/reload" if args.harness == "pi" else "/reload-plugins")
-        pump(1.5)
-        # A reload gap is unknown until a real paste END re-establishes input state.
-        send(b"\x1b[200~\x1b[201~")
-        editor("")
-        committed(emit())
-        assert len(children()) == 1, "reload duplicated the news child"
-        result["checks"]["reload_keeps_one_news_child"] = True
+        for _ in range(3):
+            reload_command = "/reload" if args.harness == "pi" else "/reload-plugins"
+            send(reload_command.encode())
+            editor(reload_command)
+            batch = emit()
+            prepared = state()["pending"]
+            pump(0.7)
+            assert not entries(batch), "reload command draft bypassed input gate"
+            old_child, = children()
+            reload_screen = len(screen)
+            send(b"\r")
+            notice = b"Reloaded keybindings, extensions" if args.harness == "pi" else b"Plugins reloaded."
+            wait_for(lambda: notice in screen[reload_screen:], "runtime reload confirmation")
+            if args.harness == "pi":
+                wait_for(lambda: len(children()) == 1 and old_child not in children(), "reloaded extension replaces child")
+            # A reload gap is unknown until a real END re-establishes input state.
+            send(b"\x1b[200~\x1b[201~")
+            editor("")
+            committed(batch)
+            assert state()["lastAck"]["digest"] == prepared["digest"], "reload changed pending payload"
+            assert len(children()) == 1, "reload duplicated the news child"
+            assert sum(process_alive(pid) for pid in bridges) == 1, "reload leaked an old child"
+        result["checks"]["repeated_reload_preserves_never_sent_batch_once"] = True
         command("/settings")
         pump(0.5)
         batch = emit()
@@ -818,11 +845,53 @@ def run_tui(args):
             assert transcript == original, "explicit resume changed transcript"
             committed(batch)
             result["checks"]["public_explicit_resume_" + label + "_pending_once"] = True
+        previous = next(e for e in reversed(events()) if e["event"] == "start")
+        command("/new")
+        wait_for(lambda: snapshot().get("id") not in (None, previous["id"]), "new session identity")
+        identity = snapshot()
+        transcript = Path(identity["file"])
+        write_json(out / "new-session.json", identity)
+        # The runtime owns materializing a fresh session. A user turn must let
+        # delivery reconnect once its header is durable, without losing news.
+        command("Initialize the fresh local acceptance session.")
+        wait_for(lambda: transcript.exists() and snapshot().get("idle") is True, "new session first turn")
+        send(b"\x1b[200~\x1b[201~")
+        editor("")
+        committed(emit())
+        assert state()["lastAck"]["target"]["sessionId"] == identity["id"], "new session retained old delivery identity"
+        result["checks"]["new_session_materializes_and_receives_news"] = True
+        provider_started.clear()
+        provider_release.clear()
+        command("Hold the local response while I queue another prompt.")
+        wait_for(provider_started.is_set, "busy provider request")
+        batch = emit()
+        command("QUEUED_USER_PROMPT")
+        wait_for(lambda: snapshot().get("queued") is True, "queued user input")
+        send(b"DRAFT_DURING_BUSY")
+        editor("DRAFT_DURING_BUSY")
+        pump(0.7)
+        assert not entries(batch), "news entered the agent queue while busy"
+        provider_release.set()
+        wait_for(lambda: snapshot().get("idle") is True and snapshot().get("queued") is False, "queued prompt finishes")
+        pump(0.7)
+        assert not entries(batch) and snapshot()["editor"] == "DRAFT_DURING_BUSY", "settled turn bypassed draft"
+        history = jsonl(transcript)
+        queued = next(i for i, e in enumerate(history) if e.get("message", {}).get("role") == "user" and
+                      "QUEUED_USER_PROMPT" in json.dumps(e["message"].get("content")))
+        send(b"\x15")
+        editor("")
+        committed(batch)
+        history = jsonl(transcript)
+        receipt = next(i for i, e in enumerate(history) if e.get("details", {}).get("batchId") == batch)
+        assert queued < receipt, "news overtook queued user input"
+        result["checks"]["busy_queue_and_later_draft_precede_news"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
+        write_json(out / "failure-state.json", {"delivery": state(), "runtime": snapshot()})
         if isinstance(error, InterruptedError):
             raise
     finally:
+        provider_release.set()
         stop_tui()
         if server is not None:
             server.shutdown()
