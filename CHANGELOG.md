@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.11...v0.16.0) (2026-11-07)
+
+
+### Features
+
+* durable main session news for pi and omp ([#112](https://github.com/khuebt/herdr-runner-kit/issues/112)) ([0d51637](https://github.com/khuebt/herdr-runner-kit/commit/0d51637d51362aac5093e463ffd7b07ca89ea711))
+
 ## [0.15.11](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.10...v0.15.11) (2026-11-05)
 
 
