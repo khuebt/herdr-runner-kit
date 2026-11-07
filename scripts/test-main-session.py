@@ -153,6 +153,15 @@ export default function(api) {
       return {action:"handled",handled:true};
     }
   });
+  api.registerCommand("probe-branch", {
+    description:"Exercise the runtime's real branch operation.",
+    handler:async (_args,ctx) => {
+      const entry=ctx.sessionManager.getEntries().find(e => e.type === "message" && e.message.role === "user");
+      if (!entry) throw new Error("Branch acceptance requires a user entry");
+      const result=await (typeof ctx.branch === "function" ? ctx.branch(entry.id) : ctx.fork(entry.id));
+      log({event:"branch_result",...result,id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile()});
+    }
+  });
   let timer, tui;
   api.on("session_start", (_event,ctx) => {
     api.setActiveTools(["hrk_probe_hold"]);
@@ -671,17 +680,18 @@ def run_tui(args):
         paths = list((out / "kit-state").glob("main-news-*.json"))
         return json.loads(paths[0].read_text()) if paths else {}
 
-    def children():
+    def children(parent=None):
+        parent = process.pid if parent is None else parent
         rows = subprocess.check_output(["ps", "-eo", "pid=,pgid=,args="], text=True)
         current = []
         for row in rows.splitlines():
             fields = row.split(None, 2)
-            if len(fields) == 3 and int(fields[1]) == process.pid and fields[2] == str(args.kit_bin.resolve()) + " main __news":
+            if len(fields) == 3 and int(fields[1]) == parent and fields[2] == str(args.kit_bin.resolve()) + " main __news":
                 child = int(fields[0])
                 current.append(child)
                 if child not in bridges:
                     processes.append({"pid": child, "argv": [str(args.kit_bin.resolve()), "main", "__news"],
-                                      "cwd": str(out), "worktree": str(Path.cwd()), "parentPID": process.pid})
+                                      "cwd": str(out), "worktree": str(Path.cwd()), "parentPID": parent})
                     bridges.add(child)
                     write_json(out / "processes.json", processes)
         return current
@@ -806,6 +816,78 @@ def run_tui(args):
         result["checks"]["private_transcript"] = True
         committed(emit())
         result["checks"]["fresh_idle_delivery_without_input"] = True
+        # A second real main must not steal the lease, even after its child dies.
+        send(b"LEASE_OWNER_DRAFT")
+        editor("LEASE_OWNER_DRAFT")
+        batch = emit()
+        competing_out = out / "competitor"
+        competing_out.mkdir()
+        competing_master, competing_slave = pty.openpty()
+        competitor = None
+        competing_screen = bytearray()
+        conflict_offset = 0
+        conflict_text = b"already waiting"
+
+        def start_competitor():
+            rival = subprocess.Popen(argv, cwd=out, env=dict(env, HRK_PROBE_OUT=str(competing_out)),
+                                     stdin=competing_slave, stdout=competing_slave, stderr=competing_slave,
+                                     start_new_session=True)
+            processes.append({"pid": rival.pid, "argv": argv, "cwd": str(out), "worktree": str(Path.cwd())})
+            write_json(out / "processes.json", processes)
+            return rival
+
+        def stop_competitor():
+            if competitor is None:
+                return
+            try:
+                os.killpg(competitor.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                competitor.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(competitor.pid, signal.SIGKILL)
+                competitor.wait(timeout=3)
+
+        try:
+            fcntl.ioctl(competing_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
+            argv = [str(args.kit_bin.resolve()), "main", "--agent", args.harness + ":hrk-probe/probe:off",
+                    "--exec", "--resume", str(transcript)]
+            competitor = start_competitor()
+
+            def conflict():
+                children(competitor.pid)
+                ready, _, _ = select.select([competing_master], [], [], 0)
+                if ready:
+                    competing_screen.extend(os.read(competing_master, 65536))
+                return conflict_text in competing_screen[conflict_offset:]
+
+            wait_for(conflict, "competing main lease conflict")
+            assert state()["lease"]["pid"] == process.pid and not entries(batch), "competing main stole delivery"
+            stop_competitor()
+            child, = children()
+            os.kill(process.pid, signal.SIGSTOP)
+            try:
+                conflict()
+                conflict_offset = len(competing_screen)
+                conflict_text = b"owns the lease"
+                os.kill(child, signal.SIGKILL)
+                wait_for(lambda: not process_alive(child), "own child exits before competing retry")
+                competitor = start_competitor()
+                wait_for(conflict, "competing main remains fenced after owner child death")
+                assert state()["lease"]["pid"] == process.pid and not entries(batch), "child death released living parent's lease"
+            finally:
+                os.kill(process.pid, signal.SIGCONT)
+            result["checks"]["two_main_ptys_cannot_share_owner_after_child_death"] = True
+        finally:
+            stop_competitor()
+            os.close(competing_slave)
+            os.close(competing_master)
+            (competing_out / "screen.txt").write_bytes(competing_screen)
+        send(b"\x15")
+        editor("")
+        committed(batch)
+        result["checks"]["own_child_restart_preserves_pending_once"] = True
         for label, draft in [("normal", "UNSENT_DRAFT"), ("whitespace", "   ")]:
             send(draft.encode())
             editor(draft)
@@ -1075,6 +1157,23 @@ def run_tui(args):
         editor("")
         committed(batch)
         result["checks"]["explicit_reload_recovers_blocked_input_once"] = True
+        previous_id = snapshot()["id"]
+        send(b"/probe-branch")
+        editor("/probe-branch")
+        batch = emit()
+        prepared = state()["pending"]
+        assert not entries(batch), "branch command draft bypassed input gate"
+        offset = len(events())
+        send(b"\r")
+        wait_for(lambda: any(e["event"] == "branch_result" for e in events()[offset:]), "runtime branch result")
+        branch = next(e for e in events()[offset:] if e["event"] == "branch_result")
+        pump(0.8)
+        write_json(out / "pending-branch-evidence.json", {"before": prepared, "branch": branch,
+                                                        "after": state(), "runtime": snapshot(), "receipts": entries(batch)})
+        assert branch.get("cancelled") is True and branch["id"] == previous_id, "pending news allowed a branch transition"
+        committed(batch)
+        assert state()["lastAck"]["target"] == prepared["target"], "blocked branch changed delivery target"
+        result["checks"]["branch_blocked_until_pending_committed"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         write_json(out / "failure-state.json", {"delivery": state(), "runtime": snapshot()})
