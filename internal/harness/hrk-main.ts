@@ -335,8 +335,8 @@ export default function (api) {
     shared.closing.then(() => { if (current()) { connect(); schedule(DEBOUNCE); } });
   };
   on("session_start", startSession);
-  // Omp switches sessions in place without emitting another session_start.
-  if (HARNESS === "omp") on("session_switch", startSession);
+  // Omp switches and branches in place without emitting another session_start.
+  if (HARNESS === "omp") for (const name of ["session_switch", "session_branch"]) on(name, startSession);
   on("input", (event, context) => {
     if (event.source === "extension") return;
     // Omp reloads plugins without recreating extensions; also recover a cancelled switch.
@@ -368,7 +368,7 @@ export default function (api) {
     if (event.signal?.aborted) aborted();
   });
   for (const name of ["session_compact", "session_compact_failed"]) on(name, endCompact);
-  for (const name of ["session_before_switch", "session_before_fork"]) on(name, event => beforeTransition(event));
+  for (const name of ["session_before_switch", HARNESS === "omp" ? "session_before_branch" : "session_before_fork"]) on(name, event => beforeTransition(event));
   on("session_before_tree", event => beforeTransition(event, true));
   on("session_tree", (_event, context) => { transitioning = false; shared.target = target(context); connect(); schedule(); });
   on("session_shutdown", dispose);

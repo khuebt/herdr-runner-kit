@@ -83,6 +83,7 @@ import {syncBuiltinESMExports} from 'node:module';
 import {EventEmitter} from 'node:events';
 import {env,pid} from 'node:process';
 const harness=process.argv[2];
+const beforeBranch=harness==='omp'?'session_before_branch':'session_before_fork';
 let now=100000, serial=0, timers=new Map();
 Date.now=()=>now;
 globalThis.setTimeout=(fn,ms=0)=>{ const id=++serial;timers.set(id,{fn,at:now+ms});return id; };
@@ -179,6 +180,8 @@ rawInput('\x1b[?1;2c');await advance(600);assert.equal(activityCount(),quiet,'te
 const connections=children.length;h.session_start({},ctx);await advance();assert.equal(children.length,connections);assert.equal(listeners.size,1);
 // Exact whitespace, chunked paste, debounce, queues, busy/retry and modal gates.
 text=' \n\t';deliver();await advance(1500);assert.equal(sent.length,0);assert.equal(text,' \n\t');
+assert.deepEqual(await h[beforeBranch]({},ctx),{cancel:true},'unsent news allowed a branch');
+assert.equal(children.at(-1).register.sessionId,'one');
 key('\x1b[200~');text='draft\n';key('chunk');await advance(900);assert.equal(sent.length,0);
 text='';key('\x1b[201~');await advance(499);assert.equal(sent.length,0);queued=true;await advance(600);assert.equal(sent.length,0);
 queued=false;h.input({source:'interactive',text:'user prompt'},ctx);await advance(600);assert.equal(sent.length,0);idle=false;h.agent_start({},ctx);await advance(600);assert.equal(sent.length,0);
@@ -203,6 +206,7 @@ assert.equal(sent[0].content,'t1 done\nsecond line');assert.deepEqual(sent[0].de
 // Receipt retries and duplicate lifecycle events never resend an attempted batch.
 for(let i=0;i<4;i++){h.message_end({},ctx);end(h);await advance(2000);}
 assert.equal(sent.length,1);assert.deepEqual(await h.session_before_switch({},ctx),{cancel:true});
+assert.deepEqual(await h[beforeBranch]({},ctx),{cancel:true},'uncertain receipt allowed a branch');
 disk=true;h.message_end({},ctx);await advance(600);assert.equal(sent.length,1);
 // Never-sent handover survives teardown and reconnect, but old callbacks cannot drain.
 text='keep this exact draft';deliver();await advance(600);const old=h;await stop(h);h=make();await start(h,true);
@@ -219,7 +223,7 @@ deliver();await advance(600);assert.equal(sent.length,3);disk=true;await stop(h)
 deliver();await advance(600);assert.equal(sent.length,4);children.at(-1).kill('SIGKILL');await advance(4000);assert.equal(sent.length,4);
 disk=true;h.message_end({},ctx);await advance(600);
 // Close racing a new batch cancels transition, preserving its original target.
-closeRace=true;const transition=h.session_before_fork({},ctx);await advance(2000);assert.deepEqual(await transition,{cancel:true});
+closeRace=true;const transition=h[beforeBranch]({},ctx);await advance(2000);assert.deepEqual(await transition,{cancel:true});
 await advance(4000);assert.equal(sent.length,5);disk=true;h.message_end({},ctx);await advance(600);
 // Only Pi includes tree summarization in idle; Omp needs explicit recovery.
 for (const aborted of [true,false]) {
@@ -236,11 +240,11 @@ for (const aborted of [true,false]) {
  assert.equal(children.at(-1).register.sessionId,'one');
 }
 // Later hooks may cancel switch/fork without a completion event. Show explicit recovery.
-for(const name of ['session_before_switch','session_before_fork']) {
+for(const name of ['session_before_switch',beforeBranch]) {
  const cancelled=h[name]({},ctx);await advance(2000);assert.equal(await cancelled,undefined);
  assert.ok(statuses.some(s=>s?.includes('/reload to reconnect')));
  const previous=children.length;await advance(2000);assert.equal(children.length,previous);
- h.input({source:'interactive',text:harness==='omp'&&name==='session_before_fork'?'/reload-plugins':'/reload'},ctx);await advance(1000);
+ h.input({source:'interactive',text:harness==='omp'&&name===beforeBranch?'/reload-plugins':'/reload'},ctx);await advance(1000);
  assert.equal(children.length,previous+1);assert.equal(children.at(-1).register.sessionId,'one');
 }
 // A successful quiesced close permits new identity and repeated session_start.
@@ -348,6 +352,22 @@ if(harness==='omp') {
  assert.equal(sent.length,before,'same-instance reload cleared unknown compaction');
  h.session_compact({},ctx);await advance(600);
  assert.equal(sent.length,before+1);disk=true;h.message_end({},ctx);await advance(600);
+}
+// Omp branches emit only before_branch then session_branch, with no switch/start.
+if(harness==='omp') {
+ const previous=children.at(-1), count=children.length, before=sent.length;
+ const branch=h.session_before_branch({},ctx);await advance(2000);assert.equal(await branch,undefined);
+ assert.notEqual(previous.signalCode,null);assert.equal(children.length,count);
+ session={sessionId:'branched',sessionFile:'/sessions/branched.jsonl',cwd:'/cwd'};
+ text='restored user entry';h.session_branch({},ctx);await advance(600);
+ assert.equal(children.length,count+1);assert.equal(children.at(-1).register.sessionId,'branched');
+ assert.equal(children.at(-1).register.sessionFile,'/sessions/branched.jsonl');
+ assert.equal(children.at(-1).generation,previous.generation+1);
+ h.session_branch({},ctx);await advance(600);assert.equal(children.length,count+1);
+ assert.equal(children.filter(c=>c.signalCode===null).length,1);assert.equal(listeners.size,1);
+ deliver();await advance(600);assert.equal(sent.length,before);assert.equal(text,'restored user entry');
+ text='';key('clear');await advance(600);assert.equal(sent.length,before+1);
+ disk=true;h.message_end({},ctx);await advance(600);assert.equal(saved,null);
 }
 // A stuck child is force-stopped within the shutdown budget.
 stubborn=true;const began=now;await stop(h);assert.ok(now-began<=1800);assert.equal(timers.size,0);
