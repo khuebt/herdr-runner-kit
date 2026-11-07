@@ -455,3 +455,24 @@ func TestMainSessionKeepsItsOwner(t *testing.T) {
 		t.Fatal("a session without an owner, or no id, has none")
 	}
 }
+
+func TestMainSessionsLegacyGlobalRetention(t *testing.T) {
+	s := openStore(t)
+	for i := range 70 {
+		id := fmt.Sprintf("id%d", i)
+		if err := s.RecordMainTranscript(id, fmt.Sprintf("/folder%d/session.jsonl", i), "/owner"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := s.MainSessions()
+	if len(rows) != 64 || rows[0].ID != "id6" || rows[63].ID != "id69" {
+		t.Fatalf("legacy retention: %+v", rows)
+	}
+	if err := s.RecordMainSession("id6"); err != nil {
+		t.Fatal(err)
+	}
+	rows = s.MainSessions()
+	if rows[63].Transcript != "/folder6/session.jsonl" || rows[63].Owner != "/owner" {
+		t.Fatalf("empty update lost legacy fields: %+v", rows[63])
+	}
+}

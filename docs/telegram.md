@@ -1,11 +1,11 @@
 # Telegram
 
-herdr-runner-kit sends runner news to your Telegram chat. Your replies reach the main Claude Code session, which routes them to the runner that asked.
+herdr-runner-kit sends runner news to your Telegram chat. Sending works with every main harness. Replies reach a Claude Code main session through its channel plugin, which routes them to the runner that asked. Pi/omp mains support outgoing news only: incoming replies are deferred, and these mains load neither the Claude plugin nor another poller. Answer in the pi/omp main chat instead, even when an outgoing message includes Telegram reply instructions.
 
 ## How it works
 
 - **Sending:** when a task reports `needs-human`, fails, stalls, is held, ends turns without reporting, finishes, or a chain stops before its end, a detached process calls the Bot API `sendMessage`. `report` and `wait` never wait for the network. Transient transport failures (connection reset, EOF or deadline) get at most 3 attempts per chat, with 1-second then 2-second backoff and a 10-second timeout per attempt. A 2xx response whose body cannot be read or decoded counts as sent and is never retried. A chat already sent successfully is not resent because another chat failed. The final outcome is `notified` or `notify-failed`, with `notifyAttempts` counting HTTP attempts across chats and the original attempt tag retained. A timeout or lost response can mean Telegram accepted the message, so retry may deliver duplicates. `notified` confirms Telegram delivery only; main-session news uses its own owner routing.
-- **Replying:** the main session runs the official Telegram channel plugin, which owns the bot's update polling. When your reply arrives there, the main agent passes it to `hrk answer --from-telegram`. The kit never polls Telegram itself, and runners have `TELEGRAM_BOT_TOKEN` cleared so they never take over the bot.
+- **Replying (Claude only):** the main session runs the official Telegram channel plugin, which owns the bot's update polling. When your reply arrives there, the main agent passes it to `hrk answer --from-telegram`. The kit never polls Telegram itself, and runners have `TELEGRAM_BOT_TOKEN` cleared so they never take over the bot.
 
 ## Credentials
 
@@ -25,6 +25,8 @@ or let it use the channel plugin's own files: the token from `<dir>/.env` and th
 Use the same bot for the plugin and the kit.
 
 ## Setting up the plugin
+
+This setup is for a Claude main. Pi/omp outgoing notifications use the same kit credential resolver above and require no Claude installation when `telegram.envFile` is configured. The kit does not pass its resolved bot token into pi/omp.
 
 Install the plugin in the Claude config folder of your main session, then disable it, so only the main session loads it:
 
@@ -75,6 +77,8 @@ A held-back `done` is recorded as a `notify-deferred` event. When a task later i
 - `status <name>` for a registered project asks the main agent for `project status <name>`. While a task is waiting for you, the text could also be its answer, so the main agent asks which you meant; `#t3 status <name>` sends it to t3.
 
 ## Starting the main session
+
+These commands start a Claude main with incoming Telegram support. For pi/omp launch and explicit resume, see [setup](setup.md#pi-and-omp-main-sessions).
 
 ```sh
 hrk main          # prints the command

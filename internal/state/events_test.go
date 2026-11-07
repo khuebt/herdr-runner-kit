@@ -116,3 +116,40 @@ func TestConcurrentAppendsNeverInterleave(t *testing.T) {
 		t.Fatalf("got %d distinct tasks", len(seen))
 	}
 }
+
+func TestAppendSeparatesAbandonedPartialLine(t *testing.T) {
+	s := openStore(t)
+	if err := os.WriteFile(s.EventsPath(), []byte(`{"type":"unfinished`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(Event{Type: "done", Task: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+	events, off, err := s.ReadEventsSince(0)
+	end, _ := s.EventsEnd()
+	if err != nil || len(events) != 1 || events[0].Type != "done" || off != end {
+		t.Fatalf("accepted event lost after partial line: %+v %d %v", events, off, err)
+	}
+}
+
+func TestAppendSyncBeforeSuccessAndFailure(t *testing.T) {
+	original := syncEventFile
+	t.Cleanup(func() { syncEventFile = original })
+	s := openStore(t)
+	synced := false
+	syncEventFile = func(f *os.File) error {
+		data, err := os.ReadFile(f.Name())
+		if err != nil || !strings.HasSuffix(string(data), "\n") {
+			t.Fatal("sync before complete event write")
+		}
+		synced = true
+		return original(f)
+	}
+	if err := s.Append(Event{Type: "done"}); err != nil || !synced {
+		t.Fatalf("append did not sync: %v", err)
+	}
+	syncEventFile = func(*os.File) error { return fmt.Errorf("injected event sync failure") }
+	if err := s.Append(Event{Type: "failed"}); err == nil || !strings.Contains(err.Error(), "sync event log") {
+		t.Fatalf("sync failure hidden: %v", err)
+	}
+}

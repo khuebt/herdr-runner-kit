@@ -183,3 +183,54 @@ func TestCreateExclusive(t *testing.T) {
 		}
 	}
 }
+
+func TestAtomicDurabilityOrderingAndFailures(t *testing.T) {
+	oldFile, oldDir := syncFile, syncDirectory
+	t.Cleanup(func() { syncFile = oldFile; syncDirectory = oldDir })
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	synced := false
+	syncFile = func(f *os.File) error {
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != "old" {
+			t.Fatal("rename happened before file sync")
+		}
+		if err := oldFile(f); err != nil {
+			return err
+		}
+		synced = true
+		return nil
+	}
+	syncDirectory = func(parent string) error {
+		data, err := os.ReadFile(path)
+		if !synced || parent != dir || err != nil || string(data) != "new" {
+			t.Fatal("directory sync must follow file sync and rename")
+		}
+		return oldDir(parent)
+	}
+	if err := WriteFileAtomic(path, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	syncFile = func(*os.File) error { return fmt.Errorf("file sync failed") }
+	if err := WriteFileAtomic(path, []byte("lost"), 0o600); err == nil {
+		t.Fatal("file sync failure hidden")
+	}
+	if data, _ := os.ReadFile(path); string(data) != "new" {
+		t.Fatal("file sync failure replaced old state")
+	}
+	syncFile = oldFile
+	syncDirectory = func(string) error { return fmt.Errorf("directory sync failed") }
+	if err := WriteFileAtomic(path, []byte("uncertain"), 0o600); err == nil {
+		t.Fatal("directory sync failure reported success")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("temporary file leaked: %v %v", entries, err)
+	}
+	if err := SyncDir(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("missing directory sync succeeded")
+	}
+}

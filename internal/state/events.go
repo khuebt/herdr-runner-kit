@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -49,6 +50,8 @@ type Event struct {
 // EventsPath returns the path of the global event log.
 func (s *Store) EventsPath() string { return filepath.Join(s.dir, "events.jsonl") }
 
+var syncEventFile = (*os.File).Sync
+
 // Append writes one event as a single line. The write happens under an flock
 // on the log itself with O_APPEND, so concurrent writers never interleave.
 func (s *Store) Append(ev Event) error {
@@ -62,7 +65,7 @@ func (s *Store) Append(ev Event) error {
 	}
 	line = append(line, '\n')
 
-	f, err := os.OpenFile(s.EventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
+	f, err := os.OpenFile(s.EventsPath(), os.O_CREATE|os.O_RDWR|os.O_APPEND, filePerm)
 	if err != nil {
 		return fmt.Errorf("open event log: %w", err)
 	}
@@ -76,10 +79,31 @@ func (s *Store) Append(ev Event) error {
 	if err != nil {
 		return fmt.Errorf("lock event log: %w", err)
 	}
-	if _, err := f.Write(line); err != nil {
+	// A killed writer can leave a partial line. Separate it before appending so
+	// that the next accepted event cannot disappear into malformed JSON.
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat event log: %w", err)
+	}
+	if info.Size() > 0 {
+		var tail [1]byte
+		if _, err := f.ReadAt(tail[:], info.Size()-1); err != nil {
+			return fmt.Errorf("read event tail: %w", err)
+		}
+		if tail[0] != '\n' {
+			line = append([]byte{'\n'}, line...)
+		}
+	}
+	if n, err := f.Write(line); err != nil || n != len(line) {
+		if err == nil {
+			err = io.ErrShortWrite
+		}
 		return fmt.Errorf("append event: %w", err)
 	}
-	return nil
+	if err := syncEventFile(f); err != nil {
+		return fmt.Errorf("sync event log: %w", err)
+	}
+	return fsutil.SyncDir(s.dir)
 }
 
 // ReadEventsSince returns the complete events written at or after byte offset

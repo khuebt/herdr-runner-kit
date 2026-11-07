@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -157,5 +159,130 @@ func TestParseWhen(t *testing.T) {
 	}
 	if _, err := parseWhen("yesterday", now); err == nil {
 		t.Error("parseWhen accepted yesterday")
+	}
+}
+
+func TestUsageUnsupportedMainCLI(t *testing.T) {
+	store := usageState(t)
+	cwd := t.TempDir()
+	for _, h := range []task.Harness{task.Pi, task.Omp} {
+		// Even a Claude-shaped transcript must never be parsed for another harness.
+		transcript, err := filepath.Abs(usageFixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordTypedMainSession(state.MainSession{Harness: h, ID: "shared-id", Transcript: transcript, Owner: cwd, Cwd: cwd}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, mixed := range []bool{false, true} {
+		for _, owners := range []bool{false, true} {
+			t.Run(fmt.Sprintf("mixed=%v/owners=%v", mixed, owners), func(t *testing.T) {
+				since := "2026-10-18"
+				if mixed {
+					since = "2026-10-17"
+				}
+				args := []string{"usage", "--owner", "/nobody", "--main", "--since", since}
+				if owners {
+					args = append(args, "--by", "owner")
+				}
+				out, err := runCLI(append(args, "--json")...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got struct {
+					Rows        []usageRow  `json:"rows"`
+					Total       *task.Usage `json:"total"`
+					Unsupported int         `json:"unsupported"`
+					Status      string      `json:"status"`
+				}
+				if err := json.Unmarshal([]byte(out), &got); err != nil {
+					t.Fatal(err)
+				}
+				wantStatus := "not supported"
+				if mixed {
+					wantStatus = "partial"
+				}
+				if got.Unsupported != 2 || got.Status != wantStatus || (got.Total != nil) != mixed {
+					t.Fatalf("aggregate: %s", out)
+				}
+				if mixed && got.Total.Calls != 4 {
+					t.Fatalf("measured total: %s", out)
+				}
+				if owners {
+					if len(got.Rows) != 1 || got.Rows[0].Unsupported != 2 || got.Rows[0].Status != wantStatus || (got.Rows[0].Usage != nil) != mixed {
+						t.Fatalf("group: %s", out)
+					}
+				} else {
+					unsupported := 0
+					for _, r := range got.Rows {
+						if r.Agent == "pi" || r.Agent == "omp" {
+							unsupported++
+							if r.Status != "not supported" || r.Usage != nil || r.Unsupported != 1 {
+								t.Fatalf("row: %+v", r)
+							}
+						}
+					}
+					if unsupported != 2 {
+						t.Fatalf("missing unsupported rows: %s", out)
+					}
+				}
+				text, err := runCLI(args...)
+				if err != nil || !strings.Contains(text, wantStatus) || !strings.Contains(text, "2 main session(s)") {
+					t.Fatalf("text: %s, %v", text, err)
+				}
+			})
+		}
+	}
+}
+
+func TestUsageClaudeJSONContract(t *testing.T) {
+	usageState(t)
+	out, err := runCLI("usage", "--all", "--main", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["rows"] == nil || got["total"] == nil || string(got["total"]) == "null" || strings.Contains(out, `"unsupported"`) {
+		t.Fatalf("legacy JSON contract changed: %s", out)
+	}
+	out, err = runCLI("usage", "--owner", "/nobody", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, `"total": null`) {
+		t.Fatalf("empty legacy total changed: %s", out)
+	}
+}
+
+func TestUsageMissingMainTranscript(t *testing.T) {
+	rows := mainUsage([]state.MainSession{
+		{ID: "legacy", Transcript: filepath.Join(t.TempDir(), "missing")},
+		{Harness: task.Pi, ID: "pi-missing"},
+		{Harness: task.Omp, ID: "omp-missing", Transcript: filepath.Join(t.TempDir(), "missing")},
+	}, usageOptions{})
+	if len(rows) != 3 || rows[0].Unsupported != 0 || rows[0].Usage != nil {
+		t.Fatalf("legacy unreadable: %+v", rows)
+	}
+	for _, r := range rows[1:] {
+		if r.Unsupported != 1 || r.Status != "not supported" || r.Usage != nil {
+			t.Fatalf("missing unsupported: %+v", r)
+		}
+	}
+}
+
+func TestUsageCorruptMainMetadata(t *testing.T) {
+	store := usageState(t)
+	if err := os.WriteFile(filepath.Join(store.Dir(), "main-sessions.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI("usage", "--main", "--json"); err == nil {
+		t.Fatal("corrupt metadata silently omitted from main usage")
+	}
+	if _, err := runCLI("usage", "--json"); err != nil {
+		t.Fatalf("main metadata broke runner-only usage: %v", err)
 	}
 }

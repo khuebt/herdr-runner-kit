@@ -10,6 +10,12 @@ import (
 	"path/filepath"
 )
 
+// Test seams retain real filesystem writes while exercising durability failures.
+var (
+	syncFile      = (*os.File).Sync
+	syncDirectory = SyncDir
+)
+
 // WriteFileAtomic writes data to a temporary file in the same directory and
 // renames it over path, so readers see either the old or the new content.
 // A symlink at path is followed, so a dotfiles link stays a link.
@@ -23,7 +29,10 @@ func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	defer func() { _ = os.Remove(tmp) }()
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
 }
 
 // writeTemp writes data with mode to a new temporary file beside path and
@@ -38,7 +47,7 @@ func writeTemp(path string, data []byte, mode os.FileMode) (string, error) {
 		_, err = tmp.Write(data)
 	}
 	if err == nil {
-		err = tmp.Sync()
+		err = syncFile(tmp)
 	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
@@ -74,4 +83,21 @@ func linkTarget(path string) (string, error) {
 		path = dest
 	}
 	return "", fmt.Errorf("%s: too many symlinks", path)
+}
+
+// SyncDir makes directory entry changes durable before a writer reports success.
+// Unsupported filesystems return an error instead of promising durability.
+func SyncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open directory for sync: %w", err)
+	}
+	err = dir.Sync()
+	if closeErr := dir.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("sync directory %s: %w", path, err)
+	}
+	return nil
 }

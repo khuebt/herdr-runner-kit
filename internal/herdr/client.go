@@ -417,24 +417,36 @@ type ProcessInfo struct {
 	ForegroundPGID int `json:"foreground_process_group_id"`
 }
 
-// PaneClaudeSession returns the Claude session id herdr recorded for pane,
-// the one it resumes there after a restart, or "" when the pane has none.
-func (c *Client) PaneClaudeSession(ctx context.Context, pane string) (string, error) {
+// PaneSession preserves Herdr's identity discriminator: an id is never a path.
+type PaneSession struct {
+	Agent string `json:"agent"`
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// PaneAgentSession returns the identity reported by the pane's integration.
+// Callers validate it against their registry and the actual transcript.
+func (c *Client) PaneAgentSession(ctx context.Context, pane string) (PaneSession, error) {
 	var resp struct {
 		Result struct {
 			Pane struct {
-				Session struct {
-					Agent string `json:"agent"`
-					Kind  string `json:"kind"`
-					Value string `json:"value"`
-				} `json:"agent_session"`
+				Session PaneSession `json:"agent_session"`
 			} `json:"pane"`
 		} `json:"result"`
 	}
 	if err := c.runJSON(ctx, DefaultTimeout, &resp, "pane", "get", pane); err != nil {
+		return PaneSession{}, err
+	}
+	return resp.Result.Pane.Session, nil
+}
+
+// PaneClaudeSession keeps the legacy Claude id-only contract.
+func (c *Client) PaneClaudeSession(ctx context.Context, pane string) (string, error) {
+	s, err := c.PaneAgentSession(ctx, pane)
+	if err != nil {
 		return "", err
 	}
-	if s := resp.Result.Pane.Session; s.Agent == "claude" && s.Kind == "id" {
+	if s.Agent == "claude" && s.Kind == "id" {
 		return s.Value, nil
 	}
 	return "", nil

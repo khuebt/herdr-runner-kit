@@ -2,7 +2,7 @@
 
 Talk to one main agent and let runners do the work.
 
-herdr-runner-kit keeps your main Claude Code chat for conversation and coordination. It runs every coding, research and report task as a separate Claude Code, Codex, pi or omp **runner** in its own [herdr](https://herdr.dev) tab, with or without a git worktree. Runners report back to the main agent within about a second. When one needs a decision, you can answer from the main chat or from Telegram.
+herdr-runner-kit keeps your main chat for conversation and coordination, using Claude Code by default or pi or omp with `main --agent`. It runs every coding, research and report task as a separate Claude Code, Codex, pi or omp **runner** in its own [herdr](https://herdr.dev) tab, with or without a git worktree. Runners record reports as events for the main agent; pi/omp deliver them when the interactive input gate is safe. When one needs a decision, you can answer from the main chat, or from Telegram when the main session uses Claude.
 
 > **Status:** 0.x. A minor release may change commands or file formats before 1.0; `upgrade` asks before installing one. See [versioning](docs/versioning.md).
 
@@ -22,10 +22,10 @@ herdr-runner-kit keeps your main Claude Code chat for conversation and coordinat
 
 ## Requirements
 
-- [herdr](https://herdr.dev), with its server running (tested with 0.9.1)
-- [Claude Code](https://claude.com/claude-code) for the main session and Claude runners
+- [herdr](https://herdr.dev), with its server running
+- [Claude Code](https://claude.com/claude-code) for the default main session and Claude runners; not required for a pi/omp main
 - [Codex](https://github.com/openai/codex) for Codex runners (optional)
-- [pi](https://github.com/earendil-works/pi) or [omp](https://github.com/can1357/oh-my-pi) (oh-my-pi) for pi and omp runners (optional), each with its herdr integration: `herdr integration install pi`, `herdr integration install omp`. A pi or omp agent spec must name its model, such as `pi:openai-codex/gpt-6-luna:high`; see [agent spec](docs/config.md#agent-spec)
+- [pi](https://github.com/earendil-works/pi) or [omp](https://github.com/can1357/oh-my-pi) (oh-my-pi) for pi and omp main sessions or runners (optional), each with its herdr integration: `herdr integration install pi`, `herdr integration install omp`. A pi or omp runner spec must name its model; main sessions may use runtime defaults. For an explicit model, use `pi:openai-codex/gpt-6-luna:high`; see [agent spec](docs/config.md#agent-spec)
 - git, for worktree runners
 
 ## Install
@@ -49,10 +49,15 @@ go install github.com/khuebt/herdr-runner-kit/cmd/hrk@latest
 ```sh
 hrk setup     # skill, auto re-arm hook, config and state
 hrk doctor    # checks herdr, the agents and Telegram, and prints fixes
-hrk main --exec
+hrk main --exec                  # Claude (default)
+hrk main --agent pi --exec       # pi runtime default model
+hrk main --agent omp --exec      # omp runtime default model
+hrk main --agent pi:openai-codex/gpt-6-luna:high --exec
 ```
 
-`main --exec` starts the main Claude Code session with the routing rules in its system prompt and, when configured, the Telegram channel. Run it inside herdr, so runners open as tabs next to it. After a reboot herdr restores the session without Telegram or the routing rules: exit that pane's session and run `hrk main --exec --resume` in the same pane. See [setup](docs/setup.md).
+`main --exec` loads the routing rules and news delivery for the selected harness. Authenticate and complete setup in that runtime first; pi/omp mains require interactive terminal input and output and keep normal approval prompts. Their extension, prompt and references are managed by the kit without Claude setup. Run inside herdr so runners open as tabs next to the main session. After a reboot, exit any restored agent and explicitly resume with the same `--agent` spec, for example `hrk main --agent pi --exec --resume`; see [setup and recovery](docs/setup.md#pi-and-omp-main-sessions). Automatic herdr restore of the extension is not guaranteed.
+
+Pi/omp news delivery confirms a durable transcript entry, not that the model read or acted on it. Their main-session usage is `not supported`, and Telegram is outgoing-only. See [main-session commands](docs/commands.md#main-launch-and-delivery).
 
 Then talk to it as usual:
 
@@ -84,7 +89,7 @@ Ask for another agent, model or effort in your own words, or change the defaults
 
 ## Telegram
 
-With a bot configured, the kit sends runner news (questions, failures, held tasks, finished chains) to your Telegram chat, and your replies reach the runner that asked: `#t3 use option A`, or just the answer when only one task is waiting. Sending works from any Claude account. Replies need the main session to load the Telegram channel plugin, which some organization policies block. See [Telegram](docs/telegram.md).
+With a bot configured, the kit sends runner news (questions, failures, held tasks, finished chains) to your Telegram chat, and your replies reach the runner that asked: `#t3 use option A`, or just the answer when only one task is waiting. Sending works independently of the main harness. Pi/omp mains do not receive Telegram replies. Replies need a Claude main session to load the Telegram channel plugin, which some organization policies block. See [Telegram](docs/telegram.md).
 
 ## Documentation
 

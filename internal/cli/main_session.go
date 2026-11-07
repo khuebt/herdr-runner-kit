@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/khuebt/herdr-runner-kit/internal/fsutil"
 	"github.com/khuebt/herdr-runner-kit/internal/harness"
 	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/install"
@@ -28,6 +32,7 @@ import (
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 	"github.com/khuebt/herdr-runner-kit/internal/telegram"
 	"github.com/khuebt/herdr-runner-kit/internal/wait"
+	"github.com/khuebt/herdr-runner-kit/skill"
 )
 
 // telegramChannel is the official Telegram channel plugin. The main session
@@ -41,9 +46,10 @@ const mainSettings = `{"enabledPlugins":{"` + telegramPlugin + `":true}}`
 func newMainCommand() *cobra.Command {
 	var run, resume, noProjects bool
 	var projects []string
+	var agent string
 	cmd := &cobra.Command{
-		Use:   "main [--resume [<session-id>]]",
-		Short: "Print, or run, the command that starts the main session with Telegram",
+		Use:   "main [--resume [<session-id-or-file>]]",
+		Short: "Print, or run, the main session (Claude by default)",
 		Long: "main prints the command that starts the main Claude Code session with the " +
 			"Telegram channel and the main-agent skill in its system prompt. With --exec it " +
 			"runs it and passes the kit's bot token to the Telegram plugin. The plugin is " +
@@ -57,16 +63,29 @@ func newMainCommand() *cobra.Command {
 			"After a reboot, herdr restores the main session without Telegram or the skill: " +
 			"exit it and run hrk main --exec --resume in that pane, which resumes the session " +
 			"herdr recorded for the pane, else this folder's newest main session, or the one " +
-			"whose id follows.",
+			"whose id follows. --agent pi or omp starts an interactive main with embedded " +
+			"routing rules and durable news, without Claude setup. These mains support " +
+			"outgoing Telegram only; incoming Telegram is unsupported. Authenticate the " +
+			"selected runtime first. Bare agents use runtime defaults; model and effort " +
+			"use harness:model:effort. Resume accepts only registered sessions of the " +
+			"same harness, owner and working directory; it never opens a session picker.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 && !resume {
 				return errors.New("a session id needs --resume")
 			}
-			if err := attachProjects(cmd, projects, noProjects); err != nil {
+			spec, err := harness.ParseMainSpec(agent)
+			if err != nil {
+				return err
+			}
+			if harness.MainUsesExtension(spec.Harness) {
+				return runExtensionMain(cmd, spec, args, run, resume, projects, noProjects)
+			}
+			if err := attachProjects(cmd, currentOwner(cmd), projects, noProjects); err != nil {
 				return err
 			}
 			argv := []string{"claude", "--settings", mainSettings, "--channels", telegramChannel}
+			argv = append(argv, harness.MainArgs(spec, "", "", "")[1:]...)
 			targets, err := claudeConfigs(nil)
 			if err != nil {
 				return err
@@ -91,8 +110,10 @@ func newMainCommand() *cobra.Command {
 			owner := runner.CallerOwner(cmd.Context(), cwd)
 			if !run {
 				shown := slices.Clone(argv)
-				shown[2] = "'" + mainSettings + "'"
-				_, err := fmt.Fprintln(cmd.OutOrStdout(), "HRK_MAIN=1 "+runner.MainOwnerEnv+"="+harness.ShellQuote(owner)+" "+strings.Join(shown, " "))
+				for i := range shown {
+					shown[i] = harness.ShellQuote(shown[i])
+				}
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), "HRK_MAIN=1 "+runner.MainOwnerEnv+"="+harness.ShellQuote(owner)+" "+mainNewsHarnessEnv+"="+string(spec.Harness)+" "+strings.Join(shown, " "))
 				return err
 			}
 			path, err := exec.LookPath(argv[0])
@@ -105,6 +126,7 @@ func newMainCommand() *cobra.Command {
 			// The session's owner, so a spawn from its first turn reports
 			// here even from another folder, before the hook records it.
 			env = withEnv(env, runner.MainOwnerEnv, owner)
+			env = withEnv(env, mainNewsHarnessEnv, string(spec.Harness))
 			if os.Getenv("TELEGRAM_BOT_TOKEN") == "" {
 				if cfg, err := loadConfig(); err == nil {
 					if creds, err := telegram.Resolve(cfg.Telegram, os.Getenv); err == nil {
@@ -116,11 +138,240 @@ func newMainCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&run, "exec", false, "start the main session now, with the bot token from the kit's config")
+	cmd.Flags().StringVar(&agent, "agent", "claude", "main harness[:model[:effort]]: claude, pi or omp (bare pi/omp use runtime defaults)")
 	cmd.Flags().BoolVar(&resume, "resume", false, "resume a main session after a reboot: the one whose id follows, else the one herdr recorded for this pane, else this folder's newest")
 	cmd.Flags().StringArrayVar(&projects, "project", nil, "also get this project's news, by name or by a path inside its repository (repeatable); replaces the attached projects")
 	cmd.Flags().BoolVar(&noProjects, "no-projects", false, "clear the attached projects")
 	cmd.MarkFlagsMutuallyExclusive("project", "no-projects")
+	cmd.AddCommand(newMainNewsCommand())
 	return cmd
+}
+
+// The shell gives printed launches their actual runtime PID, even when pasted
+// into an interactive shell that forks commands. No credential is serialized.
+const mainInteractiveShell = `case "$0" in /*) trap 'if [ -f "$0" ] && [ ! -L "$0" ] && [ ! -s "$0" ]; then /bin/rm -f -- "$0"; fi' EXIT;; esac; test -t 0 && test -t 1 || { echo 'main requires an interactive terminal on stdin and stdout' >&2; exit 1; }; unset CLAUDE_CODE_SESSION_ID; umask 077; export HRK_MAIN=$$; exec "$@"`
+
+func runExtensionMain(cmd *cobra.Command, spec task.AgentSpec, args []string, run, resume bool, projects []string, none bool) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return err
+	}
+	owner := os.Getenv(runner.MainOwnerEnv)
+	if os.Getenv("HRK_TASK") != "" {
+		owner = runner.CallerOwner(cmd.Context(), cwd)
+	} else if owner == "" {
+		owner = currentOwner(cmd)
+	}
+	if err := attachProjects(cmd, owner, projects, none); err != nil {
+		return err
+	}
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	var session string
+	if resume {
+		var pane herdr.PaneSession
+		if len(args) == 0 && os.Getenv("HERDR_PANE_ID") != "" {
+			pane, _ = herdr.New().PaneAgentSession(cmd.Context(), os.Getenv("HERDR_PANE_ID"))
+		}
+		session, err = resolveMainResume(s, spec.Harness, owner, cwd, args, pane)
+		if err != nil {
+			return err
+		}
+	}
+	var binary string
+	if run {
+		binary, err = exec.LookPath(string(spec.Harness))
+		if err != nil {
+			return fmt.Errorf("%s is not on PATH; install and authenticate that runtime before hrk main --exec: %w", spec.Harness, err)
+		}
+		check := exec.CommandContext(cmd.Context(), "sh", "-c", "test -t 0 && test -t 1")
+		check.Stdin, check.Stdout = os.Stdin, os.Stdout
+		if err := check.Run(); err != nil {
+			return errors.New("main requires an interactive terminal on stdin and stdout")
+		}
+	}
+	extension, prompt, err := materializeMainAssets(s.Dir(), spec.Harness)
+	if err != nil {
+		return err
+	}
+	nonce := rand.Text()
+	cleanup := func() {}
+	if !resume {
+		session, cleanup, err = reserveMainTranscript(s.Dir(), nonce)
+		if err != nil {
+			return err
+		}
+	}
+	defer func() { cleanup() }()
+	argv := harness.MainArgs(spec, extension, prompt, session)
+	if !run {
+		shown := []string{"sh", "-c", mainInteractiveShell, "hrk-main"}
+		if !resume {
+			shown[3] = session // shell exit trap owns only a new empty reservation
+		}
+		shown = append(shown, argv...)
+		for i := range shown {
+			shown[i] = harness.ShellQuote(shown[i])
+		}
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "HRK_MAIN=1 %s=%s %s=%s %s=%s HRK_MAIN_INTERACTIVE=1 %s\n",
+			runner.MainOwnerEnv, harness.ShellQuote(owner), mainNewsHarnessEnv, harness.ShellQuote(string(spec.Harness)),
+			mainNewsNonceEnv, harness.ShellQuote(nonce), strings.Join(shown, " "))
+		if err == nil {
+			cleanup = func() {} // the printed command owns its reserved file
+		}
+		return err
+	}
+	env := slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, "CLAUDE_CODE_SESSION_ID=") })
+	env = withEnv(env, "HRK_MAIN", strconv.Itoa(os.Getpid()))
+	env = withEnv(env, runner.MainOwnerEnv, owner)
+	env = withEnv(env, mainNewsHarnessEnv, string(spec.Harness))
+	env = withEnv(env, mainNewsNonceEnv, nonce)
+	env = withEnv(env, "HRK_MAIN_INTERACTIVE", "1")
+	// Runtime atomic rewrites must keep private transcript permissions.
+	oldMask := syscall.Umask(0o077)
+	defer syscall.Umask(oldMask)
+	if err := syscall.Exec(binary, argv, env); err != nil {
+		return fmt.Errorf("start %s main: %w", spec.Harness, err)
+	}
+	return nil
+}
+
+func materializeMainAssets(dir string, selected task.Harness) (string, string, error) {
+	bin, err := ownBinary()
+	if err != nil {
+		return "", "", err
+	}
+	asset, err := harness.MainExtension(bin, selected)
+	if err != nil {
+		return "", "", err
+	}
+	hash := sha256.New()
+	_, _ = hash.Write(asset.Data)
+	err = fs.WalkDir(skill.Files, ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, err := skill.Files.ReadFile(path)
+		if err == nil {
+			_, _ = fmt.Fprintf(hash, "%s\x00%s\x00", path, data)
+		}
+		return err
+	})
+	if err != nil {
+		return "", "", err
+	}
+	root, err := filepath.Abs(filepath.Join(dir, "main-runtime", fmt.Sprintf("%x", hash.Sum(nil))))
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", "", err
+	}
+	unlock, err := fsutil.Lock(root)
+	if err != nil {
+		return "", "", err
+	}
+	defer unlock()
+	prompt, err := skill.MaterializeMain(root)
+	if err != nil {
+		return "", "", err
+	}
+	extension := filepath.Join(root, asset.Name)
+	return extension, prompt, fsutil.WriteFileAtomic(extension, asset.Data, 0o600)
+}
+
+// Reserve only an empty file; the runtime owns the session ID and header.
+func reserveMainTranscript(dir, nonce string) (string, func(), error) {
+	root, err := filepath.Abs(filepath.Join(dir, "main-transcripts"))
+	if err != nil {
+		return "", nil, err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", nil, err
+	}
+	path := filepath.Join(root, nonce+".jsonl")
+	created, err := fsutil.CreateExclusive(path, nil, 0o600)
+	if err != nil {
+		return "", nil, err
+	}
+	if !created {
+		return "", nil, fmt.Errorf("main transcript path already exists: %s", path)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() {
+		if current, err := os.Lstat(path); err == nil && current.Size() == 0 && os.SameFile(info, current) {
+			_ = os.Remove(path)
+		}
+	}
+	if err := fsutil.SyncDir(root); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
+}
+
+func resolveMainResume(s *state.Store, selected task.Harness, owner, cwd string, args []string, pane herdr.PaneSession) (string, error) {
+	sessions, err := s.TypedMainSessions()
+	if err != nil {
+		return "", err
+	}
+	var eligible []state.MainSession
+	for _, m := range sessions {
+		if m.Harness == selected && m.Owner == owner && m.Cwd == cwd {
+			eligible = append(eligible, m)
+		}
+	}
+	ref, path, kind := "", "", ""
+	if len(args) > 0 {
+		ref = args[0]
+		if ref == "" {
+			return "", errors.New("main resume needs a non-empty session id or file")
+		}
+		path, err = filepath.Abs(ref)
+		if err != nil {
+			return "", err
+		}
+	} else if pane.Agent == string(selected) && (pane.Kind == "id" || pane.Kind == "path" && filepath.IsAbs(pane.Value)) {
+		ref, path, kind = pane.Value, pane.Value, pane.Kind
+	}
+	var matches []state.MainSession
+	if ref != "" {
+		for _, m := range eligible {
+			if (kind != "path" && m.ID == ref) || (kind != "id" && m.Transcript == path) {
+				matches = append(matches, m)
+			}
+		}
+		if len(matches) > 1 {
+			return "", fmt.Errorf("ambiguous registered main session %q", ref)
+		}
+		if len(args) > 0 && len(matches) == 0 {
+			return "", fmt.Errorf("main session %q is not registered for %s, owner %s and cwd %s", ref, selected, owner, cwd)
+		}
+	}
+	if len(matches) == 0 {
+		for _, m := range eligible {
+			if len(matches) == 0 || m.UpdatedAt.After(matches[0].UpdatedAt) {
+				matches = []state.MainSession{m}
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no registered %s main session for owner %s and cwd %s", selected, owner, cwd)
+	}
+	m := matches[0]
+	if _, err := harness.VerifyMainTranscript(harness.MainTranscriptTarget{Harness: m.Harness, ID: m.ID, File: m.Transcript, Cwd: m.Cwd}, nil); err != nil {
+		return "", fmt.Errorf("cannot resume main session %s: %w", m.ID, err)
+	}
+	return m.Transcript, nil
 }
 
 // resumeID is the session id hrk main --resume resumes: args[0], else the
@@ -170,7 +421,7 @@ func newestMainSession(sessions []state.MainSession, dir string) string {
 		return '-'
 	}, dir)
 	for _, m := range slices.Backward(sessions) {
-		if m.Transcript != "" && filepath.Base(filepath.Dir(m.Transcript)) == name {
+		if m.Harness == "" && m.Transcript != "" && filepath.Base(filepath.Dir(m.Transcript)) == name {
 			return m.ID
 		}
 	}
@@ -180,12 +431,11 @@ func newestMainSession(sessions []state.MainSession, dir string) string {
 // attachProjects replaces the projects attached to the current folder's main
 // session with projects, or clears them with none, and prints the attached
 // ones whenever they changed or there are any.
-func attachProjects(cmd *cobra.Command, projects []string, none bool) error {
+func attachProjects(cmd *cobra.Command, owner string, projects []string, none bool) error {
 	s, err := openStore()
 	if err != nil {
 		return err
 	}
-	owner := currentOwner(cmd)
 	names := s.MainProjects(owner)
 	if none || len(projects) > 0 {
 		if names, err = resolveProjects(s, projects); err != nil {

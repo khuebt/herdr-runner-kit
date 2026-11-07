@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"session-main-news","timestamp":"2026-11-06T06:29:58.814Z","cwd":"/probe"}
+{"type":"custom_message","customType":"hrk-news","content":"Local news fresh-no-turn","display":true,"details":{"batchId":"fresh-no-turn","owner":"/probe","digest":"85c86c8fcdd72151450a60509f4116c3d1f2caee8e324890d54f81a5e1624cbe"},"id":"51147a67","parentId":"2acf02b9","timestamp":"2026-11-06T06:29:58.958Z"}
+{"type":"custom_message","customType":"hrk-news","content":"Local news fresh-trigger-turn","display":true,"details":{"batchId":"fresh-trigger-turn","owner":"/probe","digest":"cf6f6e60b2f5eef388b77cf8a596e33f1a46bda04acbc75a4d24165f3d13ef83"},"id":"a770e3ad","parentId":"026d80f8","timestamp":"2026-11-06T06:29:59.001Z"}

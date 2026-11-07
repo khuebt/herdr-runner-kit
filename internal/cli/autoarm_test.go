@@ -483,3 +483,19 @@ func TestAutoarmKeepsMainOwnerWhenHookCwdChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestNewestMainSessionIgnoresTypedIdentities(t *testing.T) {
+	for _, id := range []string{"same-uuid", "/path-like/id"} {
+		sessions := []state.MainSession{
+			{ID: id, Transcript: "/claude/projects/-repo/old.jsonl"},
+			{Harness: task.Pi, ID: id, Transcript: "/claude/projects/-repo/pi.jsonl"},
+			{Harness: task.Omp, ID: "newer", Transcript: "/claude/projects/-repo/omp.jsonl"},
+		}
+		if got := newestMainSession(sessions, "/repo"); got != id {
+			t.Fatalf("resume = %q, want Claude %q", got, id)
+		}
+		if got := newestMainSession(sessions[1:], "/repo"); got != "" {
+			t.Fatalf("typed identity used for Claude resume: %q", got)
+		}
+	}
+}

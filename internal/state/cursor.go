@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
 // ErrAlreadyWaiting is returned when another wait holds the cursor.
@@ -144,19 +146,24 @@ func (s *Store) mainSessionsPath() string { return filepath.Join(s.dir, mainSess
 
 const mainSessionsFile = "main-sessions"
 
-// MainSession is a recorded main session: its Claude session id and, when
-// the hook named them, its transcript file and the owner its hook watches.
+// MainSession identifies a main session. An empty Harness marks a legacy
+// Claude record; typed identities are scoped by Harness and ID.
 type MainSession struct {
-	ID         string
-	Transcript string
-	Owner      string
+	ID         string       `json:"sessionId"`
+	Transcript string       `json:"sessionFile"`
+	Owner      string       `json:"owner"`
+	Harness    task.Harness `json:"harness"`
+	Cwd        string       `json:"cwd"`
+	UpdatedAt  time.Time    `json:"updatedAt"`
+	PaneID     string       `json:"paneId,omitempty"`
 }
 
-// MainSessions returns the recorded main sessions, oldest first. The file
-// holds one per line: the id, then the transcript and the owner, each after
-// a tab; lines from before transcripts or owners were kept stop early.
+// MainSessions projects legacy records followed by typed records, each oldest
+// first. Typed metadata errors are ignored for legacy callers; resume and bridge
+// callers must use TypedMainSessions to distinguish corrupt state from absence.
 func (s *Store) MainSessions() []MainSession {
-	return readMainSessions(s.mainSessionsPath())
+	sessions, _ := s.ReadMainSessions()
+	return sessions
 }
 
 func readMainSessions(path string) []MainSession {
@@ -190,7 +197,7 @@ func (s *Store) RecordMainTranscript(id, transcript, owner string) error {
 		return err
 	}
 	defer unlock()
-	sessions := s.MainSessions()
+	sessions := readMainSessions(s.mainSessionsPath())
 	if n := len(sessions); n > 0 && sessions[n-1].ID == id && (transcript == "" || sessions[n-1].Transcript == transcript) &&
 		(owner == "" || sessions[n-1].Owner == owner) {
 		return nil
@@ -243,7 +250,7 @@ func pruneMainSessions(sessions []MainSession) []MainSession {
 
 // MainSessionOwner returns the owner recorded for main session id, or "".
 func (s *Store) MainSessionOwner(id string) string {
-	for _, m := range s.MainSessions() {
+	for _, m := range readMainSessions(s.mainSessionsPath()) {
 		if id != "" && m.ID == id {
 			return m.Owner
 		}
