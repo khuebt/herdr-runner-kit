@@ -183,6 +183,13 @@ key('\x1b[200~');text='draft\n';key('chunk');await advance(900);assert.equal(sen
 text='';key('\x1b[201~');await advance(499);assert.equal(sent.length,0);queued=true;await advance(600);assert.equal(sent.length,0);
 queued=false;h.input({source:'interactive',text:'user prompt'},ctx);await advance(600);assert.equal(sent.length,0);idle=false;h.agent_start({},ctx);await advance(600);assert.equal(sent.length,0);
 if(harness==='omp'){h.session_stop({},ctx);h.agent_end({willContinue:true},ctx);await advance(600);assert.equal(sent.length,0);}
+// A queued prompt can drain within the existing run, without another agent_start.
+queued=true;h.input({source:'interactive',text:'queued prompt'},ctx);text='draft during busy';
+h.message_end({},ctx);await advance(600);assert.equal(sent.length,0);
+h.auto_retry_start({},ctx);end(h);await advance(600);assert.equal(sent.length,0);h.auto_retry_end({},ctx);
+await advance(600);assert.equal(sent.length,0,'settled bypassed queued input');
+queued=false;await advance(600);assert.equal(sent.length,0);assert.equal(text,'draft during busy');
+text='';key('clear');await advance(499);assert.equal(sent.length,0,'settled bypassed debounce');
 h.auto_retry_start({},ctx);end(h);await advance(600);assert.equal(sent.length,0);h.auto_retry_end({},ctx);
 setFocus({});await advance(600);assert.equal(sent.length,0);setFocus(editor);overlay=true;await advance(600);assert.equal(sent.length,0);overlay=false;
 h.ui_prompt_start({},ctx);await advance(600);assert.equal(sent.length,0);h.ui_prompt_end({},ctx);
@@ -229,8 +236,12 @@ for(const name of ['session_before_switch','session_before_fork']) {
 }
 // A successful quiesced close permits new identity and repeated session_start.
 const change=h.session_before_switch({},ctx);await advance(2000);assert.equal(await change,undefined);
-session={sessionId:'two',sessionFile:'/sessions/two.jsonl',cwd:'/cwd'};await start(h);
+session={sessionId:'two',sessionFile:'/sessions/two.jsonl',cwd:'/cwd'};
+if(harness==='omp'){h.session_switch({reason:'new'},ctx);await advance(600);}else await start(h);
 assert.equal(children.at(-1).register.sessionId,'two');assert.equal(sent.length,5);
+const switched=children.length;h.session_start({},ctx);await advance(600);assert.equal(children.length,switched);
+if(harness==='omp'){h.session_switch({reason:'new'},ctx);await advance(600);assert.equal(children.length,switched);}
+assert.equal(children.filter(c=>c.signalCode===null).length,1);assert.equal(listeners.size,1);
 // Unknown UI APIs fail closed, with pending visible and no input changes.
 const savedOverlay=tui.hasOverlay;tui.hasOverlay=undefined;deliver();await advance(1000);assert.equal(sent.length,5);tui.hasOverlay=savedOverlay;
 h.session_before_compact({},ctx);await advance(600);assert.equal(sent.length,5);h.session_compact_failed({aborted:true},ctx);await advance(600);assert.equal(sent.length,6);

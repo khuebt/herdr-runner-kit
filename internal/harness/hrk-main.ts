@@ -286,7 +286,7 @@ export default function (api) {
     if (!current() && name !== "session_start") return;
     return handler(event || {}, context);
   });
-  on("session_start", (_event, context) => {
+  const startSession = (_event, context) => {
     if (shared.epoch !== epoch) return;
     const next = target(context);
     if (!next.sessionId || !isAbsolute(next.sessionFile || "") || !isAbsolute(next.cwd || "")) return;
@@ -312,7 +312,10 @@ export default function (api) {
     warnPaste();
     ctx.ui.setWidget("hrk-news-observer", observeUI);
     shared.closing.then(() => { if (current()) { connect(); schedule(DEBOUNCE); } });
-  });
+  };
+  on("session_start", startSession);
+  // Omp switches sessions in place without emitting another session_start.
+  if (HARNESS === "omp") on("session_switch", startSession);
   on("input", (event, context) => {
     if (event.source === "extension") return;
     // Omp reloads plugins without recreating extensions; also recover a cancelled switch.
@@ -322,7 +325,7 @@ export default function (api) {
     lastInput = Date.now(); activityDue = true; schedule(DEBOUNCE);
   });
   on("agent_start", () => { busy = true; submitting = false; });
-  const settled = () => { busy = false; activityDue = true; nextReceipt = 0; schedule(); };
+  const settled = () => { busy = false; submitting = false; activityDue = true; nextReceipt = 0; schedule(); };
   on("agent_settled", () => { if (HARNESS === "pi") settled(); });
   on("agent_end", event => { if (HARNESS === "omp" && event.willContinue !== true) settled(); });
   on("session_stop", () => { if (HARNESS === "omp") schedule(); });
