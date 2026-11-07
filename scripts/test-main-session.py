@@ -143,7 +143,11 @@ export default function(api) {
       fileExists:existsSync(ctx.sessionManager.getSessionFile() || "")}),100);
   });
   for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_compact_failed"]) {
-    api.on(name, () => log({event:name}));
+    api.on(name, event => {
+      log({event:name,aborted:event.aborted,reason:event.reason});
+      if (name === "session_before_compact") event.signal?.addEventListener("abort",
+        () => log({event:"compaction_aborted"}), {once:true});
+    });
   }
   api.on("session_shutdown", () => { clearInterval(timer); log({event:"shutdown"}); });
 }
@@ -569,6 +573,7 @@ def run_tui(args):
     provider_started = threading.Event()
     provider_release = threading.Event()
     provider_release.set()
+    provider_status = 200
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -581,11 +586,15 @@ def run_tui(args):
             payload = json.loads(self.rfile.read(length))
             with (out / "provider.jsonl").open("a") as log:
                 log.write(json.dumps(payload) + "\n")
+            status = provider_status
             provider_started.set()
             if not provider_release.wait(30):
                 self.send_error(504, "acceptance probe did not release provider")
                 return
             try:
+                if status != 200:
+                    self.send_error(status, "Local acceptance provider failure")
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
@@ -885,6 +894,35 @@ def run_tui(args):
         receipt = next(i for i, e in enumerate(history) if e.get("details", {}).get("batchId") == batch)
         assert queued < receipt, "news overtook queued user input"
         result["checks"]["busy_queue_and_later_draft_precede_news"] = True
+        for outcome in ("success", "cancel", "failure"):
+            provider_started.clear()
+            command("Compaction history " + "padding " * 1500)
+            wait_for(provider_started.is_set, "compaction history provider request")
+            wait_for(lambda: snapshot().get("idle") is True, "compaction history settles")
+            pump(0.6)
+            offset = len(events())
+            screen_offset = len(screen)
+            provider_started.clear()
+            provider_release.clear()
+            provider_status = 400 if outcome == "failure" else 200
+            command("/compact Preserve the local acceptance history.")
+            wait_for(provider_started.is_set, "manual compaction provider request")
+            assert any(e["event"] == "session_before_compact" for e in events()[offset:]), "missing compaction lifecycle"
+            batch = emit()
+            pump(0.8)
+            assert not entries(batch), "news entered the runtime during manual compaction"
+            if outcome == "cancel":
+                send(b"\x1b")
+                wait_for(lambda: any(e["event"] == "compaction_aborted" for e in events()[offset:]),
+                         "manual compaction cancellation")
+            provider_status = 200
+            provider_release.set()
+            if outcome == "success":
+                wait_for(lambda: any(e["event"] == "session_compact" for e in events()[offset:]), "manual compaction completion")
+            elif outcome == "failure":
+                wait_for(lambda: b"Local acceptance provider failure" in screen[screen_offset:], "manual compaction failure notice")
+            committed(batch)
+            result["checks"]["manual_compaction_" + outcome + "_releases_news_once"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         write_json(out / "failure-state.json", {"delivery": state(), "runtime": snapshot()})
