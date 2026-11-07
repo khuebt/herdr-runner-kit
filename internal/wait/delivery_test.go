@@ -463,6 +463,43 @@ func TestDeliveryIdleWaitsAndSeesAttachments(t *testing.T) {
 	}
 }
 
+func TestDeliveryIdleRunsOwnerGCAndAcceptsNewTask(t *testing.T) {
+	r, _ := newTestRunner(t)
+	finished := addTask(t, r, task.Done, owner)
+	unrelated := addTask(t, r, task.Done, "/other-owner")
+	for _, id := range []string{finished.ID, unrelated.ID} {
+		if _, err := r.Store.Update(id, func(tk *task.Task) error {
+			tk.Herdr.PaneID = "pane-" + tk.ID
+			tk.FinishedAt = time.Now().Add(-time.Hour)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := acquireDelivery(t, r)
+	d.options.Timeout = 3 * time.Second
+	if p, err := d.Prepare(context.Background()); err != nil || p != nil {
+		t.Fatalf("idle maintenance: %+v %v", p, err)
+	}
+	for _, want := range []struct {
+		id     string
+		closed bool
+	}{{finished.ID, true}, {unrelated.ID, false}} {
+		got, err := r.Store.Get(want.id)
+		if err != nil || got.Herdr.Closed != want.closed {
+			t.Fatalf("owner-scoped GC for %s: %+v %v", want.id, got, err)
+		}
+	}
+	newTask := addTask(t, r, task.Held, owner)
+	if err := r.Store.Append(state.Event{Owner: owner, Task: newTask.ID, Type: "needs-human", Question: "new task after idle GC"}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := d.Prepare(context.Background())
+	if err != nil || p == nil || len(p.Lines) != 1 || !strings.Contains(p.Lines[0], "new task after idle GC") {
+		t.Fatalf("new task after maintenance: %+v %v", p, err)
+	}
+}
+
 func TestDeliveryTaskCursorRemainsIndependent(t *testing.T) {
 	r, d, p := preparedDelivery(t)
 	res, err := Run(context.Background(), r, Options{Owner: owner, Tasks: []string{"t1"}, Window: time.Millisecond})

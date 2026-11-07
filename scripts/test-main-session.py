@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Probe installed main runtimes with isolated profiles and a loopback provider.
 
-No SDK mocks, global extensions, user credentials, or user state are used.
+Fixture modes use no SDK mocks, global extensions, credentials, or user state.
 The transcript-contract case drives the real news child through RPC. The TUI
 case uses the public kit launcher and production extension in a real PTY.
 Both use runtime-owned headers and receipts that must precede cursor commit.
 Any failed check exits nonzero and retains evidence under --out. The all case
 runs the implemented suites, not the separate live-model release gate.
+The live case uses an explicit provider config and credential source, never writes either,
+and retains isolated transcripts for review of routing after compact/resume.
 """
 
 import argparse
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import http.server
@@ -124,11 +127,16 @@ export default function(pi) {
 
 # Observation only: the production extension owns all delivery and input gates.
 TUI_EXTENSION = r'''
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 const root = process.env.HRK_PROBE_OUT;
 const log = data => appendFileSync(root + "/observer.jsonl", JSON.stringify({at:Date.now(),...data}) + "\n");
+const identity = ctx => ({id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile()});
 export default function(api) {
-  api.registerProvider("hrk-probe", {
+  const live=process.env.HRK_PROBE_LIVE_PROVIDER;
+  const provider=live ? JSON.parse(live) : null;
+  api.registerProvider(provider?.name || "hrk-probe", provider ? {
+    ...provider.config,apiKey:process.env.HRK_PROBE_LIVE_API_KEY,
+  } : {
     baseUrl:process.env.HRK_PROBE_URL, apiKey:"local-fixture", api:"openai-completions",
     models:[{id:"probe",name:"Local acceptance fixture",reasoning:false,input:["text"],
       cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32000,maxTokens:2048}]
@@ -156,15 +164,59 @@ export default function(api) {
   api.registerCommand("probe-branch", {
     description:"Exercise the runtime's real branch operation.",
     handler:async (_args,ctx) => {
-      const entry=ctx.sessionManager.getEntries().find(e => e.type === "message" && e.message.role === "user");
+      const entry=ctx.sessionManager.getEntries().filter(e => e.type === "message" && e.message.role === "user").at(-1);
       if (!entry) throw new Error("Branch acceptance requires a user entry");
-      const result=await (typeof ctx.branch === "function" ? ctx.branch(entry.id) : ctx.fork(entry.id));
-      log({event:"branch_result",...result,id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile()});
+      let next=identity(ctx);
+      let result;
+      if (typeof ctx.branch === "function") {
+        result=await ctx.branch(entry.id); next=identity(ctx);
+      } else {
+        result=await ctx.fork(entry.id,{withSession:c => {next=identity(c);}});
+      }
+      log({event:"branch_result",...result,...next});
+    }
+  });
+  api.registerCommand("probe-resume", {
+    description:"Exercise the runtime's session switch operation.",
+    handler:async (_args,ctx) => {
+      const path=readFileSync(root + "/resume-target.txt","utf8").trim();
+      let next=identity(ctx);
+      const omp=typeof ctx.branch === "function";
+      const result=await ctx.switchSession(path,{withSession:c => {next=identity(c);}});
+      if (omp) next=identity(ctx);
+      log({event:"switch_result",...result,...next});
+    }
+  });
+  let vetoSwitch=false;
+  for (const event of ["session_before_switch","session_before_tree",process.env.HRK_MAIN_HARNESS === "omp" ? "session_before_branch" : "session_before_fork"])
+    api.on(event, () => vetoSwitch ? {cancel:true} : undefined);
+  api.registerCommand("probe-veto", {
+    description:"Cancel a new session in a hook registered after the main guard.",
+    handler:async (operation,ctx) => {
+      vetoSwitch=true;
+      try {
+        let result;
+        if (operation === "branch" || operation === "tree") {
+          const entry=ctx.sessionManager.getEntries().filter(e => e.type === "message" && e.message.role === "user").at(-1);
+          result=operation === "tree" ? await ctx.navigateTree(entry.id,{summarize:false}) :
+            await (typeof ctx.branch === "function" ? ctx.branch(entry.id) : ctx.fork(entry.id));
+        } else result=await ctx.newSession();
+        log({event:"later_transition_veto",operation,...result});
+      }
+      finally { vetoSwitch=false; }
+    }
+  });
+  api.registerCommand("probe-compact", {
+    description:"Start compaction through the extension API.",
+    handler:async (_args,ctx) => {
+      ctx.compact({customInstructions:"Preserve acceptance history.",
+        onComplete:() => log({event:"extension_compact_complete"}),
+        onError:error => log({event:"extension_compact_error",message:String(error)})});
     }
   });
   let timer, tui;
   api.on("session_start", (_event,ctx) => {
-    api.setActiveTools(["hrk_probe_hold"]);
+    api.setActiveTools(live ? ["read","bash"] : ["hrk_probe_hold"]);
     clearInterval(timer);
     ctx.ui.setWidget("hrk-probe-observer", host => {
       tui = host;
@@ -178,7 +230,7 @@ export default function(api) {
       focus:(tui?.getFocusedComponent?.() ?? tui?.getFocused?.())?.constructor?.name,
       overlay:tui?.hasOverlay?.()}),100);
   });
-  for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_compact_failed","auto_compaction_start","auto_compaction_end","auto_retry_start","auto_retry_end"]) {
+  for (const name of ["agent_start","agent_end","agent_settled","session_before_compact","session_compact","session_compact_failed","auto_compaction_start","auto_compaction_end","auto_retry_start","auto_retry_end","session_before_tree","session_tree"]) {
     api.on(name, event => {
       log({event:name,aborted:event.aborted,reason:event.reason,willContinue:event.willContinue,errorMessage:event.errorMessage});
       if (name === "session_before_compact") event.signal?.addEventListener("abort",
@@ -217,6 +269,7 @@ def until(predicate, process, label, timeout=25):
 
 
 def stop(process, reader):
+    forced = False
     if process.poll() is None:
         try:
             process.stdin.close()
@@ -229,10 +282,12 @@ def stop(process, reader):
             try:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
+                forced = True
                 process.kill()
                 process.wait(timeout=3)
     reader.join()
     process.stdout.close()
+    return forced
 
 
 def process_alive(pid):
@@ -545,7 +600,8 @@ def run(args):
     finally:
         provider_release.set()
         if process is not None and reader is not None:
-            stop(process, reader)
+            if stop(process, reader):
+                result["blockers"].append("RPC main required SIGKILL during cleanup")
         for event in events():
             if event["event"] != "bridge_start" or not process_alive(event["pid"]):
                 continue
@@ -555,7 +611,13 @@ def run(args):
                 while process_alive(event["pid"]) and time.monotonic() < deadline:
                     time.sleep(0.02)
                 if process_alive(event["pid"]):
+                    result["blockers"].append("RPC news child required SIGKILL during cleanup")
                     os.kill(event["pid"], 9)
+                    deadline = time.monotonic() + 2
+                    while process_alive(event["pid"]) and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                if process_alive(event["pid"]):
+                    result["blockers"].append("RPC news child survived cleanup")
             except ProcessLookupError:
                 pass
         if server is not None:
@@ -585,6 +647,28 @@ def run_tui(args):
         "XDG_CONFIG_HOME": str(out / "config"), "XDG_STATE_HOME": str(out / "state"),
         "XDG_CACHE_HOME": str(out / "cache"),
     })
+    live = args.case == "live"
+    if live:
+        provider_name, model_id = args.live_model.split("/", 1)
+        configured = json.loads(args.live_provider_config.read_text())["providers"][provider_name]
+        model = next(m for m in configured["models"] if m["id"] == model_id)
+        env["HRK_PROBE_LIVE_PROVIDER"] = json.dumps({"name": provider_name, "config": {
+            "baseUrl": configured["baseUrl"], "api": configured["api"], "models": [model]}})
+        credential_spec = configured["apiKey"]
+        if credential_spec.startswith("!"):
+            try:
+                credential = subprocess.run(credential_spec[1:], shell=True, executable="/bin/sh",
+                                            capture_output=True, text=True, timeout=15)
+            except (OSError, subprocess.TimeoutExpired):
+                raise RuntimeError("live credential helper failed") from None
+            if credential.returncode:
+                raise RuntimeError("live credential helper failed")
+            value = credential.stdout.strip()
+        else:
+            value = os.environ.get(credential_spec, credential_spec).strip()
+        if not value or "\n" in value or "\r" in value or len(value) > 16384:
+            raise RuntimeError("live credential source must return one nonempty header-safe value")
+        env["HRK_PROBE_LIVE_API_KEY"] = value
     (out / "agent").mkdir()
     (out / "bin").mkdir()
     write_json(out / "agent/settings.json", {"compaction": {"enabled": True, "reserveTokens": 512, "keepRecentTokens": 100}})
@@ -595,6 +679,9 @@ def run_tui(args):
     else:
         (out / "omp.yml").write_text("setupVersion: 2\ncompaction:\n  enabled: true\n  reserveTokens: 512\n  keepRecentTokens: 100\ntui:\n  titleState: false\n")
         flags += ["--no-tools", "--no-rules", "--no-lsp", "--no-title", "--config", str(out / "omp.yml"), "--hook", str(out / "observer.ts")]
+    if live:
+        flags.remove("--no-builtin-tools" if args.harness == "pi" else "--no-tools")
+        flags += ["--tools", "read,bash"]
     # The public launcher has no arbitrary runtime flags. This executable only
     # adds profile isolation and the observer, then execs the installed runtime.
     launcher = out / "bin" / args.harness
@@ -607,6 +694,11 @@ def run_tui(args):
     result = {"harness": args.harness, "case": "tui", "kitBin": str(args.kit_bin.resolve()), "checks": {}, "blockers": []}
     result["provider"] = {"pid": os.getpid(), "port": port, "command": [sys.executable, *sys.argv], "worktree": str(Path.cwd())}
     result["version"] = subprocess.check_output([binary, "--version"], cwd=out, env=env, text=True, timeout=15).strip()
+    if live:
+        result["case"] = "live"
+        result["provider"] = {"model": args.live_model, "api": configured["api"],
+                              "configSource": str(args.live_provider_config),
+                              "credentialSource": "configured command" if credential_spec.startswith("!") else "configured key"}
     provider_started = threading.Event()
     provider_release = threading.Event()
     provider_release.set()
@@ -677,8 +769,8 @@ def run_tui(args):
         return jsonl(out / "observer.jsonl", live_log=True)
 
     def state():
-        paths = list((out / "kit-state").glob("main-news-*.json"))
-        return json.loads(paths[0].read_text()) if paths else {}
+        path = out / "kit-state" / ("main-news-" + hashlib.sha256(str(out).encode()).hexdigest()[:12] + ".json")
+        return json.loads(path.read_text()) if path.exists() else {}
 
     def children(parent=None):
         parent = process.pid if parent is None else parent
@@ -698,9 +790,19 @@ def run_tui(args):
 
     def entries(batch):
         paths = {Path(e["file"]) for e in events() if e.get("file")}
-        return [entry for path in paths
-                for entry in jsonl(path, live_log=True) if entry.get("customType") == "hrk-news" and
-                entry.get("details", {}).get("batchId") == batch]
+        found = {}
+        for path in paths:
+            file_ids = set()
+            for entry in jsonl(path, live_log=True):
+                if entry.get("customType") != "hrk-news" or entry.get("details", {}).get("batchId") != batch:
+                    continue
+                # Runtime forks copy historical entries with their original IDs.
+                key = entry.get("id") or (str(path), len(found))
+                assert key not in file_ids, "one transcript repeated a receipt entry"
+                file_ids.add(key)
+                assert key not in found or found[key] == entry, "fork changed a copied receipt"
+                found[key] = entry
+        return list(found.values())
 
     def pump(seconds):
         end = time.monotonic() + seconds
@@ -740,7 +842,8 @@ def run_tui(args):
 
     def start(resume=None):
         nonlocal process, master, transcript
-        argv = [str(args.kit_bin.resolve()), "main", "--agent", args.harness + ":hrk-probe/probe:off", "--exec"]
+        model_spec = args.live_model + ":low" if live else "hrk-probe/probe:off"
+        argv = [str(args.kit_bin.resolve()), "main", "--agent", args.harness + ":" + model_spec, "--exec"]
         if resume:
             argv += ["--resume", str(resume)]
         master, slave = pty.openpty()
@@ -768,31 +871,54 @@ def run_tui(args):
         assert len(children()) == 1, "expected one production news child"
         pump(0.8)
 
+    def stop_pty(child, terminal, output):
+        if child is None:
+            return
+        began = time.monotonic()
+        alive = child.poll() is None
+        # Drain shutdown rendering so a full PTY cannot block a graceful exit.
+        try:
+            os.killpg(child.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        while child.poll() is None and time.monotonic() - began < 3:
+            ready, _, _ = select.select([terminal], [], [], 0.05)
+            if ready:
+                try:
+                    output.extend(os.read(terminal, 65536))
+                except OSError:
+                    time.sleep(0.01)
+        forced = child.poll() is None
+        if forced:
+            result["blockers"].append("TUI main required SIGKILL during cleanup")
+            os.killpg(child.pid, signal.SIGKILL)
+        child.wait(timeout=3)
+        if alive:
+            result.setdefault("shutdowns", []).append({"pid": child.pid,
+                "seconds": time.monotonic() - began, "forced": forced})
+
     def stop_tui():
         nonlocal master
         if process is not None:
-            # Only this probe's process group, including any surviving bridge.
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=3)
+            children()
+            stop_pty(process, master, screen)
         if master is not None:
             os.close(master)
             master = None
 
-    def emit():
-        event = {"v": 1, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                 "owner": str(out), "task": "t1", "type": "needs-human", "question": "Local PTY acceptance fixture"}
+    def append_event(owner=None, question="Local PTY acceptance fixture", timestamp=None):
+        event = {"v": 1, "ts": datetime.now(timezone.utc).isoformat(),
+                 "owner": str(owner or out), "task": "t1", "type": "needs-human", "question": question}
+        if timestamp:
+            event["ts"] = timestamp
         with (out / "kit-state/events.jsonl").open("ab") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             handle.write((json.dumps(event) + "\n").encode())
             handle.flush()
             os.fsync(handle.fileno())
+
+    def emit():
+        append_event()
         wait_for(lambda: state().get("pending"), "pending batch")
         value = state()
         batch = value["pending"]["batchId"]
@@ -803,10 +929,66 @@ def run_tui(args):
         wait_for(lambda: state().get("lastAck", {}).get("batchId") == batch and not state().get("pending"), "durable receipt commit")
         assert len(entries(batch)) == 1, "delivery count across transcripts is not one"
         write_json(out / (batch + "-committed.json"), state())
-        wait_for(lambda: snapshot().get("idle") is True and snapshot().get("queued") is False, "agent idle")
+        wait_for(lambda: snapshot().get("idle") is True and snapshot().get("queued") is False,
+                 "agent idle", timeout=120 if live else 20)
         pump(0.6)
 
     try:
+        if live:
+            start()
+
+            def assistant_messages():
+                return [e["message"] for e in jsonl(transcript, live_log=True)
+                        if e.get("message", {}).get("role") == "assistant" and
+                        e["message"].get("stopReason") != "toolUse" and
+                        (e["message"].get("stopReason") == "error" or
+                         any(c.get("type") == "text" and c.get("text") for c in e["message"].get("content", [])))]
+
+            def live_prompt(prompt):
+                before = len(assistant_messages())
+                command(prompt)
+                wait_for(lambda: len(assistant_messages()) > before and snapshot().get("idle") is True,
+                         "live model response", timeout=120)
+                message = assistant_messages()[-1]
+                assert message.get("stopReason") not in ("error", "aborted"), "live provider failed"
+                assert message.get("model") == model_id and message.get("provider") == provider_name, "unexpected live model"
+                return message
+
+            prompt = ("Before starting work, explain how you would handle fixing a README typo and researching a queue design "
+                      "with a written report. Determine this main session's exact owner by reading only HRK_MAIN_OWNER "
+                      "from the environment and include OWNER=<exact value>; never print other variables or credentials. Read the main lifecycle commands reference "
+                      "linked by your installed main skill. Name that reference path and the explicit resume command. "
+                      "Do not launch a runner or change files yet. Keep the answer concise.")
+            evidence = {"initial": live_prompt(prompt)}
+            before = len(assistant_messages())
+            batch = emit()
+            committed(batch)
+            wait_for(lambda: len(assistant_messages()) > before and snapshot().get("idle") is True,
+                     "live news response", timeout=120)
+            evidence["news"] = assistant_messages()[-1]
+            result["checks"]["authenticated_news_reaches_transcript"] = True
+            live_prompt("Remember these acceptance notes for compaction: " + "Preserve main routing and owner. " * 300)
+            offset = len(events())
+            command("/compact Preserve the main routing rules, fixed owner and commands reference.")
+            wait_for(lambda: any(e["event"] == "session_compact" for e in events()[offset:]),
+                     "live compaction", timeout=120)
+            evidence["afterCompact"] = live_prompt(prompt)
+            result["checks"]["authenticated_compaction_completed"] = True
+            original = transcript
+            stop_tui()
+            start(original)
+            assert transcript == original, "live explicit resume changed target"
+            evidence["afterResume"] = live_prompt(prompt)
+            result["checks"]["authenticated_explicit_resume_completed"] = True
+            assert len(entries(batch)) == 1, "live compact/resume duplicated receipt"
+            write_json(out / "live-responses.json", evidence)
+            for stage in ("initial", "afterCompact", "afterResume"):
+                answer = "\n".join(c.get("text", "") for c in evidence[stage]["content"] if c.get("type") == "text")
+                assert "OWNER=" + str(out) in answer, "live model did not identify fixed owner at " + stage
+                assert "references/commands.md" in answer, "live model omitted commands reference at " + stage
+            result["checks"]["live_owner_and_reference_survive_compact_resume"] = True
+            result["semanticReview"] = "Review live-responses.json for routing, owner and reference accuracy."
+            return 0
         server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
         worker = threading.Thread(target=server.serve_forever)
         worker.start()
@@ -816,6 +998,20 @@ def run_tui(args):
         result["checks"]["private_transcript"] = True
         committed(emit())
         result["checks"]["fresh_idle_delivery_without_input"] = True
+        child, = children()
+
+        def cpu_seconds():
+            value = subprocess.check_output(["ps", "-p", str(child), "-o", "time="], text=True).strip()
+            return sum(float(part) * 60 ** i for i, part in enumerate(reversed(value.split(":"))))
+
+        before_cpu = cpu_seconds()
+        before_requests = len(jsonl(out / "provider.jsonl", live_log=True))
+        pump(2.5)
+        delta_cpu = cpu_seconds() - before_cpu
+        assert delta_cpu <= 1, "idle news child spun without tasks"
+        assert len(jsonl(out / "provider.jsonl", live_log=True)) == before_requests, "idle news child woke provider"
+        write_json(out / "idle-evidence.json", {"childPID": child, "elapsedSeconds": 2.5, "cpuSeconds": delta_cpu})
+        result["checks"]["idle_without_tasks_does_not_spin_or_wake_model"] = True
         # A second real main must not steal the lease, even after its child dies.
         send(b"LEASE_OWNER_DRAFT")
         editor("LEASE_OWNER_DRAFT")
@@ -828,26 +1024,16 @@ def run_tui(args):
         conflict_offset = 0
         conflict_text = b"already waiting"
 
-        def start_competitor():
-            rival = subprocess.Popen(argv, cwd=out, env=dict(env, HRK_PROBE_OUT=str(competing_out)),
+        def start_competitor(cwd=out):
+            rival = subprocess.Popen(argv, cwd=cwd, env=dict(env, HRK_PROBE_OUT=str(competing_out)),
                                      stdin=competing_slave, stdout=competing_slave, stderr=competing_slave,
                                      start_new_session=True)
-            processes.append({"pid": rival.pid, "argv": argv, "cwd": str(out), "worktree": str(Path.cwd())})
+            processes.append({"pid": rival.pid, "argv": argv, "cwd": str(cwd), "worktree": str(Path.cwd())})
             write_json(out / "processes.json", processes)
             return rival
 
         def stop_competitor():
-            if competitor is None:
-                return
-            try:
-                os.killpg(competitor.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                competitor.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                os.killpg(competitor.pid, signal.SIGKILL)
-                competitor.wait(timeout=3)
+            stop_pty(competitor, competing_master, competing_screen)
 
         try:
             fcntl.ioctl(competing_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
@@ -879,6 +1065,29 @@ def run_tui(args):
             finally:
                 os.kill(process.pid, signal.SIGCONT)
             result["checks"]["two_main_ptys_cannot_share_owner_after_child_death"] = True
+            stop_competitor()
+            argv = argv[:-2]
+            competitor = start_competitor(competing_out)
+            other_path = out / "kit-state" / ("main-news-" + hashlib.sha256(str(competing_out).encode()).hexdigest()[:12] + ".json")
+
+            def independent_ready():
+                conflict()
+                return other_path.exists() and json.loads(other_path.read_text()).get("lease", {}).get("pid") == competitor.pid
+
+            wait_for(independent_ready, "independent owner lease")
+            append_event(competing_out, "Independent owner acceptance news")
+
+            def independent_committed():
+                conflict()
+                return json.loads(other_path.read_text()).get("lastAck")
+
+            wait_for(independent_committed, "independent owner receipt")
+            other = json.loads(other_path.read_text())
+            assert other["lastAck"]["target"]["owner"] == str(competing_out)
+            assert other["lastAck"]["batchId"] != batch and not entries(batch), "independent owner consumed held batch"
+            assert state()["pending"]["batchId"] == batch, "independent owner advanced original pending"
+            write_json(out / "independent-owner-evidence.json", {"original": state(), "other": other})
+            result["checks"]["different_owner_ptys_deliver_independently"] = True
         finally:
             stop_competitor()
             os.close(competing_slave)
@@ -898,6 +1107,23 @@ def run_tui(args):
             editor("")
             committed(batch)
             result["checks"][label + "_draft_preserved"] = True
+        for delay in (0.45, 0.5):
+            send(b"BEFORE_DRAIN_TICK")
+            editor("BEFORE_DRAIN_TICK")
+            batch = emit()
+            send(b"\x15")
+            pump(delay)
+            send(b"DRAIN_TICK_DRAFT")
+            editor("DRAIN_TICK_DRAFT")
+            already_appended = bool(entries(batch))
+            pump(0.8)
+            assert snapshot()["editor"] == "DRAIN_TICK_DRAFT", "drain tick lost terminal input"
+            if not already_appended:
+                assert not entries(batch), "drain appended after observing a new draft"
+            send(b"\x15")
+            editor("")
+            committed(batch)
+        result["checks"]["terminal_input_at_drain_tick_preserves_draft"] = True
         # A paste remains incomplete across multiple drain ticks.
         send(b"\x1b[20")
         pump(0.01)
@@ -1006,13 +1232,24 @@ def run_tui(args):
         identity = snapshot()
         transcript = Path(identity["file"])
         write_json(out / "new-session.json", identity)
-        # The runtime owns materializing a fresh session. A user turn must let
-        # delivery reconnect once its header is durable, without losing news.
+        prior_ack = state()["lastAck"]["batchId"]
+        before_event = (out / "kit-state/events.jsonl").stat().st_size
+        append_event(question="NEWS_BEFORE_NEW_SESSION_HEADER")
+        pump(0.8)
+        if not transcript.exists():
+            cursor = out / "kit-state" / ("cursor-" + state()["cursor"])
+            assert int(cursor.read_text()) <= before_event, "absent session header advanced cursor"
+        write_json(out / "new-session-before-turn.json", {"runtime": snapshot(), "delivery": state(),
+                                                        "headerInitiallyExists": identity["fileExists"]})
         command("Initialize the fresh local acceptance session.")
         wait_for(lambda: transcript.exists() and snapshot().get("idle") is True, "new session first turn")
         send(b"\x1b[200~\x1b[201~")
         editor("")
-        committed(emit())
+        wait_for(lambda: state().get("lastAck", {}).get("batchId") != prior_ack and not state().get("pending"),
+                 "pre-header news survives session initialization")
+        initialized_batch = state()["lastAck"]["batchId"]
+        committed(initialized_batch)
+        assert "NEWS_BEFORE_NEW_SESSION_HEADER" in json.dumps(entries(initialized_batch)), "initialization lost queued news"
         assert state()["lastAck"]["target"]["sessionId"] == identity["id"], "new session retained old delivery identity"
         result["checks"]["new_session_materializes_and_receives_news"] = True
         provider_started.clear()
@@ -1174,6 +1411,230 @@ def run_tui(args):
         committed(batch)
         assert state()["lastAck"]["target"] == prepared["target"], "blocked branch changed delivery target"
         result["checks"]["branch_blocked_until_pending_committed"] = True
+        command("Branch after the committed acceptance news.")
+        wait_for(lambda: snapshot().get("idle") is True and snapshot().get("editor") == "", "branch history settles")
+        pump(0.8)
+        offset = len(events())
+        command("/probe-branch")
+        wait_for(lambda: any(e["event"] == "branch_result" for e in events()[offset:]), "permitted branch result")
+        branch = next(e for e in events()[offset:] if e["event"] == "branch_result")
+        assert branch.get("cancelled") is False and branch["id"] != previous_id, "committed news prevented branching"
+        wait_for(lambda: snapshot().get("id") == branch["id"], "branched session observation")
+        transcript = Path(branch["file"])
+        send(b"\x15\x1b[200~\x1b[201~")
+        editor("")
+        command("Initialize the branched acceptance session.")
+        wait_for(lambda: snapshot().get("idle") is True and transcript.exists(), "branched session materializes")
+        pump(0.8)
+        assert len(entries(batch)) == 1, "branch copied history became a second delivery"
+        branched_batch = emit()
+        committed(branched_batch)
+        assert state()["lastAck"]["target"]["sessionId"] == branch["id"], "branch retained old delivery identity"
+        assert state()["lastAck"]["target"]["sessionFile"] == str(transcript), "branch retained old transcript"
+        write_json(out / "committed-branch-evidence.json", {"branch": branch, "delivery": state(),
+                                                          "originalReceipts": entries(batch), "newReceipts": entries(branched_batch)})
+        result["checks"]["committed_branch_updates_identity_without_redelivery"] = True
+        original = Path(prepared["target"]["sessionFile"])
+        (out / "resume-target.txt").write_text(str(original))
+        send(b"/probe-resume")
+        editor("/probe-resume")
+        batch = emit()
+        offset = len(events())
+        send(b"\r")
+        wait_for(lambda: any(e["event"] == "switch_result" for e in events()[offset:]), "pending session switch result")
+        switched = next(e for e in events()[offset:] if e["event"] == "switch_result")
+        assert switched.get("cancelled") is True and switched["id"] == branch["id"], "pending news allowed session switch"
+        committed(batch)
+        result["checks"]["resume_switch_blocked_until_pending_committed"] = True
+        offset = len(events())
+        command("/probe-resume")
+        wait_for(lambda: any(e["event"] == "switch_result" for e in events()[offset:]), "committed session switch result")
+        switched = next(e for e in events()[offset:] if e["event"] == "switch_result")
+        assert switched.get("cancelled") is False and switched["id"] == previous_id, "committed news prevented session switch"
+        wait_for(lambda: snapshot().get("id") == previous_id, "resumed session observation")
+        transcript = original
+        send(b"\x1b[200~\x1b[201~")
+        editor("")
+        committed(emit())
+        assert state()["lastAck"]["target"]["sessionId"] == previous_id, "switch retained branch identity"
+        result["checks"]["committed_resume_updates_delivery_identity"] = True
+        for picker in ("/resume", "/tree"):
+            command(picker)
+            pump(0.5)
+            batch = emit()
+            pump(0.8)
+            assert not entries(batch), "news entered the " + picker + " picker"
+            send(b"\x1b")
+            committed(batch)
+            result["checks"][picker[1:] + "_picker_holds_news_until_escape"] = True
+        # Hold the event writer lock after preparation to stop commit, not append.
+        send(b"ACK_BOUNDARY_DRAFT")
+        editor("ACK_BOUNDARY_DRAFT")
+        batch = emit()
+        prepared = state()["pending"]
+        with (out / "kit-state/events.jsonl").open("ab") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            send(b"\x15")
+            editor("")
+            wait_for(lambda: len(entries(batch)) == 1, "physical receipt before blocked commit")
+            wait_for(lambda: snapshot().get("idle") is True, "unacknowledged news turn settles")
+            assert state().get("pending", {}).get("batchId") == batch, "writer lock did not hold commit"
+            old_child, = children()
+            os.kill(old_child, signal.SIGKILL)
+            reload_screen = len(screen)
+            command("/reload" if args.harness == "pi" else "/reload-plugins")
+            notice = b"Reloaded keybindings, extensions" if args.harness == "pi" else b"Plugins reloaded."
+            wait_for(lambda: notice in screen[reload_screen:], "persisted receipt reload confirmation")
+            send(b"\x1b[200~\x1b[201~")
+            editor("")
+            pump(1)
+            assert len(entries(batch)) == 1, "reload appended an acknowledged-on-disk batch again"
+            assert state()["pending"] == prepared, "reload mutated unresolved persisted batch"
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        committed(batch)
+        assert state()["lastAck"]["target"] == prepared["target"], "reload moved receipt target"
+        assert len(children()) == 1, "receipt recovery duplicated the news child"
+        result["checks"]["reload_recovers_persisted_receipt_after_child_kill"] = True
+        project_dir = out / "attached-project"
+        project_dir.mkdir()
+        subprocess.run(["git", "init", "-q", str(project_dir)], env=env, check=True, capture_output=True)
+        shell_dir = out / "different-shell-cwd"
+        shell_dir.mkdir()
+
+        def kit(*arguments):
+            response = subprocess.run([str(args.kit_bin.resolve()), *arguments], cwd=shell_dir,
+                                      env=dict(env, HRK_MAIN_OWNER=str(out)), capture_output=True, text=True, timeout=15)
+            with (out / "commands.jsonl").open("a") as log:
+                log.write(json.dumps({"argv": list(arguments), "cwd": str(shell_dir), "code": response.returncode,
+                                      "stdout": response.stdout, "stderr": response.stderr}) + "\n")
+            assert response.returncode == 0, "scratch kit command failed: " + response.stderr
+
+        kit("project", "register", str(project_dir), "--name", "attached")
+        send(b"ATTACHMENT_DRAFT")
+        editor("ATTACHMENT_DRAFT")
+        append_event("project:attached", "OLD_ATTACHMENT_NEWS", "2000-01-01T00:00:00Z")
+        kit("main", "--agent", args.harness, "--project", "attached")
+        append_event("project:unattached", "UNRELATED_PROJECT_NEWS")
+        append_event("project:attached", "NEW_ATTACHMENT_NEWS")
+        wait_for(lambda: state().get("pending"), "attached project reaches existing waiter")
+        prepared = state()["pending"]
+        batch = prepared["batchId"]
+        assert len(prepared["lines"]) == 1 and "NEW_ATTACHMENT_NEWS" in prepared["lines"][0], "attachment cutoff or scope failed"
+        kit("main", "--agent", args.harness, "--no-projects")
+        kit("project", "forget", "attached", "--yes")
+        pump(0.8)
+        assert state()["pending"] == prepared and not entries(batch), "detach or registry change mutated pending"
+        send(b"\x15")
+        editor("")
+        committed(batch)
+        append_event("project:attached", "DETACHED_PROJECT_NEWS")
+        pump(2.2)
+        assert not state().get("pending"), "detached project still delivered news"
+        committed(emit())
+        assert "DETACHED_PROJECT_NEWS" not in json.dumps(entries(state()["lastAck"]["batchId"])), "detached news leaked into owner batch"
+        assert state()["lastAck"]["target"]["owner"] == str(out), "shell cwd changed fixed owner"
+        result["checks"]["attachment_cutoff_detach_registry_and_shell_cwd"] = True
+        def recover_transition(marker):
+            command("/reload" if args.harness == "pi" else "/reload-plugins")
+            pump(1)
+            send(b"\x1b[200~\x1b[201~")
+            editor("")
+            wait_for(lambda: state().get("pending") or marker in json.dumps(entries(state()["lastAck"]["batchId"])),
+                     "explicit reload reconnects after cancelled transition")
+            recovered = state().get("pending", {}).get("batchId") or state()["lastAck"]["batchId"]
+            committed(recovered)
+            assert marker in json.dumps(entries(recovered))
+
+        for operation in (("switch", "branch", "tree") if args.harness == "omp" else ("switch", "branch")):
+            previous_id = snapshot()["id"]
+            offset = len(events())
+            screen_offset = len(screen)
+            command("/probe-veto " + operation)
+            wait_for(lambda: any(e["event"] == "later_transition_veto" for e in events()[offset:]), "later hook veto")
+            veto = next(e for e in events()[offset:] if e["event"] == "later_transition_veto")
+            assert veto.get("cancelled") is True and snapshot()["id"] == previous_id
+            before_requests = len(jsonl(out / "provider.jsonl", live_log=True))
+            marker = "LATER_VETO_RECOVERY_" + operation
+            append_event(question=marker)
+            pump(10.3)
+            assert b"News paused for session change" in screen[screen_offset:], "cancelled transition lacked explicit recovery guidance"
+            assert len(jsonl(out / "provider.jsonl", live_log=True)) == before_requests, "later veto woke model"
+            recover_transition(marker)
+            result["checks"]["later_" + operation + "_veto_stays_closed_until_explicit_reload"] = True
+        if args.harness == "omp":
+            for outcome in ("cancel", "failure"):
+                command("Tree summarization history " + "padding " * 1500)
+                wait_for(lambda: snapshot().get("idle") is True and snapshot().get("editor") == "", "tree history settles")
+                pump(0.8)
+                screen_offset = len(screen)
+                previous_id = snapshot()["id"]
+                provider_started.clear()
+                provider_release.clear()
+                provider_status = 400 if outcome == "failure" else 200
+                command("/tree")
+                pump(0.5)
+                send(b"\x1b[A\x1b[13;2~")
+                wait_for(provider_started.is_set, "real tree summarization request")
+                assert b"Summarizing branch" in screen[screen_offset:], "tree summary bypassed the native cancellation UI"
+                marker = "TREE_SUMMARY_RECOVERY_" + outcome
+                append_event(question=marker)
+                pump(0.8)
+                if outcome == "cancel":
+                    send(b"\x1b")
+                    pump(0.2)
+                provider_status = 200
+                provider_release.set()
+                notice = b"Branch summarization cancelled" if outcome == "cancel" else b"Local acceptance provider failure"
+                wait_for(lambda: notice in screen[screen_offset:], "native tree summary " + outcome)
+                if outcome == "cancel":
+                    pump(0.2)
+                    send(b"\x1b")
+                editor("")
+                assert snapshot()["id"] == previous_id, "cancelled tree changed session"
+                assert b"News paused for session change" in screen[screen_offset:], "tree failure lacked recovery guidance"
+                before_requests = len(jsonl(out / "provider.jsonl", live_log=True))
+                pump(1.2)
+                assert len(jsonl(out / "provider.jsonl", live_log=True)) == before_requests, "tree failure woke model before recovery"
+                paths = {Path(e["file"]) for e in events() if e.get("file")}
+                assert all(marker not in str(e.get("content", "")) for path in paths
+                           for e in jsonl(path, live_log=True) if e.get("customType") == "hrk-news"), "tree failure delivered before reload"
+                recover_transition(marker)
+                result["checks"]["tree_summary_" + outcome + "_explicit_reload_recovery"] = True
+        command("Extension compaction history " + "padding " * 1500)
+        wait_for(lambda: snapshot().get("idle") is True and snapshot().get("editor") == "", "extension compaction history settles")
+        pump(0.8)
+        offset = len(events())
+        screen_offset = len(screen)
+        provider_status = 400
+        command("/probe-compact")
+        wait_for(lambda: any(e["event"] == "extension_compact_error" for e in events()[offset:]), "extension compaction failure")
+        provider_status = 200
+        batch = emit()
+        if args.harness == "omp":
+            assert b"Error: Compaction failed:" in screen[screen_offset:], "extension compaction failure lacked TUI settlement"
+        committed(batch)
+        result["checks"]["extension_compaction_failure_recovers_without_duplicate"] = True
+        if args.harness == "omp":
+            stop_tui()
+            config_path = out / "omp.yml"
+            configured_settings = config_path.read_text()
+            config_path.write_text(configured_settings.replace("setupVersion: 2", "setupVersion: 0"))
+            screen_offset = len(screen)
+            start()
+            original = transcript
+            batch = emit()
+            pump(1)
+            if not entries(batch):
+                assert any(title in screen[screen_offset:] for title in
+                           (b"Choose composer shape", b"Choose your default model", b"Set up your providers", b"Pick a theme")), "fresh setup neither delivered nor showed onboarding"
+                stop_tui()
+                config_path.write_text(configured_settings)
+                start(original)
+                committed(batch)
+                result["checks"]["setup_modal_holds_news_until_explicit_resume"] = True
+            else:
+                committed(batch)
+                result["checks"]["public_reserved_resume_skips_first_run_setup"] = True
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         write_json(out / "failure-state.json", {"delivery": state(), "runtime": snapshot()})
@@ -1205,6 +1666,8 @@ def run_tui(args):
         result["bridgePIDs"] = sorted(bridges)
         (out / "screen.txt").write_bytes(screen)
         write_json(out / "result.json", result)
+        if live and (result["blockers"] or not result["checks"]["owned_processes_exited"]):
+            raise RuntimeError("live probe cleanup failed")
     print(json.dumps({"harness": args.harness, "version": result.get("version"), "checks": result["checks"],
                       "blockers": result["blockers"], "error": result.get("error"), "out": str(out)}))
     return 1 if result.get("error") or result["blockers"] or any(v is not True for v in result["checks"].values()) else 0
@@ -1213,14 +1676,18 @@ def run_tui(args):
 def main():
     signal.signal(signal.SIGTERM, interrupt)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=["all", "transcript-contract", "tui"], default="all")
+    parser.add_argument("--case", choices=["all", "transcript-contract", "tui", "live"], default="all")
     parser.add_argument("--harness", choices=["pi", "omp"], required=True)
     parser.add_argument("--kit-bin", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--live-model", help="configured provider/model for the live case")
+    parser.add_argument("--live-provider-config", type=Path, help="trusted Pi-format providers JSON; uses its configured credential command")
     args = parser.parse_args()
     if args.case == "transcript-contract":
         return run(args)
-    if args.case == "tui":
+    if args.case == "live" and not all((args.live_model, args.live_provider_config)):
+        parser.error("live requires --live-model and --live-provider-config")
+    if args.case in ("tui", "live"):
         return run_tui(args)
     args.out.mkdir(parents=True, exist_ok=False)
     outcomes = {}
