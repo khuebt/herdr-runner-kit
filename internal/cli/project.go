@@ -946,7 +946,7 @@ func sendFeedback(cmd *cobra.Command, r *runner.Runner, p state.Project, t *task
 		if err == nil {
 			how := "it is revising"
 			if !working {
-				how = "herdr has not seen it start a turn yet"
+				how = "no turn start was seen yet, so it may not have taken it"
 			}
 			fmt.Fprintf(out, "feedback: sent to %s; %s\n", t.ID, how)
 			return

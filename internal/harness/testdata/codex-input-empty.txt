@@ -1,0 +1,9 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     ~/Work/proj
+     permissions: YOLO mode
+
+› Ask Codex to do anything
+
+  GPT-6-Luna low · ~/Work/proj
+  ← for agents · ? for shortcuts

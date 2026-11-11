@@ -1,0 +1,9 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     ~/Work/proj
+     permissions: YOLO mode
+
+› reply with the single word ok
+
+  GPT-6-Luna low · ~/Work/proj
+  tab to queue message

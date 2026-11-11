@@ -106,13 +106,13 @@ func (r *Runner) RouteTelegram(ctx context.Context, text string) (string, error)
 		if err != nil {
 			return "", err
 		}
-		return deliveredLine(id, "got the answer", working), nil
+		return deliveredLine(id, "got the answer", "typed the answer", working), nil
 	case t.Status == task.Running:
 		working, err := r.Send(ctx, id, body)
 		if err != nil {
 			return "", err
 		}
-		return deliveredLine(id, "received the message", working), nil
+		return deliveredLine(id, "received the message", "typed the message", working), nil
 	case t.Status == task.NeedsHuman:
 		return "", fmt.Errorf("%s waits on the %s dialog in its herdr tab; it cannot be answered from Telegram", id, t.Error)
 	}
@@ -177,9 +177,12 @@ func isApproval(s string) bool {
 	return slices.Contains(approvals, strings.ToLower(strings.Trim(strings.TrimSpace(s), ".!"))) || s == ""
 }
 
-func deliveredLine(id, what string, working bool) string {
+// deliveredLine words a reply routed to id: taken says what the runner did
+// with it once its turn was seen to start, typed what the kit did when it
+// was not, as typed text is not yet taken text.
+func deliveredLine(id, taken, typed string, working bool) string {
 	if working {
-		return id + " " + what + " and is working"
+		return id + " " + taken + " and is working"
 	}
-	return id + " " + what + "; herdr has not seen it start a turn yet"
+	return id + " " + typed + "; no turn start was seen yet, so it may not have taken it"
 }

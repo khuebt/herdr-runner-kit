@@ -270,6 +270,33 @@ func TestClaudeInputState(t *testing.T) {
 	}
 }
 
+func TestCodexInputState(t *testing.T) {
+	prompt := "$ak-research queues in the billing service and report which ones can drop messages"
+	typedFirstLine := "› $ak-research queues in the billing service and report\n\n  GPT-6-Luna low\n"
+	cases := []struct {
+		name, screen string
+		want         InputState
+	}{
+		{"empty", readFixture(t, "codex-input-empty.txt"), InputEmpty},
+		{"pasted", readFixture(t, "codex-input-pasted.txt"), InputHolds},
+		{"typed", readFixture(t, "codex-input-typed.txt"), InputUnknown},
+		{"typed prompt", typedFirstLine, InputHolds},
+		{"typed short prompt", readFixture(t, "codex-input-typed.txt"), InputHolds},
+		{"no input line", "• Working\n", InputUnknown},
+		{"hooks review menu", readFixture(t, "codex-hooks-review.txt"), InputUnknown},
+		{"conversation above an empty input", "› earlier prompt\n\n• answer\n\n› Ask Codex to do anything\n", InputEmpty},
+	}
+	for _, c := range cases {
+		p := prompt
+		if c.name == "typed short prompt" {
+			p = "reply with the single word ok"
+		}
+		if got := (codex{}).InputState(c.screen, p); got != c.want {
+			t.Errorf("%s: InputState = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestClaudeInputIsOnlyTheWholeText(t *testing.T) {
 	prompt := "/ak:research queues in the billing service and report which ones can drop messages"
 	typed := readFixture(t, "input-typed-claude.txt")

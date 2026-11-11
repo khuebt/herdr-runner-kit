@@ -20,7 +20,10 @@ import (
 const GCAge = 30 * time.Minute
 
 // Send types text into a live runner as a new prompt, and reports whether
-// herdr saw the agent start a turn within a few seconds. A message to a
+// the agent was seen to start a turn within a few seconds: herdr saw it work,
+// and the text is no longer in the input box. A runner still starting, or
+// waiting on a startup dialog, takes no text: it would go into the dialog or
+// be lost before the input is ready. A message to a
 // done or failed runner is new work, so the task is reopened, but only after
 // the prompt went in: a failed prompt leaves the task finished, and the
 // backstop never mistakes its idle agent for a failure. A stopped task is
@@ -36,6 +39,9 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	}
 	if cleaned(t) {
 		return false, errCleaned(id)
+	}
+	if startingUp(t) {
+		return false, fmt.Errorf("%s is still starting: its first prompt is typed once it has started, and text sent now can be lost. Send again after it started", id)
 	}
 	if err := r.errIfLost(ctx, t); err != nil {
 		return false, err
@@ -104,8 +110,34 @@ func (r *Runner) Send(ctx context.Context, id, text string) (bool, error) {
 	// The message may name where a secret lives, never the secret itself;
 	// hide anything that looks like one before it reaches the log.
 	r.emit(t, "sent", firstLine(redact.Secrets(text), 120), "")
-	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
-	return err == nil, nil
+	return r.turnSeen(ctx, t, text), nil
+}
+
+// startingUp reports whether t's agent is not ready for text: the launcher
+// has not typed the first prompt, or a startup dialog waits for its answer.
+func startingUp(t *task.Task) bool {
+	dialog := t.Status == task.NeedsHuman && (len(t.DialogAnswers) > 0 || t.Question == "" && t.Error != "")
+	return t.Status == task.Starting || dialog
+}
+
+// turnSeen waits a few seconds for herdr to see t's agent start a turn after
+// the kit typed text, and reports whether it did. Typed is not taken: an
+// agent whose input still holds the text, or whose startup dialog is open,
+// has not taken it, whatever state herdr reports; Codex's state can be stale.
+func (r *Runner) turnSeen(ctx context.Context, t *task.Task, text string) bool {
+	if _, err := r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working"); err != nil {
+		return false
+	}
+	adapter, ok := adapterOf(t)
+	if !ok {
+		return true
+	}
+	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, progressScreenLines)
+	if err != nil {
+		return true
+	}
+	_, dialog := harness.DetectDialog(adapter, screen)
+	return !dialog && adapter.InputState(screen, text) != harness.InputHolds
 }
 
 // cleaned reports whether cleanup removed t's worktree.
@@ -166,8 +198,7 @@ func (r *Runner) Answer(ctx context.Context, id, text string) (bool, error) {
 		// hide anything that looks like one before it reaches the log.
 		r.emit(nt, "answered", firstLine(redact.Secrets(text), 120), "")
 	}
-	_, err = r.Herdr.AgentWait(ctx, t.Herdr.PaneID, 3*time.Second, "working")
-	return err == nil, nil
+	return r.turnSeen(ctx, t, text), nil
 }
 
 // answerDialog gives the startup dialog t waits on the answer text names.

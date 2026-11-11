@@ -54,7 +54,7 @@ func newSyncCommand() *cobra.Command {
 			case res.Sent && res.Working:
 				fmt.Fprintf(out, "merged %s (%s) into %s; %s is re-running its checks\n", res.Ref, res.SHA, res.Branch, id)
 			case res.Sent:
-				fmt.Fprintf(out, "merged %s (%s) into %s; %s received the note; herdr has not seen it start a turn yet\n", res.Ref, res.SHA, res.Branch, id)
+				fmt.Fprintf(out, "merged %s (%s) into %s; the note was typed into %s; no turn start was seen yet\n", res.Ref, res.SHA, res.Branch, id)
 			default:
 				fmt.Fprintf(out, "merged %s (%s) into %s; the runner was not told\n", res.Ref, res.SHA, res.Branch)
 			}

@@ -75,7 +75,7 @@ func newSendCommand() *cobra.Command {
 			}
 			msg := id + " received the prompt and is working"
 			if !working {
-				msg = id + " received the prompt; herdr has not seen it start a turn yet"
+				msg = id + " typed the prompt; no turn start was seen yet, so it may not have taken it"
 			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), msg)
 			return err

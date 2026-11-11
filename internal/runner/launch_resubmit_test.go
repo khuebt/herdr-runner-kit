@@ -15,8 +15,15 @@ import (
 // the launcher gets that far, of the one after the extra Enter.
 func unconfirmedLaunch(t *testing.T, agent, screen, status string, waits ...bool) (*Runner, *fakeHerdr, *task.Task) {
 	t.Helper()
+	return unconfirmedLaunchOf(t, agent, func(*fakeHerdr) string { return screen }, status, waits...)
+}
+
+// unconfirmedLaunchOf is unconfirmedLaunch for a screen that depends on what
+// the launcher has typed so far.
+func unconfirmedLaunchOf(t *testing.T, agent string, screen func(*fakeHerdr) string, status string, waits ...bool) (*Runner, *fakeHerdr, *task.Task) {
+	t.Helper()
 	r, fake, _ := newTestRunner(t)
-	fake.on("pane read", ok(screen))
+	fake.on("pane read", func([]string) (string, error) { return screen(fake), nil })
 	fake.on("agent get", ok(`{"result":{"agent":{"agent_status":"`+status+`"}}}`))
 	fake.on("agent wait", func([]string) (string, error) {
 		started := true
@@ -76,17 +83,22 @@ func TestFirstPromptNotSubmittedAfterRetryIsStalledNews(t *testing.T) {
 	}
 }
 
-func TestFirstPromptNotResentWhenInputEmptyOrAgentWorking(t *testing.T) {
-	cases := []struct{ name, agent, screen, status string }{
-		{"empty input", "claude", fixture(t, "working-claude-1.txt"), "idle"},
-		{"agent working", "claude", fixture(t, "input-pasted-claude.txt"), "working"},
-		{"codex is never read", "codex", fixture(t, "input-pasted-claude.txt"), "idle"},
+func TestFirstPromptNotResentWhenTaken(t *testing.T) {
+	codexWorking := "• Working (3s • esc to interrupt)\n\n› Ask Codex to do anything\n"
+	cases := []struct {
+		name, agent, status string
+		screen              func(*fakeHerdr) string
+	}{
+		{"agent working", "claude", "working", func(*fakeHerdr) string { return fixture(t, "input-pasted-claude.txt") }},
+		{"status line shows a turn", "codex", "idle", func(*fakeHerdr) string { return codexWorking }},
+		{"conversation shows the prompt", "codex", "idle", func(f *fakeHerdr) string { return echoed(t, f, "codex") }},
+		{"claude conversation shows the prompt", "claude", "idle", func(f *fakeHerdr) string { return echoed(t, f, "claude") }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r, fake, got := unconfirmedLaunch(t, c.agent, c.screen, c.status, false)
-			if n := fake.count("agent", "send-keys"); n != 0 {
-				t.Errorf("%d Enters sent", n)
+			r, fake, got := unconfirmedLaunchOf(t, c.agent, c.screen, c.status, false)
+			if n, p := fake.count("agent", "send-keys"), fake.count("agent", "prompt"); n != 0 || p != 1 {
+				t.Errorf("%d Enters, %d prompts sent", n, p)
 			}
 			if ev := events(t, r, got.ID); slices.Contains(ev, "stalled") || got.Stalled || !slices.Contains(ev, "prompt-unconfirmed") {
 				t.Errorf("events = %v, stalled %v", ev, got.Stalled)
@@ -95,13 +107,26 @@ func TestFirstPromptNotResentWhenInputEmptyOrAgentWorking(t *testing.T) {
 	}
 }
 
+// echoed is a screen where the agent has taken the first prompt: the prompt
+// is in the conversation and the input is empty again.
+func echoed(t *testing.T, f *fakeHerdr, agent string) string {
+	p := f.call("agent", "prompt")
+	if p == nil {
+		return ""
+	}
+	if agent == "claude" {
+		return "❯ " + p[len(p)-1] + "\n\n● Looking.\n\n" + fixture(t, "working-claude-1.txt")
+	}
+	return "› " + p[len(p)-1] + "\n\n• Looking.\n\n› Ask Codex to do anything\n"
+}
+
 func TestFirstPromptSubmittedButSlowToStartIsNotStalled(t *testing.T) {
 	r, fake, _ := newTestRunner(t)
-	held, empty := fixture(t, "input-pasted-claude.txt"), fixture(t, "working-claude-1.txt")
+	held := fixture(t, "input-pasted-claude.txt")
 	// The second Enter submits the prompt, but herdr is slow to see the turn.
 	fake.on("pane read", func([]string) (string, error) {
 		if fake.count("agent", "send-keys") > 0 {
-			return empty, nil
+			return echoed(t, fake, "claude"), nil
 		}
 		return held, nil
 	})
