@@ -27,6 +27,9 @@ const (
 	// fateLost: the input is empty, the agent is not working and nothing
 	// shows the prompt, so the text never reached the agent.
 	fateLost
+	// fateBlocked: herdr sees the agent blocked on a prompt; the backstop
+	// reports that, with the screen's text.
+	fateBlocked
 )
 
 // promptEchoPasted is how a pasted prompt shows in the conversation:
@@ -51,8 +54,10 @@ func promptEchoed(adapter harness.Adapter, screen, prompt string) bool {
 
 // promptFate reads what became of prompt in pane. Codex can report a stale
 // agent state, so besides herdr's state it reads the agent's own status
-// line and the input.
-func (r *Runner) promptFate(ctx context.Context, t *task.Task, adapter harness.Adapter, pane, prompt string) promptFate {
+// line and the input. staleEcho says the screen already showed the prompt
+// before it was typed, as when a launch takes over a pane whose earlier
+// session left it in its transcript: the echo then proves nothing.
+func (r *Runner) promptFate(ctx context.Context, t *task.Task, adapter harness.Adapter, pane, prompt string, staleEcho bool) promptFate {
 	a, err := r.Herdr.AgentGet(ctx, pane)
 	if err != nil {
 		return fateUnsure
@@ -64,14 +69,17 @@ func (r *Runner) promptFate(ctx context.Context, t *task.Task, adapter harness.A
 	if a.Status == "working" || adapter.ShowsWorking(screen) {
 		return fateTaken
 	}
-	if _, open := harness.DetectDialog(adapter, screen); open || a.Status == "blocked" {
+	if a.Status == "blocked" {
+		return fateBlocked
+	}
+	if _, open := harness.DetectDialog(adapter, screen); open {
 		return fateUnsure
 	}
 	switch adapter.InputState(screen, prompt) {
 	case harness.InputHolds:
 		return fateHolds
 	case harness.InputEmpty:
-		if r.gateSawPrompt(t, adapter) || promptEchoed(adapter, screen, prompt) {
+		if r.gateSawPrompt(t, adapter) || !staleEcho && promptEchoed(adapter, screen, prompt) {
 			return fateTaken
 		}
 		return fateLost
@@ -97,43 +105,55 @@ func (r *Runner) gateSawPrompt(t *task.Task, adapter harness.Adapter) bool {
 //   - the input still holds the prompt: one more Enter, never the text again;
 //   - the input is empty and the agent is not working: the text was lost,
 //     as when a dialog took the keys; it is typed once more;
+//   - herdr sees the agent blocked: nothing, the backstop reports it;
 //   - anything else: nothing is sent, and when herdr still sees no turn
 //     start the runner is stalled news.
 //
 // Each of the two sends waits 5 s once more, and a prompt still not taken
 // after it is stalled news, with the runner left open.
-func (r *Runner) confirmFirstPrompt(ctx context.Context, t *task.Task, adapter harness.Adapter, pane, prompt string) {
-	switch r.promptFate(ctx, t, adapter, pane, prompt) {
+func (r *Runner) confirmFirstPrompt(ctx context.Context, t *task.Task, adapter harness.Adapter, pane, prompt string, staleEcho bool) {
+	switch r.promptFate(ctx, t, adapter, pane, prompt, staleEcho) {
 	case fateHolds:
 		if err := r.Herdr.AgentSendKeys(ctx, pane, "enter"); err != nil {
 			return
 		}
-		if r.awaitTurn(ctx, t, adapter, pane, prompt, "prompt not submitted: the first prompt is still in the input after a second Enter; the runner is left open") {
+		if r.awaitTurn(ctx, t, adapter, pane, prompt, staleEcho, "prompt not submitted: the first prompt is still in the input after a second Enter; the runner is left open") {
 			r.emit(t, "prompt-resubmitted", "the first prompt was still in the input; sent Enter again", "")
 		}
 	case fateLost:
 		if err := r.retypeFirstPrompt(ctx, t, pane, prompt); err != nil {
 			return
 		}
-		if r.awaitTurn(ctx, t, adapter, pane, prompt, "first prompt not taken: it was typed again and the agent still did not take it; the runner is left open") {
+		if r.awaitTurn(ctx, t, adapter, pane, prompt, staleEcho, "first prompt not taken: it was typed again and the agent still did not take it; the runner is left open") {
 			r.emit(t, "prompt-retyped", "the input was empty and the agent idle; typed the first prompt once more", "")
 		}
 	case fateUnsure:
 		if _, err := r.Herdr.AgentWait(ctx, pane, 5*time.Second, "working"); herdr.HasCode(err, herdr.CodeTimeout) {
-			r.markStalled(t, "stalled", "first prompt not confirmed: herdr saw no turn start and the input could not be read; check the runner's tab")
+			r.markStalled(t, "stalled", r.unconfirmedSummary(ctx, adapter, pane))
 		}
 	}
+}
+
+// unconfirmedSummary says why a first prompt is not confirmed: a startup
+// dialog on screen, or an input that could not be read.
+func (r *Runner) unconfirmedSummary(ctx context.Context, adapter harness.Adapter, pane string) string {
+	if screen, err := r.Herdr.PaneRead(ctx, pane, progressScreenLines); err == nil {
+		if d, open := harness.DetectDialog(adapter, screen); open {
+			return "first prompt not confirmed: herdr saw no turn start and the " + d.Name + " dialog is open; check the runner's tab"
+		}
+	}
+	return "first prompt not confirmed: herdr saw no turn start and the input could not be read; check the runner's tab"
 }
 
 // awaitTurn waits 5 s for the turn to start after the kit sent the prompt
 // again. A loaded machine can take longer to show the turn: only a prompt
 // still in the input, or gone, is stalled news with the summary stalled. It
 // reports whether the runner is not stalled.
-func (r *Runner) awaitTurn(ctx context.Context, t *task.Task, adapter harness.Adapter, pane, prompt, stalled string) bool {
+func (r *Runner) awaitTurn(ctx context.Context, t *task.Task, adapter harness.Adapter, pane, prompt string, staleEcho bool, stalled string) bool {
 	if _, err := r.Herdr.AgentWait(ctx, pane, 5*time.Second, "working"); err == nil {
 		return true
 	}
-	if f := r.promptFate(ctx, t, adapter, pane, prompt); f == fateHolds || f == fateLost {
+	if f := r.promptFate(ctx, t, adapter, pane, prompt, staleEcho); f == fateHolds || f == fateLost {
 		r.markStalled(t, "stalled", stalled)
 		return false
 	}

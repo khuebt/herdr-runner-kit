@@ -182,6 +182,8 @@ func (claude) LocksInput() bool { return true }
 
 func (claude) NeedsGateConfirmation() bool { return false }
 
+func (claude) ShowsComposerWhenReady() bool { return false }
+
 // claudeClearLines is how many lines ClearInputKeys clears: enough for a
 // typed prompt the gate put back, since a long paste shows as one "[Pasted
 // text …]" line.

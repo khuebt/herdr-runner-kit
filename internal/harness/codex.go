@@ -519,6 +519,10 @@ func (codex) LocksInput() bool { return true }
 
 func (codex) NeedsGateConfirmation() bool { return true }
 
+// ShowsComposerWhenReady is true: Codex draws its placeholder once it takes
+// input, which can come a moment after a startup dialog closed.
+func (codex) ShowsComposerWhenReady() bool { return true }
+
 func (codex) ClearInputKeys() []string {
 	// shortcut: clear up to 12 draft lines; use clear-all if Codex adds it.
 	// The text-bound token refuses any leftover draft joined to the kit's prompt.

@@ -260,6 +260,10 @@ type Adapter interface {
 	// NeedsGateConfirmation requires a consumed token in the current attempt
 	// before the kit can assume the prompt hook is trusted and input locked.
 	NeedsGateConfirmation() bool
+	// ShowsComposerWhenReady reports whether InputState answers InputEmpty
+	// as soon as the agent takes input, so the kit may wait for it before
+	// typing the first prompt.
+	ShowsComposerWhenReady() bool
 	// ClearInputKeys are the herdr keys that empty the agent's input box
 	// without interrupting a running turn. The kit sends them before it
 	// types into a locked runner: the agent puts a prompt the gate blocked

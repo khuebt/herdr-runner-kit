@@ -215,6 +215,9 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	} else if cur.Status.Terminal() {
 		return errEnded
 	}
+	// What the screen shows now is not the new prompt's doing: an echo of
+	// it already there belongs to an earlier session of the pane.
+	staleEcho := promptEchoed(adapter, r.waitComposerReady(ctx, adapter, loc.PaneID, text), text)
 	if err := r.typePrompt(ctx, t, loc.PaneID, text); err != nil {
 		return fmt.Errorf("send first prompt: %w", err)
 	}
@@ -228,7 +231,7 @@ func (r *Runner) launch(ctx context.Context, t *task.Task) error {
 	}
 	if _, err := r.Herdr.AgentWait(ctx, loc.PaneID, 5*time.Second, "working"); err != nil {
 		r.emit(t, "prompt-unconfirmed", "prompt typed, but herdr saw no turn start within 5 s", "")
-		r.confirmFirstPrompt(ctx, t, adapter, loc.PaneID, text)
+		r.confirmFirstPrompt(ctx, t, adapter, loc.PaneID, text, staleEcho)
 	}
 	if adapter.NeedsGateConfirmation() && t.InputLocked {
 		attempt := task.AttemptOf(t)
@@ -642,6 +645,30 @@ func (r *Runner) waitLateDialog(ctx context.Context, adapter harness.Adapter, pa
 
 // dialogLatePoll is how often waitLateDialog reads the screen.
 const dialogLatePoll = 100 * time.Millisecond
+
+// composerReadyWait caps waitComposerReady.
+const composerReadyWait = 3 * time.Second
+
+// waitComposerReady reads the screen until the input shows empty, so the
+// prompt is not typed before the agent takes input after a dialog closed. A
+// composer that never shows ends the wait quietly: confirmFirstPrompt
+// covers a prompt that was lost. Only an adapter that says its composer
+// shows when ready is waited for. It returns the last screen read.
+func (r *Runner) waitComposerReady(ctx context.Context, adapter harness.Adapter, pane, text string) string {
+	var screen string
+	for range int(composerReadyWait / dialogLatePoll) {
+		s, err := r.Herdr.PaneRead(ctx, pane, progressScreenLines)
+		if err != nil {
+			return screen
+		}
+		screen = s
+		if !adapter.ShowsComposerWhenReady() || adapter.InputState(screen, text) == harness.InputEmpty || ctx.Err() != nil {
+			break
+		}
+		r.Sleep(dialogLatePoll)
+	}
+	return screen
+}
 
 // waitDialogGone polls the screen until dialog d has closed, for at most two
 // seconds.

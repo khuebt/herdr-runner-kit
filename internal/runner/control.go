@@ -132,12 +132,24 @@ func (r *Runner) turnSeen(ctx context.Context, t *task.Task, text string) bool {
 	if !ok {
 		return true
 	}
-	screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, progressScreenLines)
-	if err != nil {
-		return true
+	// AgentWait can return before the agent drew the Enter's result, so an
+	// input that still holds the text is read once more after a second.
+	for try := range 2 {
+		screen, err := r.Herdr.PaneRead(ctx, t.Herdr.PaneID, progressScreenLines)
+		if err != nil {
+			return true
+		}
+		if _, dialog := harness.DetectDialog(adapter, screen); dialog {
+			return false
+		}
+		if adapter.InputState(screen, text) != harness.InputHolds {
+			return true
+		}
+		if try == 0 {
+			r.Sleep(time.Second)
+		}
 	}
-	_, dialog := harness.DetectDialog(adapter, screen)
-	return !dialog && adapter.InputState(screen, text) != harness.InputHolds
+	return false
 }
 
 // cleaned reports whether cleanup removed t's worktree.

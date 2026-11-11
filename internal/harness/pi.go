@@ -286,6 +286,8 @@ func (pi) LocksInput() bool { return true }
 
 func (pi) NeedsGateConfirmation() bool { return false }
 
+func (pi) ShowsComposerWhenReady() bool { return false }
+
 // ClearInputKeys is nil: pi and omp clear a prompt the extension refused.
 func (pi) ClearInputKeys() []string { return nil }
 

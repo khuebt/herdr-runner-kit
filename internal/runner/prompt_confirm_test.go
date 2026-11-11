@@ -5,7 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/khuebt/herdr-runner-kit/internal/herdr"
 	"github.com/khuebt/herdr-runner-kit/internal/task"
 )
 
@@ -77,9 +79,10 @@ func TestFirstPromptUnsureSendsNothingAndIsNews(t *testing.T) {
 	cases := []struct {
 		name, agent string
 		screen      func(*fakeHerdr) string
+		named       string
 	}{
-		{"hooks review opens after the prompt", "codex", late},
-		{"input not read", piAgentSpec, func(*fakeHerdr) string { return "some output\n" }},
+		{"hooks review opens after the prompt", "codex", late, "codex-hooks-review dialog is open"},
+		{"input not read", piAgentSpec, func(*fakeHerdr) string { return "some output\n" }, "input could not be read"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -87,7 +90,7 @@ func TestFirstPromptUnsureSendsNothingAndIsNews(t *testing.T) {
 			if n, k := fake.count("agent", "prompt"), fake.count("agent", "send-keys"); n != 1 || k != 0 {
 				t.Errorf("%d prompts, %d Enters sent, want 1 and 0", n, k)
 			}
-			if s := stalledNews(t, r, got.ID); !strings.Contains(s, "not confirmed") || !got.Stalled {
+			if s := stalledNews(t, r, got.ID); !strings.Contains(s, c.named) || !got.Stalled {
 				t.Errorf("stalled news %q, stalled %v", s, got.Stalled)
 			}
 		})
@@ -174,5 +177,168 @@ func TestAnswerWorkingNeedsProofTheAgentTookTheText(t *testing.T) {
 		if working, err := r.Answer(context.Background(), tk.ID, "use A"); err != nil || working != c.want {
 			t.Errorf("Answer on %q = %v, %v; want %v", c.screen, working, err, c.want)
 		}
+	}
+}
+
+// An echo of the prompt that was on screen before it was typed belongs to an
+// earlier session of the pane: it does not show the new prompt was taken.
+func TestFirstPromptEchoOfAnEarlierSessionIsNotProof(t *testing.T) {
+	earlier := "• Earlier session\n› [Pasted Content 2337 chars]\n\n" + codexEmpty
+	r, fake, got := unconfirmedLaunchOf(t, "codex", func(*fakeHerdr) string { return earlier }, "idle", false, true)
+	if n := fake.count("agent", "prompt"); n != 2 {
+		t.Errorf("%d prompts typed, want 2", n)
+	}
+	if ev := events(t, r, got.ID); !slices.Contains(ev, "prompt-retyped") || got.Stalled {
+		t.Errorf("events = %v, stalled %v", ev, got.Stalled)
+	}
+	// The same echo, drawn after the prompt was typed, is proof.
+	drawn := func(f *fakeHerdr) string {
+		if f.call("agent", "prompt") == nil {
+			return codexEmpty
+		}
+		return earlier
+	}
+	if _, fake, _ := unconfirmedLaunchOf(t, "codex", drawn, "idle", false, true); fake.count("agent", "prompt") != 1 {
+		t.Error("an echo drawn after the prompt was typed was not taken as proof")
+	}
+}
+
+// A runner herdr sees as blocked is the backstop's news, with the screen's
+// text, not a stalled prompt.
+func TestFirstPromptBlockedLeftToTheBackstop(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	fake.on("pane read", ok(codexEmpty))
+	fake.on("agent get", func([]string) (string, error) {
+		if fake.call("agent", "prompt") == nil {
+			return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+		}
+		return `{"result":{"agent":{"agent_status":"blocked"}}}`, nil
+	})
+	fake.on("agent wait", func([]string) (string, error) {
+		if fake.call("agent", "prompt") == nil {
+			return `{"result":{"agent":{"agent_status":"idle"}}}`, nil
+		}
+		return "", herdrError(herdr.CodeTimeout)
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Skill: "ak:research", Agent: "codex", Prompt: "queues", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if n, k := fake.count("agent", "prompt"), fake.count("agent", "send-keys"); n != 1 || k != 0 || got.Stalled {
+		t.Errorf("%d prompts, %d Enters, stalled %v", n, k, got.Stalled)
+	}
+}
+
+// The first prompt of a runner whose hooks review the user answered is lost
+// in the input that Codex did not take yet: it is typed once more.
+func TestFirstPromptLostAfterAnsweredHooksReviewIsTypedOnce(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	review := fixture(t, "codex-hooks-review.txt")
+	answered := false
+	fake.on("agent send-keys", func([]string) (string, error) {
+		answered = true
+		return "{}", nil
+	})
+	fake.on("pane read", func([]string) (string, error) {
+		if answered {
+			return codexEmpty, nil
+		}
+		return review, nil
+	})
+	fake.on("agent wait", func([]string) (string, error) {
+		// The prompt typed first is lost; the one typed again starts a turn.
+		if fake.count("agent", "prompt") == 1 {
+			return "", herdrError(herdr.CodeTimeout)
+		}
+		return `{"result":{"agent":{"agent_status":"working"}}}`, nil
+	})
+	r.Sleep = func(time.Duration) {
+		if got, _ := r.Store.Get("t1"); got.Status == task.NeedsHuman && !answered {
+			if _, err := r.Answer(context.Background(), "t1", "skip"); err != nil {
+				t.Errorf("answer skip: %v", err)
+			}
+		}
+	}
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Skill: "ak:research", Agent: "codex", Prompt: "queues", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Store.Get(tk.ID)
+	if n := fake.count("agent", "prompt"); n != 2 {
+		t.Errorf("%d prompts typed, want 2", n)
+	}
+	if ev := events(t, r, tk.ID); !slices.Contains(ev, "answered") || !slices.Contains(ev, "prompt-retyped") || got.Stalled || got.Status != task.Running {
+		t.Errorf("events = %v, stalled %v, status %s", ev, got.Stalled, got.Status)
+	}
+}
+
+// A runner that asked a question is waiting for a message, not starting up:
+// send still reaches it.
+func TestSendReachesARunnerThatAskedAQuestion(t *testing.T) {
+	r, fake, tk := launched(t, "codex", func(*fakeHerdr) string { return codexEmpty })
+	if _, err := r.Store.Update(tk.ID, func(t *task.Task) error {
+		t.Status, t.Question = task.NeedsHuman, "A or B?"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.count("agent", "prompt")
+	if _, err := r.Send(context.Background(), tk.ID, "use A"); err != nil {
+		t.Errorf("send error = %v", err)
+	}
+	if n := fake.count("agent", "prompt"); n != before+1 {
+		t.Errorf("%d prompts typed, want 1", n-before)
+	}
+}
+
+// AgentWait can return before the agent drew what the Enter did: an input
+// that holds the text is read again before the send is called untaken.
+func TestSendReadsTheInputAgainBeforeCallingItUntaken(t *testing.T) {
+	for name, settles := range map[string]bool{"input empties": true, "input keeps the text": false} {
+		t.Run(name, func(t *testing.T) {
+			// The input holds the text until the second read after the send.
+			reads, typed := 0, 0
+			var fake *fakeHerdr
+			r, fake, tk := launched(t, "codex", func(f *fakeHerdr) string {
+				if f.count("agent", "prompt") == typed {
+					return codexEmpty
+				}
+				if reads++; reads > 1 && settles {
+					return codexEmpty
+				}
+				return "› more\n\n  GPT-6-Luna low\n"
+			})
+			typed = fake.count("agent", "prompt")
+			working, err := r.Send(context.Background(), tk.ID, "more")
+			if err != nil || working != settles {
+				t.Errorf("Send = %v, %v; want %v", working, err, settles)
+			}
+		})
+	}
+}
+
+// Codex draws its composer a moment after a dialog closes: the first prompt
+// waits for it to show empty instead of being typed before it takes input.
+func TestFirstPromptWaitsForCodexComposer(t *testing.T) {
+	r, fake, _ := newTestRunner(t)
+	const ready = 8
+	readsAtPrompt := 0
+	fake.on("pane read", func([]string) (string, error) {
+		if fake.count("pane", "read") < ready {
+			return "• Booting\n", nil
+		}
+		return codexEmpty, nil
+	})
+	fake.on("agent prompt", func([]string) (string, error) {
+		readsAtPrompt = fake.count("pane", "read")
+		return "{}", nil
+	})
+	tk := spawnStarting(t, r, SpawnOptions{Kind: "research", Skill: "ak:research", Agent: "codex", Prompt: "queues", Cwd: plainDir(t)})
+	if err := r.Launch(context.Background(), tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if readsAtPrompt < ready {
+		t.Errorf("the prompt was typed after %d reads, before the composer showed at read %d", readsAtPrompt, ready)
 	}
 }
