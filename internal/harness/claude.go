@@ -182,6 +182,8 @@ func (claude) LocksInput() bool { return true }
 
 func (claude) NeedsGateConfirmation() bool { return false }
 
+func (claude) ShowsComposerWhenReady() bool { return false }
+
 // claudeClearLines is how many lines ClearInputKeys clears: enough for a
 // typed prompt the gate put back, since a long paste shows as one "[Pasted
 // text …]" line.
@@ -282,9 +284,9 @@ var claudeBoxEdge = regexp.MustCompile(`^─{20,}`)
 // text #1 +12 lines]".
 var claudePasted = regexp.MustCompile(`\[Pasted text #\d+`)
 
-// claudePromptHead is how many characters of the prompt InputState compares
-// with a typed one.
-const claudePromptHead = 40
+// promptHead is how many characters of the prompt InputState compares with
+// a typed one.
+const promptHead = 40
 
 // claudeInputBox returns the text in the box between the last two input box
 // edges, with whitespace normalised, and false when no box is on screen.
@@ -314,7 +316,7 @@ func (claude) InputState(screen, prompt string) InputState {
 		return InputUnknown
 	}
 	head := []rune(strings.Join(strings.Fields(prompt), " "))
-	head = head[:min(claudePromptHead, len(head))]
+	head = head[:min(promptHead, len(head))]
 	switch {
 	case box == "":
 		return InputEmpty

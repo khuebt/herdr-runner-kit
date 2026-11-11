@@ -285,11 +285,56 @@ func (codex) ProgressText(screen string) string {
 	return joinLines(out)
 }
 
-// InputState is always unknown: Codex can report a stale state after
-// skipped hooks, and its input line is not read.
-// InputIs is always false for the same reason.
-func (codex) InputState(string, string) InputState { return InputUnknown }
-func (codex) InputIs(string, string) bool          { return false }
+// codexPlaceholder is what Codex's input line shows while it is empty.
+const codexPlaceholder = "Ask Codex to do anything"
+
+// codexPasted is what the input line shows for a pasted prompt: "[Pasted
+// Content 2337 chars]".
+var codexPasted = regexp.MustCompile(`\[Pasted Content \d+ chars\]`)
+
+// codexMenuLine is the selected option of a dialog, which also starts with
+// "›": "› 1. Review hooks".
+var codexMenuLine = regexp.MustCompile(`^\d+\.\s`)
+
+// codexInputLine returns the text of the last "›" line, which holds the
+// first line of the input, with whitespace normalised. It is false when
+// no input line shows or a dialog's menu does.
+func codexInputLine(screen string) (string, bool) {
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !strings.HasPrefix(lines[i], "›") {
+			continue
+		}
+		line := strings.Join(strings.Fields(strings.TrimPrefix(lines[i], "›")), " ")
+		return line, !codexMenuLine.MatchString(line)
+	}
+	return "", false
+}
+
+// InputState reads the first line of the input. A pasted prompt shows as
+// "[Pasted Content N chars]" and a short one as its own text; the first
+// line of a longer one is compared with the start of the prompt. Anything
+// else, or an open dialog, is unknown. Codex can report a stale agent state,
+// so callers read the input line, not the state.
+func (codex) InputState(screen, prompt string) InputState {
+	line, ok := codexInputLine(screen)
+	if !ok {
+		return InputUnknown
+	}
+	head := []rune(strings.Join(strings.Fields(prompt), " "))
+	head = head[:min(promptHead, len(head))]
+	switch {
+	case line == codexPlaceholder:
+		return InputEmpty
+	case codexPasted.MatchString(line), line != "" && len(head) > 0 && (strings.HasPrefix(line, string(head)) || strings.HasPrefix(string(head), line)):
+		return InputHolds
+	}
+	return InputUnknown
+}
+
+// InputIs is always false: only the first line of Codex's input is read, so
+// it never proves the box holds nothing else.
+func (codex) InputIs(string, string) bool { return false }
 
 func (codex) ShowsRetry(screen string) bool {
 	return anyLineMatches(lastLines(screen, statusLines), codexRetry)
@@ -473,6 +518,10 @@ func (codex) ShowsWorking(screen string) bool {
 func (codex) LocksInput() bool { return true }
 
 func (codex) NeedsGateConfirmation() bool { return true }
+
+// ShowsComposerWhenReady is true: Codex draws its placeholder once it takes
+// input, which can come a moment after a startup dialog closed.
+func (codex) ShowsComposerWhenReady() bool { return true }
 
 func (codex) ClearInputKeys() []string {
 	// shortcut: clear up to 12 draft lines; use clear-all if Codex adds it.

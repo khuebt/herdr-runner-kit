@@ -155,7 +155,7 @@ func newAnswerCommand() *cobra.Command {
 			}
 			msg := id + " got the answer and is working"
 			if !working {
-				msg = id + " got the answer; herdr has not seen it start a turn yet"
+				msg = id + " typed the answer; no turn start was seen yet, so it may not have taken it"
 			}
 			_, err = fmt.Fprintln(out, msg)
 			return err

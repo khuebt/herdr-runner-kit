@@ -11,7 +11,7 @@ Every command prints short plain text. `hrk <command> --help` lists every flag.
 | `show <id> [--prompt]` | One task as compact text: status, times, tab, `usage:` of a Claude runner, worktree, `git:` line, summary, decisions, question, outputs, last 5 events. The prompt only with `--prompt`. |
 | `show <id> --json [--events N]` | The task as one JSON object, or `{task, events}` with `--events`. Parse this, never the text view. |
 | `peek <id> [--lines N]` | The runner's visible screen (default 30 lines), secrets hidden. Use it instead of `herdr pane read`. |
-| `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one, or one whose worktree was cleaned up, refuses. |
+| `send <id> --stdin` | Type a new prompt into a live runner. A done or failed task runs again; a stopped one, one whose worktree was cleaned up, or one still starting or showing a startup dialog, refuses: send again once it started. |
 | `answer <id> --stdin` | Answer a `needs-human` question. The id may name an attempt, such as `t3a2`; one for an attempt that ended is refused. |
 | `answer --from-telegram --stdin` | Route a Telegram reply by its `#id` tag. |
 | `release <id> [--note TEXT]` | Start a `held` task. |
@@ -164,6 +164,19 @@ Spawn with `--project <name>`. The task works in the project's folder, its tab o
 - Review: `plan.md` frontmatter `review: required|skip`, `review_after: <phase>` (the first phase later phases build on) and `review_agent: <spec>`. The first review runs after the wave holding `review_after`, and the next wave fixes its verified findings in its own scope; a final review of what changed since runs before `plan-done`, and a fixup runner follows it unless the verdict is `pass`. `--dry-run` lists them for the brief. Relay `plan-done`'s review verdict and the review report path (`<plan dir>/reports/review-<YYMMDD-HHMM>.md`); on `fix`, say what the fixup runner did. `review-verdict` and `fixup-skipped` are progress, never news.
 - Runners never edit plan status; the kit does.
 
+## Long briefs
+
+A one-line task needs only the brief bullets in SKILL.md. A long brief (several runners or phases, several files, or work that needs inputs from elsewhere) also states, for the work as a whole or per runner:
+
+- **Done condition:** what can be observed when it is finished, such as a command that exits 0, a file that exists, or a behavior the user can try. Not "improve X".
+- **Inputs:** the sources the runner reads, as paths, issue or plan numbers, or an earlier task's output file. Pass summaries and paths, never a transcript.
+- **File ownership:** which runner may change which files or folders. No two runners that run at the same time share one; when they must, chain them with `--after`.
+- **Checks:** the commands to run, through `hrk heavy --` for tests, lint, typecheck and build, and what a pass looks like.
+- **Stop conditions:** what makes the runner stop and report instead of pressing on, such as a failing check it cannot fix in scope, a decision with real trade-offs, or a file outside its ownership. A decision it settles itself goes in its `done` report as `decided:`.
+- **Prerequisites still missing:** only what is missing after you inspected the repo, docs, config and live state, such as a key, an account, an approval or another task's result. Do not ask the user what the repo answers. Record an outside thing with `project dep add`, naming where a secret is kept and never its value, and hold the runner that needs it with `--gate human --reason "needs D<n>"`. When nothing is missing, say so in one line.
+
+This adds no approval step: it is the same brief and the same "Start?". Leave a field out when it does not apply.
+
 ## spawn flags
 
 | Flag | Meaning |
@@ -201,7 +214,7 @@ Lines marked *quiet* never wake you alone while other tasks run: they come first
 | `tN needs-human` | The runner asks a question, or a round: `N questions` and one numbered line each; `attempt N` when the runner continues in a fresh session after a context handoff | Ask the user, all of a round in one message, then `answer` once, such as `1a 2b`, the same way for any attempt. An answer refused as `for attempt N of tN, which ended`: ask the user again. |
 | `tN held` | A `--gate human` task waits; `(reason)` when held with `--reason` | Ask the user, then `release`. |
 | `tN failed` | The runner or its launch failed; may carry `git: …` | Relay the reason; offer to retry with a new `spawn`. For `usage limit reached`, offer another `--agent` or `--claude-config`, and mention `quotaFallback` in the config. For `runner lost: herdr pane gone` (herdr or the machine restarted), relay it and offer a new `spawn`; `show <id>` names the worktree and branch with the partial work. |
-| `tN stalled` | `blocked on a prompt: …` quotes the prompt the agent waits on; `no progress for N min …` or `retrying for N min` means it stayed busy without progress after a nudge and an interrupt; `idle at its prompt for N min …` means it sat idle without reporting after a nudge | Relay the quoted text as is; offer `focus <id>` or `peek <id>`. For an idle runner, `peek` it and `send` it what it waits for or a reminder to report. The runner stays open. Never chase `blocked`, `unstalled`, `nudged` or `interrupted` progress events. |
+| `tN stalled` | `blocked on a prompt: …` quotes the prompt the agent waits on; `no progress for N min …` or `retrying for N min` means it stayed busy without progress after a nudge and an interrupt; `idle at its prompt for N min …` means it sat idle without reporting after a nudge; `prompt not submitted`, `first prompt not taken` or `first prompt not confirmed` means the first prompt was typed but the agent never took it, even after the kit's one retry | Relay the quoted text as is; offer `focus <id>` or `peek <id>`. For an idle runner, `peek` it and `send` it what it waits for or a reminder to report; for a first prompt not taken, `peek` it, then `focus <id>` or `send` the prompt again. The runner stays open. Never chase `blocked`, `unstalled`, `nudged` or `interrupted` progress events. |
 | `tN processes-left` | *Quiet.* Processes the closed runner started still run, with pids and commands | Name them to the user; never kill them yourself. |
 | `tN turn-ended-unreported` | The runner stopped without reporting | `send` it a nudge to report, or tell the user. |
 | `tN usage-limit` | The runner's screen shows its agent's usage limit and no `quotaFallback` agent is left | Tell the user; offer a new `spawn` with another `--agent` or `--claude-config`, or waiting for the reset. |
