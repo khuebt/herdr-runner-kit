@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/khuebt/herdr-runner-kit/compare/v0.16.0...v0.16.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* confirm the first prompt was taken before saying it was ([#114](https://github.com/khuebt/herdr-runner-kit/issues/114)) ([6d5c293](https://github.com/khuebt/herdr-runner-kit/commit/6d5c29337848c467130d7489438247ed035b1657))
+
 ## [0.16.0](https://github.com/khuebt/herdr-runner-kit/compare/v0.15.11...v0.16.0) (2026-11-07)
 
 
